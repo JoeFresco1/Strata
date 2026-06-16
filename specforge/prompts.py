@@ -222,6 +222,30 @@ def build_critic_prompt(
     )
 
 
+def build_pillar_research_assessment_prompt(
+    *,
+    product_idea: str,
+    pillar_title: str,
+    pillar_description: str,
+    competitor_matrix: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    return render_prompt(
+        "layer1_pillar_research_assessment",
+        {
+            "product_idea": product_idea,
+            "pillar_title": pillar_title,
+            "pillar_description": pillar_description,
+            "competitor_matrix": json.dumps(competitor_matrix, ensure_ascii=True, indent=2),
+            "evidence": json.dumps(evidence, ensure_ascii=True, indent=2),
+        },
+        prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
+    )
+
+
 def build_spec_prompt(
     product_idea: str,
     pillar_title: str,

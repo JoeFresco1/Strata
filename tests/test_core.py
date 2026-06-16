@@ -12,7 +12,7 @@ from specforge.generation import GenerationService
 from specforge.llm import LlamaCppClient
 from specforge.models import PillarAssessment, ProjectMemory, SimilarityMatch
 from specforge.project_settings import default_project_model_settings
-from specforge.prompts import build_pillar_prompt, build_system_prompt, render_prompt
+from specforge.prompts import build_pillar_prompt, build_pillar_research_assessment_prompt, build_system_prompt, render_prompt
 from specforge.brief import BriefService
 from specforge.research import ResearchService
 
@@ -551,6 +551,26 @@ class PromptTests(unittest.TestCase):
             self.assertIn("Persisted: - Budget Analysis", rendered)
             self.assertIn("Critic Summary: Coverage summary", rendered)
             self.assertIn("Critic Lens: Analytics and Reporting", rendered)
+
+    def test_build_pillar_research_assessment_prompt_formats_inputs(self) -> None:
+        rendered = build_pillar_research_assessment_prompt(
+            product_idea="Idea",
+            pillar_title="Billing",
+            pillar_description="Handle subscriptions and invoices",
+            competitor_matrix=[{"competitor_name": "Acme", "coverage_status": "supported"}],
+            evidence=[{"url": "https://example.com", "competitor_name": "Acme", "snippet": "Hello"}],
+            prompt_catalog={
+                "layer1_pillar_research_assessment": (
+                    "Idea={{product_idea}}\n"
+                    "Pillar={{pillar_title}}\n"
+                    "Matrix={{competitor_matrix}}\n"
+                    "Evidence={{evidence}}"
+                )
+            },
+        )
+
+        self.assertIn("Pillar=Billing", rendered)
+        self.assertIn("Acme", rendered)
 
 
 if __name__ == "__main__":

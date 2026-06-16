@@ -215,6 +215,9 @@ def _ensure_project_model_settings(services: AppServices, project_id: str):
         if not existing.prompt_catalog:
             payload = existing.model_dump(mode="json")
             payload["prompt_catalog"] = load_prompt_catalog()
+            payload.pop("project_id", None)
+            payload.pop("created_at", None)
+            payload.pop("updated_at", None)
             return services.db.upsert_project_model_settings(project_id=project_id, **payload)
         return existing
     payload = default_project_model_settings(services.config, _load_app_model_settings(services))
