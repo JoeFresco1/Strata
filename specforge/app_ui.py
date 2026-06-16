@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import streamlit as st
 
 from specforge.config import (
@@ -12,20 +14,31 @@ from specforge.config import (
     resolve_model_path,
 )
 from specforge.db import Database
+from specforge.embeddings import EmbeddingService
 from specforge.export import export_project
 from specforge.generation import GenerationService, IterativeGenerationSummary
 from specforge.llm import LLMError, LlamaCppClient
 from specforge.models import Node, Project
 from specforge.server_manager import LlamaServerManager
+from specforge.storage import build_database
+
+
+@dataclass(slots=True)
+class BroadeningControls:
+    max_rounds: int
+    target_per_round: int
+    min_new_items_per_round: int
+    thinking_enabled: bool
 
 
 def _bootstrap() -> tuple[AppConfig, Database, LlamaCppClient, GenerationService]:
     config = AppConfig()
     ensure_runtime_dirs(config)
-    db = Database(config.db_path)
+    db = build_database(config)
     llm_client = LlamaCppClient(config)
     server_manager = LlamaServerManager(config)
-    return config, db, llm_client, GenerationService(db, llm_client, server_manager)
+    embedding_service = EmbeddingService(config)
+    return config, db, llm_client, GenerationService(db, llm_client, server_manager, embedding_service)
 
 
 def _project_label(project: Project) -> str:
@@ -82,15 +95,173 @@ def _status_options() -> list[str]:
     return ["generated", "kept", "cut", "merged", "prioritized"]
 
 
+def _kept_or_prioritized(nodes: list[Node]) -> list[Node]:
+    return [node for node in nodes if node.status in {"kept", "prioritized"}]
+
+
+def _node_choice_map(nodes: list[Node]) -> dict[str, str]:
+    return {f"{node.title} ({node.status})": node.id for node in nodes}
+
+
+def _render_round_controls(
+    *,
+    prefix: str,
+    defaults: tuple[int, int, int],
+    bounds: tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
+    thinking_label: str,
+    thinking_help: str,
+) -> BroadeningControls:
+    thinking_enabled = st.toggle(thinking_label, value=False, help=thinking_help)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        max_rounds = st.number_input(
+            f"{prefix} max rounds",
+            min_value=bounds[0][0],
+            max_value=bounds[0][1],
+            value=defaults[0],
+            step=1,
+        )
+    with col2:
+        target_per_round = st.number_input(
+            f"{prefix} target per round",
+            min_value=bounds[1][0],
+            max_value=bounds[1][1],
+            value=defaults[1],
+            step=1,
+        )
+    with col3:
+        min_new_items = st.number_input(
+            f"{prefix} min new per round",
+            min_value=bounds[2][0],
+            max_value=bounds[2][1],
+            value=defaults[2],
+            step=1,
+        )
+    return BroadeningControls(
+        max_rounds=int(max_rounds),
+        target_per_round=int(target_per_round),
+        min_new_items_per_round=int(min_new_items),
+        thinking_enabled=thinking_enabled,
+    )
+
+
+def _render_layer1_model_selector(config: AppConfig) -> list:
+    model_profiles = build_model_profiles(config)
+    default_profile = resolve_default_model_profile(config, model_profiles)
+    if not model_profiles:
+        st.warning("No GGUF model profiles discovered for Layer 1 sequencing.")
+        return []
+
+    labels = {profile.display_name: profile for profile in model_profiles}
+    default_labels = [default_profile.display_name] if default_profile else []
+    selected_model_labels = st.multiselect(
+        "Layer 1 model sequence",
+        list(labels.keys()),
+        default=default_labels,
+        help="Models run one after another. Later models challenge the coverage created by earlier ones.",
+    )
+    return [labels[label] for label in selected_model_labels]
+
+
+def _run_layer1_generation(
+    project: Project,
+    generation_service: GenerationService,
+    selected_model_profiles: list,
+    controls: BroadeningControls,
+) -> None:
+    if not selected_model_profiles:
+        st.error("Select at least one Layer 1 model before starting broadening.")
+        return
+    try:
+        summary = generation_service.generate_pillars_until_exhausted(
+            project.id,
+            model_profiles=selected_model_profiles,
+            thinking_enabled=controls.thinking_enabled,
+            max_rounds=controls.max_rounds,
+            target_per_round=controls.target_per_round,
+            min_new_items_per_round=controls.min_new_items_per_round,
+            stale_rounds_to_stop=2,
+        )
+    except LLMError as exc:
+        st.error(str(exc))
+    else:
+        _render_broadening_summary(summary, "pillars")
+        st.rerun()
+
+
+def _run_layer2_generation(
+    project: Project,
+    generation_service: GenerationService,
+    pillar_choices: dict[str, str],
+    selected_pillars: list[str],
+    controls: BroadeningControls,
+) -> None:
+    try:
+        summaries = []
+        for label in selected_pillars:
+            summaries.append(
+                (
+                    label,
+                    generation_service.generate_subfeatures_until_exhausted(
+                        project.id,
+                        pillar_choices[label],
+                        thinking_enabled=controls.thinking_enabled,
+                        max_rounds=controls.max_rounds,
+                        target_per_round=controls.target_per_round,
+                        min_new_items_per_round=controls.min_new_items_per_round,
+                        stale_rounds_to_stop=2,
+                    ),
+                )
+            )
+    except LLMError as exc:
+        st.error(str(exc))
+    else:
+        for label, summary in summaries:
+            st.markdown(f"**{label}**")
+            _render_broadening_summary(summary, "subfeatures")
+        st.rerun()
+
+
+def _run_layer3_generation(
+    project: Project,
+    generation_service: GenerationService,
+    subfeature_choices: dict[str, str],
+    selected_subfeatures: list[str],
+    *,
+    thinking_enabled: bool,
+) -> None:
+    try:
+        created = generation_service.generate_specs(
+            project.id,
+            [subfeature_choices[label] for label in selected_subfeatures],
+            thinking_enabled=thinking_enabled,
+        )
+    except LLMError as exc:
+        st.error(str(exc))
+    else:
+        st.success(f"Generated {len(created)} spec nodes.")
+        st.rerun()
+
+
 def _render_node_editor(db: Database, node: Node) -> None:
     duplicate = node.json_payload.get("possible_duplicate")
     pillar_assessment = node.json_payload.get("pillar_assessment")
+    semantic_similarity = node.json_payload.get("semantic_similarity")
     with st.expander(f"{node.title} | {node.node_type} | {node.status}", expanded=False):
         if duplicate:
             st.warning(
                 f"Possible duplicate of '{duplicate['duplicate_title']}' "
                 f"(title {duplicate['title_score']} / description {duplicate['description_score']})"
             )
+        if semantic_similarity and semantic_similarity.get("matches"):
+            st.warning(
+                f"Embedding overlap detected. Top cosine similarity: {semantic_similarity.get('top_score', 'n/a')}"
+            )
+            for match in semantic_similarity.get("matches", []):
+                st.caption(
+                    f"{match.get('title', 'Unknown')} | score={match.get('score', 'n/a')} | "
+                    f"layer={match.get('layer', 'n/a')} | type={match.get('node_type', 'n/a')}"
+                )
         if pillar_assessment:
             st.caption(
                 f"Canonical: {pillar_assessment.get('canonical_title', node.title)} | "
@@ -157,111 +328,39 @@ def _render_generation_controls(
 ) -> None:
     st.subheader("Generate")
     config = AppConfig()
-    model_profiles = build_model_profiles(config)
-    default_profile = resolve_default_model_profile(config, model_profiles)
     pillars = db.list_nodes(project.id, parent_id=None, layer=1, node_type="pillar")
     st.caption(
         "Layer 1 now broadens through rotating pillar-discovery lenses, then normalizes each batch back to true pillar-level concepts."
     )
-    if model_profiles:
-        labels = {profile.display_name: profile for profile in model_profiles}
-        default_labels = [default_profile.display_name] if default_profile else []
-        selected_model_labels = st.multiselect(
-            "Layer 1 model sequence",
-            list(labels.keys()),
-            default=default_labels,
-            help="Models run one after another. Later models challenge the coverage created by earlier ones.",
-        )
-        selected_model_profiles = [labels[label] for label in selected_model_labels]
-    else:
-        selected_model_profiles = []
-        st.warning("No GGUF model profiles discovered for Layer 1 sequencing.")
-    thinking_enabled = st.toggle(
-        "Enable model thinking mode",
-        value=False,
-        help="When enabled, SpecForge restarts llama.cpp with reasoning enabled for the selected Layer 1 models.",
+    selected_model_profiles = _render_layer1_model_selector(config)
+    layer1_controls = _render_round_controls(
+        prefix="Layer 1",
+        defaults=(6, 12, 2),
+        bounds=((1, 12), (4, 20), (1, 10)),
+        thinking_label="Enable model thinking mode",
+        thinking_help="When enabled, SpecForge restarts llama.cpp with reasoning enabled for the selected Layer 1 models.",
     )
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        max_rounds = st.number_input("Layer 1 max rounds", min_value=1, max_value=12, value=6, step=1)
-    with col2:
-        target_per_round = st.number_input(
-            "Layer 1 target per round", min_value=4, max_value=20, value=12, step=1
-        )
-    with col3:
-        min_new_per_round = st.number_input(
-            "Stop when new pillars fall below", min_value=1, max_value=10, value=2, step=1
-        )
 
     if st.button("Broaden Layer 1 Until Exhausted", use_container_width=True):
-        if not selected_model_profiles:
-            st.error("Select at least one Layer 1 model before starting broadening.")
-            return
-        try:
-            summary = generation_service.generate_pillars_until_exhausted(
-                project.id,
-                model_profiles=selected_model_profiles,
-                thinking_enabled=thinking_enabled,
-                max_rounds=int(max_rounds),
-                target_per_round=int(target_per_round),
-                min_new_items_per_round=int(min_new_per_round),
-                stale_rounds_to_stop=2,
-            )
-        except LLMError as exc:
-            st.error(str(exc))
-        else:
-            _render_broadening_summary(summary, "pillars")
-            st.rerun()
+        _run_layer1_generation(project, generation_service, selected_model_profiles, layer1_controls)
 
-    kept_pillars = [node for node in pillars if node.status in {"kept", "prioritized"}]
-    pillar_choices = {f"{node.title} ({node.status})": node.id for node in kept_pillars}
+    pillar_choices = _node_choice_map(_kept_or_prioritized(pillars))
     st.divider()
     st.caption("Layer 2 can also broaden until saturation for each approved pillar you choose.")
     selected_pillars = st.multiselect("Expand selected pillars into Layer 2", list(pillar_choices.keys()))
-    layer2_thinking_enabled = st.toggle(
-        "Enable thinking mode for Layer 2",
-        value=False,
-        help="Restarts the managed llama.cpp server with reasoning enabled for downward Layer 2 generation.",
+    layer2_controls = _render_round_controls(
+        prefix="Layer 2",
+        defaults=(5, 10, 2),
+        bounds=((1, 10), (4, 20), (1, 10)),
+        thinking_label="Enable thinking mode for Layer 2",
+        thinking_help="Restarts the managed llama.cpp server with reasoning enabled for downward Layer 2 generation.",
     )
-    sub_col1, sub_col2, sub_col3 = st.columns(3)
-    with sub_col1:
-        sub_max_rounds = st.number_input("Layer 2 max rounds", min_value=1, max_value=10, value=5, step=1)
-    with sub_col2:
-        sub_target_per_round = st.number_input(
-            "Layer 2 target per round", min_value=4, max_value=20, value=10, step=1
-        )
-    with sub_col3:
-        sub_min_new = st.number_input("Layer 2 min new per round", min_value=1, max_value=10, value=2, step=1)
 
     if st.button("Broaden Layer 2 Until Saturated", use_container_width=True, disabled=not selected_pillars):
-        try:
-            summaries = []
-            for label in selected_pillars:
-                summaries.append(
-                    (
-                        label,
-                        generation_service.generate_subfeatures_until_exhausted(
-                            project.id,
-                            pillar_choices[label],
-                            thinking_enabled=layer2_thinking_enabled,
-                            max_rounds=int(sub_max_rounds),
-                            target_per_round=int(sub_target_per_round),
-                            min_new_items_per_round=int(sub_min_new),
-                            stale_rounds_to_stop=2,
-                        ),
-                    )
-                )
-        except LLMError as exc:
-            st.error(str(exc))
-        else:
-            for label, summary in summaries:
-                st.markdown(f"**{label}**")
-                _render_broadening_summary(summary, "subfeatures")
-            st.rerun()
+        _run_layer2_generation(project, generation_service, pillar_choices, selected_pillars, layer2_controls)
 
     subfeatures = db.list_nodes(project.id, parent_id="__any__", layer=2, node_type="subfeature")
-    kept_subfeatures = [node for node in subfeatures if node.status in {"kept", "prioritized"}]
-    subfeature_choices = {f"{node.title} ({node.status})": node.id for node in kept_subfeatures}
+    subfeature_choices = _node_choice_map(_kept_or_prioritized(subfeatures))
     layer3_thinking_enabled = st.toggle(
         "Enable thinking mode for Layer 3",
         value=False,
@@ -271,17 +370,13 @@ def _render_generation_controls(
         "Expand selected subfeatures into Layer 3 specs", list(subfeature_choices.keys())
     )
     if st.button("Generate Layer 3 Specs", use_container_width=True, disabled=not selected_subfeatures):
-        try:
-            created = generation_service.generate_specs(
-                project.id,
-                [subfeature_choices[label] for label in selected_subfeatures],
-                thinking_enabled=layer3_thinking_enabled,
-            )
-        except LLMError as exc:
-            st.error(str(exc))
-        else:
-            st.success(f"Generated {len(created)} spec nodes.")
-            st.rerun()
+        _run_layer3_generation(
+            project,
+            generation_service,
+            subfeature_choices,
+            selected_subfeatures,
+            thinking_enabled=layer3_thinking_enabled,
+        )
 
 
 def _render_broadening_summary(summary: IterativeGenerationSummary, item_label: str) -> None:

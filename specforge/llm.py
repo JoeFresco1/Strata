@@ -30,6 +30,20 @@ class LlamaCppClient:
         self.default_top_p = config.default_top_p
         self.model_name = config.model_name
 
+    def set_base_url(self, base_url: str) -> None:
+        """Switch the OpenAI-compatible chat endpoint used for model calls."""
+        cleaned = base_url.strip().rstrip("/")
+        if not cleaned:
+            raise ValueError("LLM base URL cannot be empty.")
+        self.base_url = cleaned
+
+    def set_model_name(self, model_name: str) -> None:
+        """Switch the default chat model id sent to the endpoint."""
+        cleaned = model_name.strip()
+        if not cleaned:
+            raise ValueError("LLM model name cannot be empty.")
+        self.model_name = cleaned
+
     @staticmethod
     def _strip_reasoning_wrappers(content: str) -> str:
         cleaned = re.sub(r"(?is)<think>\s*</think>\s*", "", content).strip()
@@ -55,10 +69,12 @@ class LlamaCppClient:
         system_prompt: str,
         user_prompt: str,
         model_name: str | None = None,
+        base_url: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
         max_tokens: int = 2500,
     ) -> LLMResponse:
+        target_base_url = (base_url or self.base_url).rstrip("/")
         payload = {
             "model": model_name or self.model_name,
             "messages": [
@@ -73,7 +89,7 @@ class LlamaCppClient:
         }
         try:
             response = requests.post(
-                f"{self.base_url}/v1/chat/completions",
+                f"{target_base_url}/v1/chat/completions",
                 json=payload,
                 timeout=self.timeout,
             )
@@ -95,3 +111,42 @@ class LlamaCppClient:
             model_name=body.get("model", self.model_name),
             raw_payload=body,
         )
+
+    def generate_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        model_name: str | None = None,
+        base_url: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int = 900,
+    ) -> str:
+        """Call llama.cpp for plain chat text when JSON response mode is not wanted."""
+        target_base_url = (base_url or self.base_url).rstrip("/")
+        payload = {
+            "model": model_name or self.model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": temperature if temperature is not None else self.default_temperature,
+            "top_p": top_p if top_p is not None else self.default_top_p,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        try:
+            response = requests.post(
+                f"{target_base_url}/v1/chat/completions",
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise LLMError(f"llama.cpp request failed: {exc}") from exc
+        body = response.json()
+        try:
+            return self._strip_reasoning_wrappers(body["choices"][0]["message"]["content"])
+        except (KeyError, IndexError) as exc:
+            raise LLMError(f"Unexpected llama.cpp response shape: {body}") from exc

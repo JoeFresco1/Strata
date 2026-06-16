@@ -14,6 +14,8 @@ DATA_DIR = ROOT_DIR / "data"
 EXPORTS_DIR = ROOT_DIR / "exports"
 DEFAULT_DB_PATH = DATA_DIR / "specforge.db"
 DEFAULT_PROMPTS_PATH = ROOT_DIR / "prompts.json"
+DEFAULT_POSTGRES_URL = "postgresql://postgres@127.0.0.1:55433/specforge"
+DEFAULT_POSTGRES_ADMIN_URL = "postgresql://postgres@127.0.0.1:55433/postgres"
 DEFAULT_MODEL_ROOT = Path(
     os.getenv("SPECFORGE_MODEL_ROOT", r"C:\Users\Fresc\.cache\lm-studio\models")
 )
@@ -28,9 +30,21 @@ DEFAULT_LLAMA_SERVER_CANDIDATES = [
     Path(r"C:\Users\Fresc\Downloads\llama-server.exe"),
 ]
 
+EMBEDDING_MODEL_PRESETS = [
+    "sentence-transformers/all-MiniLM-L6-v2",
+    "sentence-transformers/all-mpnet-base-v2",
+    "BAAI/bge-small-en-v1.5",
+    "BAAI/bge-base-en-v1.5",
+    "nomic-ai/nomic-embed-text-v1.5",
+    "mixedbread-ai/mxbai-embed-large-v1",
+]
+
 
 @dataclass(slots=True)
 class AppConfig:
+    database_backend: str = os.getenv("SPECFORGE_DB_BACKEND", "postgres")
+    database_url: str = os.getenv("SPECFORGE_DATABASE_URL", DEFAULT_POSTGRES_URL)
+    postgres_admin_url: str = os.getenv("SPECFORGE_POSTGRES_ADMIN_URL", DEFAULT_POSTGRES_ADMIN_URL)
     db_path: Path = Path(os.getenv("SPECFORGE_DB_PATH", DEFAULT_DB_PATH))
     exports_dir: Path = Path(os.getenv("SPECFORGE_EXPORTS_DIR", EXPORTS_DIR))
     llama_base_url: str = os.getenv("LLAMA_BASE_URL", "http://127.0.0.1:8080")
@@ -52,6 +66,14 @@ class AppConfig:
     llama_host: str = os.getenv("LLAMA_HOST", "127.0.0.1")
     llama_port: int = int(os.getenv("LLAMA_PORT", "8080"))
     prompts_path: Path = Path(os.getenv("SPECFORGE_PROMPTS_PATH", DEFAULT_PROMPTS_PATH))
+    embeddings_enabled: bool = os.getenv("SPECFORGE_EMBEDDINGS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    embeddings_model_name: str = os.getenv("SPECFORGE_EMBEDDINGS_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    embeddings_insecure_download_fallback: bool = os.getenv(
+        "SPECFORGE_EMBEDDINGS_INSECURE_DOWNLOAD_FALLBACK", "true"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    pillar_similarity_threshold: float = float(os.getenv("SPECFORGE_PILLAR_SIMILARITY_THRESHOLD", "0.78"))
+    pillar_similarity_block_threshold: float = float(os.getenv("SPECFORGE_PILLAR_SIMILARITY_BLOCK_THRESHOLD", "0.9"))
+    pillar_similarity_top_k: int = int(os.getenv("SPECFORGE_PILLAR_SIMILARITY_TOP_K", "3"))
 
 
 @dataclass(slots=True)
@@ -65,6 +87,24 @@ def ensure_runtime_dirs(config: AppConfig) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     config.exports_dir.mkdir(parents=True, exist_ok=True)
     (ROOT_DIR / ".runtime" / "logs").mkdir(parents=True, exist_ok=True)
+
+
+def using_postgres(config: AppConfig) -> bool:
+    """Return whether SpecForge should use PostgreSQL as the active database backend."""
+    return config.database_backend.strip().lower() == "postgres"
+
+
+def resolve_database_target(config: AppConfig) -> str | Path:
+    """Return the active database target for the configured backend."""
+    if using_postgres(config):
+        return config.database_url
+    return config.db_path
+
+
+def describe_database_target(config: AppConfig) -> str:
+    """Return a human-readable description of the active database target."""
+    target = resolve_database_target(config)
+    return str(target)
 
 
 def discover_gguf_models(model_root: Path | None = None) -> list[Path]:
@@ -82,6 +122,7 @@ def choose_default_model(model_paths: list[Path]) -> Path | None:
         key=lambda path: (
             0 if "no-thinking" in str(path).lower() else 1,
             0 if "qwen 3.6 27b" in str(path).lower() else 1,
+            0 if "qwen" in str(path).lower() else 1,
             0 if "q3_k_m" in str(path).lower() else 1,
             0 if "qwen3.5-9b-q6_k" in str(path).lower() else 1,
             len(str(path)),
@@ -138,6 +179,7 @@ def _slugify_model_name(value: str) -> str:
 
 def build_model_profiles(config: AppConfig) -> list[ModelProfile]:
     profiles: list[ModelProfile] = []
+    seen_paths: set[Path] = set()
     for path in discover_gguf_models(config.model_root):
         lower_path = str(path).lower()
         if "mmproj" in lower_path:
@@ -151,6 +193,21 @@ def build_model_profiles(config: AppConfig) -> list[ModelProfile]:
                 path=path,
             )
         )
+        seen_paths.add(path.resolve())
+    if config.preferred_model_path:
+        preferred = Path(config.preferred_model_path)
+        if preferred.exists():
+            resolved = preferred.resolve()
+            if resolved not in seen_paths and preferred.suffix.lower() == ".gguf":
+                display_name = f"Custom | {preferred.name}"
+                profiles.insert(
+                    0,
+                    ModelProfile(
+                        alias=_slugify_model_name(display_name),
+                        display_name=display_name,
+                        path=preferred,
+                    ),
+                )
     return profiles
 
 

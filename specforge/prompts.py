@@ -14,6 +14,13 @@ def _format_list(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
+def _format_scalar(value: str | None, *, fallback: str = "None") -> str:
+    """Render a single prompt value without forcing callers to special-case missing data."""
+    if value is None or not str(value).strip():
+        return fallback
+    return str(value).strip()
+
+
 def _format_memory_items(items: list[dict[str, Any]]) -> str:
     if not items:
         return "- None"
@@ -60,12 +67,13 @@ def build_system_prompt(prompts_path: Path | None = None) -> str:
 
 def build_pillar_prompt(
     product_idea: str,
-    rejected_ideas: list[str],
-    approved_directions: list[str],
-    existing_pillars: list[dict[str, Any]],
-    covered_families: list[str],
-    coverage_summary: str,
-    uncovered_areas: list[str],
+    user_rejected_ideas: list[str],
+    user_approved_directions: list[str],
+    persisted_pillars: list[dict[str, Any]],
+    persisted_families: list[str],
+    critic_coverage_summary: str,
+    critic_uncovered_areas: list[str],
+    critic_recommended_lens: str | None,
     lens_name: str,
     lens_instruction: str,
     model_role: str,
@@ -81,12 +89,13 @@ def build_pillar_prompt(
             "model_role": model_role,
             "role_instruction": role_instruction,
             "target_count": target_count,
-            "existing_pillars": _format_memory_items(existing_pillars),
-            "covered_families": _format_list(covered_families),
-            "coverage_summary": coverage_summary,
-            "uncovered_areas": _format_list(uncovered_areas),
-            "rejected_ideas": _format_list(rejected_ideas),
-            "approved_directions": _format_list(approved_directions),
+            "user_rejected_ideas": _format_list(user_rejected_ideas),
+            "user_approved_directions": _format_list(user_approved_directions),
+            "persisted_pillars": _format_memory_items(persisted_pillars),
+            "persisted_families": _format_list(persisted_families),
+            "critic_coverage_summary": _format_scalar(critic_coverage_summary, fallback="No critic summary yet."),
+            "critic_uncovered_areas": _format_list(critic_uncovered_areas),
+            "critic_recommended_lens": _format_scalar(critic_recommended_lens, fallback="None"),
             "product_idea": product_idea,
         },
         prompts_path=prompts_path,
@@ -224,6 +233,48 @@ def build_json_repair_prompt(
             "schema_label": schema_label,
             "schema_instructions": schema_instructions,
             "candidate_content": candidate_content,
+        },
+        prompts_path=prompts_path,
+    )
+
+
+def build_layer0_brief_extraction_prompt(
+    *,
+    current_brief: dict[str, Any],
+    conversation_tail: list[dict[str, str]],
+    user_message: str,
+    prompts_path: Path | None = None,
+) -> str:
+    """Ask the local model to convert a Plan-mode turn into canonical brief edits."""
+    return render_prompt(
+        "layer0_brief_extraction",
+        {
+            "current_brief": json.dumps(current_brief, ensure_ascii=True, indent=2),
+            "conversation_tail": json.dumps(conversation_tail[-8:], ensure_ascii=True, indent=2),
+            "user_message": user_message,
+        },
+        prompts_path=prompts_path,
+    )
+
+
+def build_layer0_plan_reply_prompt(
+    *,
+    current_brief: dict[str, Any],
+    conversation_tail: list[dict[str, str]],
+    user_message: str,
+    extracted_updates: dict[str, Any],
+    open_fields: list[str],
+    prompts_path: Path | None = None,
+) -> str:
+    """Ask the local model for a structured intake reply after extracting brief fields."""
+    return render_prompt(
+        "layer0_plan_guidance",
+        {
+            "current_brief": json.dumps(current_brief, ensure_ascii=True, indent=2),
+            "conversation_tail": json.dumps(conversation_tail[-8:], ensure_ascii=True, indent=2),
+            "user_message": user_message,
+            "extracted_updates": json.dumps(extracted_updates, ensure_ascii=True, indent=2),
+            "open_fields": json.dumps(open_fields, ensure_ascii=True),
         },
         prompts_path=prompts_path,
     )

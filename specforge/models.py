@@ -8,12 +8,65 @@ from pydantic import BaseModel, Field
 
 NodeStatus = Literal["generated", "kept", "cut", "merged", "prioritized"]
 NodeType = Literal["product_idea", "pillar", "subfeature", "spec"]
+ResearchJobStatus = Literal["queued", "running", "completed", "failed"]
+ResearchJobType = Literal["layer0_competitors", "layer1_pillar_competitors"]
+ResearchScope = Literal["layer0", "layer1"]
+CoverageStatus = Literal["supported", "partially_supported", "unclear", "not_evident"]
+AdoptionLevel = Literal["common", "emerging", "rare", "unclear"]
 
 
 class Project(BaseModel):
     id: str
     name: str
     idea: str
+    created_at: datetime
+
+
+class ProjectLLMProfile(BaseModel):
+    id: str
+    label: str
+    base_url: str = ""
+    model_name: str = ""
+    local_path: str = ""
+
+
+class ProjectEmbeddingProfile(BaseModel):
+    id: str
+    label: str
+    model_name: str
+
+
+class ProjectModelSettings(BaseModel):
+    project_id: str
+    llm_profiles: list[ProjectLLMProfile] = Field(default_factory=list)
+    embedding_profiles: list[ProjectEmbeddingProfile] = Field(default_factory=list)
+    assignments: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectBrief(BaseModel):
+    id: str
+    project_id: str
+    product_idea: str
+    known_competitors: list[str] = Field(default_factory=list)
+    constraints: str = ""
+    target_users: str = ""
+    goals: list[str] = Field(default_factory=list)
+    preferred_directions: list[str] = Field(default_factory=list)
+    rejected_directions: list[str] = Field(default_factory=list)
+    notes: str = ""
+    status: Literal["draft", "published"] = "draft"
+    created_at: datetime
+    updated_at: datetime
+
+
+class BriefConversationTurn(BaseModel):
+    id: str
+    project_id: str
+    role: Literal["user", "assistant", "system"]
+    content: str
+    extracted_updates: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
 
@@ -51,6 +104,91 @@ class ProjectMemory(BaseModel):
     content: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
+
+
+class ResearchJob(BaseModel):
+    id: str
+    project_id: str
+    scope: ResearchScope
+    scope_id: str | None = None
+    job_type: ResearchJobType
+    status: ResearchJobStatus
+    progress: int = Field(ge=0, le=100)
+    details: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ResearchSource(BaseModel):
+    id: str
+    project_id: str
+    scope: ResearchScope
+    scope_id: str | None = None
+    competitor_name: str
+    domain: str
+    url: str
+    page_type: str
+    title: str | None = None
+    status_code: int | None = None
+    fetched_at: datetime
+    content_hash: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchChunk(BaseModel):
+    id: str
+    project_id: str
+    scope: ResearchScope
+    scope_id: str | None = None
+    source_id: str
+    competitor_name: str
+    domain: str
+    url: str
+    title: str | None = None
+    chunk_index: int
+    text: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class EvidenceSnippet(BaseModel):
+    url: str
+    title: str | None = None
+    snippet: str
+    competitor_name: str
+
+
+class CompetitorCoverage(BaseModel):
+    competitor_name: str
+    domain: str | None = None
+    coverage_status: CoverageStatus
+    adoption_level: AdoptionLevel
+    summary: str
+    evidence: list[EvidenceSnippet] = Field(default_factory=list)
+    confidence: int = Field(ge=0, le=100)
+
+
+class ResearchFinding(BaseModel):
+    id: str
+    project_id: str
+    scope: ResearchScope
+    scope_id: str | None = None
+    finding_type: str
+    title: str
+    summary: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class SimilarityMatch(BaseModel):
+    node_id: str
+    title: str
+    layer: int
+    node_type: str
+    score: float
+    description: str | None = None
 
 
 class PillarCandidate(BaseModel):

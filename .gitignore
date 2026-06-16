@@ -1,5 +1,6 @@
 .venv/
 .runtime/
+.local/
 __pycache__/
 *.pyc
 *.pyo
@@ -8,3 +9,5 @@ __pycache__/
 data/*.db
 exports/*.json
 exports/*.md
+frontend/node_modules/
+frontend/dist/

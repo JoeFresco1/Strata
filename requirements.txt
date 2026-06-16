@@ -3,3 +3,10 @@ requests
 pydantic
 rapidfuzz
 python-dotenv
+fastapi
+uvicorn
+psycopg[binary]
+pgvector
+sentence-transformers
+beautifulsoup4
+trafilatura

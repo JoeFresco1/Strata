@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import ValidationError
@@ -10,6 +11,7 @@ from rapidfuzz import fuzz
 from specforge.config import ModelProfile
 from specforge.db import Database
 from specforge.dedupe import detect_possible_duplicates
+from specforge.embeddings import EmbeddingResult, EmbeddingService
 from specforge.llm import LLMError, LlamaCppClient
 from specforge.models import (
     CriticResponse,
@@ -17,9 +19,11 @@ from specforge.models import (
     PillarAssessment,
     PillarAssessmentResponse,
     PillarResponse,
+    SimilarityMatch,
     SpecResponse,
     SubfeatureResponse,
 )
+from specforge.project_settings import embedding_profiles_by_id, llm_profiles_by_id
 from specforge.prompts import (
     build_system_prompt,
     build_critic_prompt,
@@ -125,11 +129,49 @@ class IterativeGenerationSummary:
     thinking_enabled: bool
 
 
+@dataclass(slots=True)
+class Layer1MemoryChannels:
+    user_rejected_ideas: list[str]
+    user_approved_directions: list[str]
+    persisted_pillars: list[dict[str, Any]]
+    persisted_families: list[str]
+    critic_coverage_summary: str
+    critic_uncovered_areas: list[str]
+    critic_recommended_lens: str | None
+
+
+@dataclass(slots=True)
+class Layer1RoundContext:
+    siblings: list[Node]
+    coverage_memory: Any
+    memory_channels: Layer1MemoryChannels
+    lens_name: str
+    lens_instruction: str
+    model_role: str
+    role_instruction: str
+    advisory_lens: str | None
+
+
+@dataclass(slots=True)
+class Layer1RoundOutcome:
+    created_nodes: list[Node]
+    duplicate_count: int
+    filtered_count: int
+    new_family_keys: set[str]
+
+
 class GenerationService:
-    def __init__(self, db: Database, llm_client: LlamaCppClient, server_manager: LlamaServerManager | None = None):
+    def __init__(
+        self,
+        db: Database,
+        llm_client: LlamaCppClient,
+        server_manager: LlamaServerManager | None = None,
+        embedding_service: EmbeddingService | None = None,
+    ):
         self.db = db
         self.llm_client = llm_client
         self.server_manager = server_manager
+        self.embedding_service = embedding_service
         self.system_prompt = build_system_prompt()
 
     def generate_pillars(self, project_id: str) -> list[Node]:
@@ -147,7 +189,7 @@ class GenerationService:
         min_new_items_per_round: int = 2,
         stale_rounds_to_stop: int = 2,
     ) -> IterativeGenerationSummary:
-        project = self.db.get_project(project_id)
+        product_idea = self._published_product_idea(project_id)
         created_nodes: list[Node] = []
         duplicate_candidates = 0
         filtered_candidates = 0
@@ -161,52 +203,49 @@ class GenerationService:
         lenses_used: list[str] = []
         models_used: list[str] = []
         round_summaries: list[str] = []
-        active_profiles = self._resolve_layer1_profiles(model_profiles)
+        active_profiles = self._resolve_layer1_profiles(project_id, model_profiles)
 
         round_index = 0
         stop_all_models = False
         for profile in active_profiles:
             if stop_all_models:
                 break
-            models_used.append(profile.display_name)
+            models_used.append(str(profile["label"]))
             self._ensure_profile_loaded(profile, thinking_enabled=thinking_enabled)
             stale_rounds = 0
             for _ in range(max_rounds):
-                all_nodes = self.db.list_all_nodes(project_id)
-                rejected = self.db.get_rejected_ideas(project_id)
-                approved = collect_approved_directions(all_nodes)
-                siblings = self.db.list_nodes(project_id, parent_id=None, layer=1, node_type="pillar")
-                memory_packet = self._representative_pillar_memory(siblings)
-                memory = self.db.get_project_memory(
+                # Layer 1 deliberately runs as a multi-pass agentic loop:
+                # 1) generate broadly, 2) normalize to stable pillar concepts,
+                # 3) assess and prune before anything reaches the tree.
+                context = self._build_layer1_round_context(
                     project_id=project_id,
-                    scope="layer1",
-                    scope_id=None,
-                    memory_type="coverage",
+                    profile=profile,
+                    created_nodes=created_nodes,
+                    models_used=models_used,
+                    round_index=round_index,
                 )
-                lens_name, lens_instruction = self._layer1_lens_for_round(round_index, memory)
                 round_index += 1
-                lenses_used.append(f"{profile.display_name}: {lens_name}")
-                model_role, role_instruction = self._layer1_model_role(profile, models_used)
-                covered_families = self._covered_family_titles(siblings + created_nodes)
+                lenses_used.append(f"{profile['label']}: {context.lens_name}")
                 prompt = build_pillar_prompt(
-                    project.idea,
-                    rejected,
-                    approved,
-                    memory_packet,
-                    covered_families,
-                    self._coverage_summary(memory),
-                    self._uncovered_titles(memory),
-                    lens_name,
-                    lens_instruction,
-                    model_role,
-                    role_instruction,
+                    product_idea,
+                    context.memory_channels.user_rejected_ideas,
+                    context.memory_channels.user_approved_directions,
+                    context.memory_channels.persisted_pillars,
+                    context.memory_channels.persisted_families,
+                    context.memory_channels.critic_coverage_summary,
+                    context.memory_channels.critic_uncovered_areas,
+                    context.advisory_lens,
+                    context.lens_name,
+                    context.lens_instruction,
+                    context.model_role,
+                    context.role_instruction,
                     target_count=target_per_round,
                 )
-                response, raw_parsed = self._call_structured_json_pass(
+                _, raw_parsed = self._call_structured_json_pass(
                     project_id=project_id,
                     node_id=None,
                     prompt=prompt,
-                    model_alias=profile.alias,
+                    runtime_profile=profile,
                     max_tokens=2200,
                     validator=self._validate_pillars,
                     schema_label="pillar_response",
@@ -214,146 +253,81 @@ class GenerationService:
                 )
                 normalized = self._normalize_pillars(
                     project_id=project_id,
-                    product_idea=project.idea,
-                    lens_name=lens_name,
-                    existing_pillars=memory_packet,
+                    product_idea=product_idea,
+                    lens_name=context.lens_name,
+                    existing_pillars=context.memory_channels.persisted_pillars,
                     raw_pillars=raw_parsed.pillars,
-                    model_alias=profile.alias,
+                    runtime_profile=profile,
                 )
                 assessments = self._assess_pillars(
                     project_id=project_id,
-                    product_idea=project.idea,
-                    existing_pillars=memory_packet,
+                    product_idea=product_idea,
+                    existing_pillars=context.memory_channels.persisted_pillars,
                     candidate_pillars=normalized.pillars,
-                    model_alias=profile.alias,
+                    runtime_profile=profile,
+                )
+                outcome = self._persist_layer1_round(
+                    project_id=project_id,
+                    siblings=context.siblings,
+                    created_nodes=created_nodes,
+                    normalized_pillars=normalized.pillars,
+                    assessments=assessments.assessments,
+                    source_model=str(profile["label"]),
+                    source_lens=context.lens_name,
                 )
 
-                round_created: list[Node] = []
-                round_duplicates = 0
-                round_filtered = 0
-                existing_family_keys = self._existing_pillar_family_keys(siblings + created_nodes)
-                round_family_keys: set[str] = set()
-                for pillar in normalized.pillars:
-                    assessment = self._assessment_for_pillar(pillar.title, assessments.assessments)
-                    if assessment is not None and not assessment.is_true_pillar:
-                        round_filtered += 1
-                        self._record_layer1_quarantine(
-                            project_id=project_id,
-                            pillar=pillar.model_dump(),
-                            reason="not_true_pillar",
-                            assessment=assessment.model_dump(mode="json"),
-                            source_model=profile.display_name,
-                            source_lens=lens_name,
-                        )
-                        continue
-                    if assessment is not None and not self._passes_pillar_quality_gate(assessment):
-                        round_filtered += 1
-                        self._record_layer1_quarantine(
-                            project_id=project_id,
-                            pillar=pillar.model_dump(),
-                            reason="quality_gate_failed",
-                            assessment=assessment.model_dump(mode="json"),
-                            source_model=profile.display_name,
-                            source_lens=lens_name,
-                        )
-                        continue
-                    family_key = self._pillar_family_key(pillar.title, assessment)
-                    if family_key in existing_family_keys:
-                        round_duplicates += 1
-                        continue
-                    duplicate = detect_possible_duplicates(
-                        existing_nodes=siblings + created_nodes + round_created,
-                        title=(assessment.rename_to or assessment.canonical_title or pillar.title) if assessment else pillar.title,
-                        description=pillar.description,
-                    )
-                    if duplicate:
-                        round_duplicates += 1
-                        continue
-                    payload = pillar.model_dump()
-                    payload["source_lens"] = lens_name
-                    payload["source_model"] = profile.display_name
-                    if assessment is not None:
-                        payload["pillar_assessment"] = assessment.model_dump(mode="json")
-                        payload["canonical_title"] = assessment.canonical_title
-                        payload["cluster_id"] = assessment.cluster_id
-                    save_title = pillar.title
-                    if assessment is not None:
-                        save_title = assessment.sharpen_to or assessment.rename_to or assessment.canonical_title or pillar.title
-                    family_key = self._pillar_family_key(save_title, assessment)
-                    existing_family_keys.add(family_key)
-                    round_family_keys.add(family_key)
-                    round_created.append(
-                        self.db.create_node(
-                            project_id=project_id,
-                            parent_id=None,
-                            layer=1,
-                            node_type="pillar",
-                            title=save_title,
-                            description=pillar.description,
-                            json_payload=payload,
-                        )
-                    )
-
-                created_nodes.extend(round_created)
-                duplicate_candidates += round_duplicates
-                filtered_candidates += round_filtered
-                per_round_new_counts.append(len(round_created))
-                per_round_new_family_counts.append(len(round_family_keys))
+                created_nodes.extend(outcome.created_nodes)
+                duplicate_candidates += outcome.duplicate_count
+                filtered_candidates += outcome.filtered_count
+                per_round_new_counts.append(len(outcome.created_nodes))
+                per_round_new_family_counts.append(len(outcome.new_family_keys))
 
                 critic = self._run_critic(
                     project_id=project_id,
                     scope="layer1",
                     scope_id=None,
                     layer_name="Layer 1 Feature Pillars",
-                    product_idea=project.idea,
-                    parent_context=f"Top-level product decomposition | model phase: {profile.display_name}",
-                    existing_nodes=siblings,
-                    new_nodes=round_created,
-                    model_alias=profile.alias,
+                    product_idea=product_idea,
+                    parent_context=f"Top-level product decomposition | model phase: {profile['label']}",
+                    existing_nodes=context.siblings,
+                    new_nodes=outcome.created_nodes,
+                    runtime_profile=profile,
                 )
                 final_coverage_summary = critic.coverage_summary
                 final_novelty_score = critic.novelty_score
                 round_summaries.append(
                     self._format_layer1_round_summary(
-                        profile_name=profile.display_name,
-                        lens_name=lens_name,
-                        created_count=len(round_created),
-                        new_family_count=len(round_family_keys),
-                        duplicate_count=round_duplicates,
-                        filtered_count=round_filtered,
+                        profile_name=str(profile["label"]),
+                        lens_name=context.lens_name,
+                        created_count=len(outcome.created_nodes),
+                        new_family_count=len(outcome.new_family_keys),
+                        duplicate_count=outcome.duplicate_count,
+                        filtered_count=outcome.filtered_count,
                         novelty_score=critic.novelty_score,
                         saturation_signal=critic.saturation_signal,
                     )
                 )
 
-                if len(round_created) < min_new_items_per_round:
+                if len(outcome.created_nodes) < min_new_items_per_round:
                     stale_rounds += 1
                 else:
                     stale_rounds = 0
-                if len(round_family_keys) == 0:
+                if len(outcome.new_family_keys) == 0:
                     stale_family_rounds += 1
                 else:
                     stale_family_rounds = 0
 
-                if not critic.continue_recommendation:
-                    stop_reason = f"critic_stopped_{critic.saturation_signal}"
-                    stop_all_models = True
-                    break
-                if critic.saturation_signal == "high" and critic.novelty_score <= 25:
-                    stop_reason = "critic_detected_saturation"
-                    stop_all_models = True
-                    break
-                if len(round_created) == 0 and round_duplicates > 0:
-                    stop_reason = f"model_repeated_existing_pillars_{profile.alias}"
-                    break
-                if stale_rounds >= stale_rounds_to_stop:
-                    stop_reason = "novelty_exhausted"
-                    break
-                if stale_family_rounds >= stale_rounds_to_stop:
-                    stop_reason = "family_spread_exhausted"
-                    break
-                if not normalized.pillars:
-                    stop_reason = f"model_returned_no_additional_pillars_{profile.alias}"
+                stop_reason, stop_all_models = self._layer1_stop_decision(
+                    critic=critic,
+                    profile=profile,
+                    normalized_count=len(normalized.pillars),
+                    created_count=len(outcome.created_nodes),
+                    duplicate_count=outcome.duplicate_count,
+                    stale_rounds=stale_rounds,
+                    stale_family_rounds=stale_family_rounds,
+                    stale_rounds_to_stop=stale_rounds_to_stop,
+                )
+                if stop_reason != "continue":
                     break
 
         return IterativeGenerationSummary(
@@ -372,6 +346,315 @@ class GenerationService:
             round_summaries=round_summaries,
             thinking_enabled=thinking_enabled,
         )
+
+    def _build_layer1_round_context(
+        self,
+        *,
+        project_id: str,
+        profile: dict[str, Any],
+        created_nodes: list[Node],
+        models_used: list[str],
+        round_index: int,
+    ) -> Layer1RoundContext:
+        siblings = self.db.list_nodes(project_id, parent_id=None, layer=1, node_type="pillar")
+        self._ensure_pillar_embeddings(project_id, siblings)
+        coverage_memory = self.db.get_project_memory(
+            project_id=project_id,
+            scope="layer1",
+            scope_id=None,
+            memory_type="coverage",
+        )
+        model_role, role_instruction = self._layer1_model_role(profile, models_used)
+        lens_name, lens_instruction = self._layer1_lens_for_round(round_index, model_role=model_role)
+        advisory_lens = self._critic_advisory_lens(coverage_memory)
+        return Layer1RoundContext(
+            siblings=siblings,
+            coverage_memory=coverage_memory,
+            memory_channels=self._layer1_memory_channels(
+                project_id=project_id,
+                siblings=siblings,
+                created_nodes=created_nodes,
+                coverage_memory=coverage_memory,
+                model_role=model_role,
+            ),
+            lens_name=lens_name,
+            lens_instruction=lens_instruction,
+            model_role=model_role,
+            role_instruction=role_instruction,
+            advisory_lens=advisory_lens,
+        )
+
+    def _persist_layer1_round(
+        self,
+        *,
+        project_id: str,
+        siblings: list[Node],
+        created_nodes: list[Node],
+        normalized_pillars: list[Any],
+        assessments: list[PillarAssessment],
+        source_model: str,
+        source_lens: str,
+    ) -> Layer1RoundOutcome:
+        round_created: list[Node] = []
+        round_duplicates = 0
+        round_filtered = 0
+        existing_family_keys = self._existing_pillar_family_keys(siblings + created_nodes)
+        round_family_keys: set[str] = set()
+
+        for pillar in normalized_pillars:
+            assessment = self._assessment_for_pillar(pillar.title, assessments)
+            filter_reason = self._layer1_filter_reason(assessment)
+            if filter_reason is not None:
+                round_filtered += 1
+                self._record_layer1_quarantine(
+                    project_id=project_id,
+                    pillar=pillar.model_dump(),
+                    reason=filter_reason,
+                    assessment=assessment.model_dump(mode="json") if assessment is not None else None,
+                    source_model=source_model,
+                    source_lens=source_lens,
+                )
+                continue
+
+            candidate_title = self._candidate_pillar_title(pillar.title, assessment)
+            family_key = self._pillar_family_key(candidate_title, assessment)
+            if family_key in existing_family_keys:
+                round_duplicates += 1
+                continue
+
+            payload = self._layer1_payload(pillar.model_dump(), assessment, source_model, source_lens)
+            lexical_duplicate = detect_possible_duplicates(
+                existing_nodes=siblings + created_nodes + round_created,
+                title=candidate_title,
+                description=pillar.description,
+            )
+            if lexical_duplicate:
+                payload["lexical_similarity"] = lexical_duplicate
+
+            embedding_result, similarity_matches = self._pillar_similarity_result(
+                project_id=project_id,
+                title=candidate_title,
+                description=pillar.description,
+                payload=payload,
+            )
+            if self._should_block_on_semantic_overlap(similarity_matches):
+                round_duplicates += 1
+                self._record_layer1_quarantine(
+                    project_id=project_id,
+                    pillar=pillar.model_dump(),
+                    reason="semantic_overlap_blocked",
+                    assessment=assessment.model_dump(mode="json") if assessment is not None else None,
+                    source_model=source_model,
+                    source_lens=source_lens,
+                )
+                continue
+
+            if similarity_matches:
+                payload["semantic_similarity"] = self._semantic_similarity_payload(similarity_matches)
+            existing_family_keys.add(family_key)
+            round_family_keys.add(family_key)
+            created_node = self.db.create_node(
+                project_id=project_id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title=candidate_title,
+                description=pillar.description,
+                json_payload=payload,
+            )
+            self._store_pillar_embedding(project_id, created_node, embedding_result)
+            round_created.append(created_node)
+
+        return Layer1RoundOutcome(
+            created_nodes=round_created,
+            duplicate_count=round_duplicates,
+            filtered_count=round_filtered,
+            new_family_keys=round_family_keys,
+        )
+
+    def _should_block_on_semantic_overlap(self, matches: list[SimilarityMatch]) -> bool:
+        """Use embeddings as the primary Layer 1 overlap gate once canonical-family checks have already run."""
+        if not matches:
+            return False
+        return matches[0].score >= self.embedding_service.config.pillar_similarity_block_threshold if self.embedding_service is not None else False
+
+    def _layer1_memory_channels(
+        self,
+        *,
+        project_id: str,
+        siblings: list[Node],
+        created_nodes: list[Node],
+        coverage_memory: Any,
+        model_role: str,
+    ) -> Layer1MemoryChannels:
+        """Build source-typed Layer 1 memory so later models can distinguish hard constraints from advisory inferences."""
+        all_nodes = self.db.list_all_nodes(project_id)
+        persisted_nodes = siblings if model_role == "Explorer" else self._challenger_visible_pillars(siblings)
+        return Layer1MemoryChannels(
+            user_rejected_ideas=self.db.get_rejected_ideas(project_id),
+            user_approved_directions=collect_approved_directions(all_nodes),
+            persisted_pillars=self._representative_pillar_memory(persisted_nodes),
+            persisted_families=self._covered_family_titles(siblings + created_nodes),
+            critic_coverage_summary=self._coverage_summary(coverage_memory),
+            critic_uncovered_areas=self._uncovered_titles(coverage_memory),
+            critic_recommended_lens=self._critic_advisory_lens(coverage_memory),
+        )
+
+    @staticmethod
+    def _challenger_visible_pillars(nodes: list[Node]) -> list[Node]:
+        """Show challenger rounds a thinner slice of saved pillar state so they are less anchored to the current frame."""
+        if len(nodes) <= 12:
+            return nodes
+        return [node for index, node in enumerate(nodes) if index % 2 == 0][:12]
+
+    @staticmethod
+    def _layer1_filter_reason(assessment: PillarAssessment | None) -> str | None:
+        if assessment is not None and not assessment.is_true_pillar:
+            return "not_true_pillar"
+        if assessment is not None and not GenerationService._passes_pillar_quality_gate(assessment):
+            return "quality_gate_failed"
+        return None
+
+    @staticmethod
+    def _candidate_pillar_title(title: str, assessment: PillarAssessment | None) -> str:
+        if assessment is None:
+            return title
+        return assessment.sharpen_to or assessment.rename_to or assessment.canonical_title or title
+
+    @staticmethod
+    def _layer1_payload(
+        base_payload: dict[str, Any],
+        assessment: PillarAssessment | None,
+        source_model: str,
+        source_lens: str,
+    ) -> dict[str, Any]:
+        payload = dict(base_payload)
+        payload["source_lens"] = source_lens
+        payload["source_model"] = source_model
+        if assessment is not None:
+            payload["pillar_assessment"] = assessment.model_dump(mode="json")
+            payload["canonical_title"] = assessment.canonical_title
+            payload["cluster_id"] = assessment.cluster_id
+        return payload
+
+    def refresh_pillar_semantic_metadata(self, node_id: str) -> Node:
+        """Recompute semantic-overlap metadata and embeddings for an existing Layer 1 pillar."""
+        node = self.db.get_node(node_id)
+        if node.node_type != "pillar" or node.layer != 1:
+            return node
+        payload = dict(node.json_payload or {})
+        embedding_result, similarity_matches = self._pillar_similarity_result(
+            project_id=node.project_id,
+            title=node.title,
+            description=node.description or "",
+            payload=payload,
+            exclude_node_ids=[node.id],
+        )
+        if similarity_matches:
+            payload["semantic_similarity"] = self._semantic_similarity_payload(similarity_matches)
+        else:
+            payload.pop("semantic_similarity", None)
+        updated = self.db.update_node(node.id, json_payload=payload)
+        self._store_pillar_embedding(node.project_id, updated, embedding_result)
+        return updated
+
+    @staticmethod
+    def _semantic_similarity_payload(matches: list[SimilarityMatch]) -> dict[str, Any]:
+        """Convert similarity matches into compact JSON the review UI can render easily."""
+        return {
+            "matches": [match.model_dump(mode="json") for match in matches],
+            "top_score": round(matches[0].score, 4) if matches else None,
+        }
+
+    def _pillar_similarity_result(
+        self,
+        *,
+        project_id: str,
+        title: str,
+        description: str,
+        payload: dict[str, Any],
+        exclude_node_ids: list[str] | None = None,
+    ) -> tuple[EmbeddingResult | None, list[SimilarityMatch]]:
+        """Embed a pillar and return cosine-similar saved Layer 1 pillars from the same project."""
+        if self.embedding_service is None or not self.embedding_service.enabled() or not self.db.is_postgres:
+            return None, []
+        embedding_model_name = self._embedding_model_name(project_id, "layer1_similarity_embeddings")
+        text = self.embedding_service.pillar_text(title, description, payload)
+        embedding_result = self.embedding_service.embed_text(text, model_name=embedding_model_name)
+        matches = self.embedding_service.find_similar_pillars(
+            db=self.db,
+            project_id=project_id,
+            embedding_model=embedding_model_name,
+            embedding=embedding_result.vector,
+            exclude_node_ids=exclude_node_ids,
+        )
+        return embedding_result, matches
+
+    def _ensure_pillar_embeddings(self, project_id: str, nodes: list[Node]) -> None:
+        """Backfill embeddings for existing pillars so similarity checks have real context."""
+        if self.embedding_service is None or not self.embedding_service.enabled() or not self.db.is_postgres:
+            return
+        embedding_model_name = self._embedding_model_name(project_id, "layer1_similarity_embeddings")
+        for node in nodes:
+            text = self.embedding_service.pillar_text(node)
+            embedding_result = self.embedding_service.embed_text(text, model_name=embedding_model_name)
+            existing_hash = self.db.get_node_embedding_hash(node.id, embedding_model_name)
+            if existing_hash == embedding_result.content_hash:
+                continue
+            self.db.upsert_node_embedding(
+                project_id=project_id,
+                node_id=node.id,
+                embedding_model=embedding_model_name,
+                embedding=embedding_result.vector,
+                content_hash=embedding_result.content_hash,
+            )
+
+    def _store_pillar_embedding(
+        self,
+        project_id: str,
+        node: Node,
+        embedding_result: EmbeddingResult | None,
+    ) -> None:
+        """Persist the embedding for a pillar after create or refresh operations."""
+        if self.embedding_service is None or not self.embedding_service.enabled() or not self.db.is_postgres:
+            return
+        embedding_model_name = self._embedding_model_name(project_id, "layer1_similarity_embeddings")
+        if embedding_result is None:
+            text = self.embedding_service.pillar_text(node)
+            embedding_result = self.embedding_service.embed_text(text, model_name=embedding_model_name)
+        self.db.upsert_node_embedding(
+            project_id=project_id,
+            node_id=node.id,
+            embedding_model=embedding_model_name,
+            embedding=embedding_result.vector,
+            content_hash=embedding_result.content_hash,
+        )
+
+    @staticmethod
+    def _layer1_stop_decision(
+        *,
+        critic: CriticResponse,
+        profile: dict[str, Any],
+        normalized_count: int,
+        created_count: int,
+        duplicate_count: int,
+        stale_rounds: int,
+        stale_family_rounds: int,
+        stale_rounds_to_stop: int,
+    ) -> tuple[str, bool]:
+        if not critic.continue_recommendation:
+            return f"critic_stopped_{critic.saturation_signal}", True
+        if critic.saturation_signal == "high" and critic.novelty_score <= 25:
+            return "critic_detected_saturation", True
+        if created_count == 0 and duplicate_count > 0:
+            return f"model_repeated_existing_pillars_{profile['id']}", False
+        if stale_rounds >= stale_rounds_to_stop:
+            return "novelty_exhausted", False
+        if stale_family_rounds >= stale_rounds_to_stop:
+            return "family_spread_exhausted", False
+        if normalized_count == 0:
+            return f"model_returned_no_additional_pillars_{profile['id']}", False
+        return "continue", False
 
     def generate_subfeatures_until_exhausted(
         self,
@@ -397,7 +680,8 @@ class GenerationService:
         final_coverage_summary = ""
         final_novelty_score: int | None = None
         round_summaries: list[str] = []
-        self._ensure_current_server_mode(thinking_enabled=thinking_enabled)
+        runtime_profile = self._project_llm_runtime(project_id, "layer2_generation")
+        self._ensure_profile_loaded(runtime_profile, thinking_enabled=thinking_enabled)
 
         for _ in range(max_rounds):
             approved = collect_approved_directions(self.db.list_all_nodes(project_id))
@@ -424,7 +708,7 @@ class GenerationService:
                 project_id=project_id,
                 node_id=pillar_id,
                 prompt=prompt,
-                model_alias=None,
+                runtime_profile=runtime_profile,
                 max_tokens=2600,
                 validator=self._validate_subfeatures,
                 schema_label="subfeature_response",
@@ -467,6 +751,7 @@ class GenerationService:
                 parent_context=f"{pillar.title}: {pillar.description or ''}",
                 existing_nodes=siblings,
                 new_nodes=round_created,
+                runtime_profile=runtime_profile,
             )
             final_coverage_summary = critic.coverage_summary
             final_novelty_score = critic.novelty_score
@@ -522,7 +807,8 @@ class GenerationService:
         )
 
     def generate_subfeatures(self, project_id: str, pillar_ids: list[str]) -> list[Node]:
-        self._ensure_current_server_mode(thinking_enabled=False)
+        runtime_profile = self._project_llm_runtime(project_id, "layer2_generation")
+        self._ensure_profile_loaded(runtime_profile, thinking_enabled=False)
         project = self.db.get_project(project_id)
         rejected = self.db.get_rejected_ideas(project_id)
         approved = collect_approved_directions(self.db.list_all_nodes(project_id))
@@ -552,7 +838,7 @@ class GenerationService:
                 project_id=project_id,
                 node_id=pillar_id,
                 prompt=prompt,
-                model_alias=None,
+                runtime_profile=runtime_profile,
                 max_tokens=2600,
                 validator=self._validate_subfeatures,
                 schema_label="subfeature_response",
@@ -584,7 +870,8 @@ class GenerationService:
         return created
 
     def generate_specs(self, project_id: str, subfeature_ids: list[str], *, thinking_enabled: bool = False) -> list[Node]:
-        self._ensure_current_server_mode(thinking_enabled=thinking_enabled)
+        runtime_profile = self._project_llm_runtime(project_id, "layer3_generation")
+        self._ensure_profile_loaded(runtime_profile, thinking_enabled=thinking_enabled)
         project = self.db.get_project(project_id)
         rejected = self.db.get_rejected_ideas(project_id)
         approved = collect_approved_directions(self.db.list_all_nodes(project_id))
@@ -608,7 +895,7 @@ class GenerationService:
                 project_id=project_id,
                 node_id=subfeature_id,
                 prompt=prompt,
-                model_alias=None,
+                runtime_profile=runtime_profile,
                 max_tokens=3200,
                 validator=self._validate_specs,
                 schema_label="spec_response",
@@ -668,7 +955,7 @@ class GenerationService:
         parent_context: str,
         existing_nodes: list[Node],
         new_nodes: list[Node],
-        model_alias: str | None = None,
+        runtime_profile: dict[str, Any] | None = None,
     ) -> CriticResponse:
         previous_memory = self.db.get_project_memory(
             project_id=project_id,
@@ -689,7 +976,7 @@ class GenerationService:
             project_id=project_id,
             node_id=scope_id,
             prompt=prompt,
-            model_alias=model_alias,
+            runtime_profile=runtime_profile,
             max_tokens=1800,
             temperature=0.2,
             validator=self._validate_critic,
@@ -713,7 +1000,7 @@ class GenerationService:
         lens_name: str,
         existing_pillars: list[dict[str, str]],
         raw_pillars: list[Any],
-        model_alias: str | None = None,
+        runtime_profile: dict[str, Any] | None = None,
     ) -> PillarResponse:
         raw_candidates = [
             {
@@ -734,7 +1021,7 @@ class GenerationService:
             project_id=project_id,
             node_id=None,
             prompt=prompt,
-            model_alias=model_alias,
+            runtime_profile=runtime_profile,
             max_tokens=2200,
             temperature=0.2,
             validator=self._validate_pillars,
@@ -750,7 +1037,7 @@ class GenerationService:
         product_idea: str,
         existing_pillars: list[dict[str, str]],
         candidate_pillars: list[Any],
-        model_alias: str | None = None,
+        runtime_profile: dict[str, Any] | None = None,
     ) -> PillarAssessmentResponse:
         candidate_packet = [
             {
@@ -770,7 +1057,7 @@ class GenerationService:
             project_id=project_id,
             node_id=None,
             prompt=prompt,
-            model_alias=model_alias,
+            runtime_profile=runtime_profile,
             max_tokens=2200,
             temperature=0.2,
             validator=self._validate_pillar_assessment,
@@ -821,6 +1108,8 @@ class GenerationService:
             family_key = "".join(ch.lower() for ch in str(canonical_title) if ch.isalnum())
             if not family_key or family_key in representatives:
                 continue
+            # One representative per family keeps Layer 1 prompts compact without
+            # losing the semantic shape of what has already been explored.
             representatives[family_key] = {
                 "title": str(canonical_title),
                 "description": (node.description or "")[:180],
@@ -846,20 +1135,18 @@ class GenerationService:
             raise LLMError(f"Invalid pillar assessment payload: {exc}") from exc
 
     @staticmethod
-    def _layer1_lens_for_round(round_index: int, memory: Any) -> tuple[str, str]:
-        if memory and isinstance(memory.content.get("recommended_next_lens"), str):
-            recommended = memory.content["recommended_next_lens"]
-            for lens_name, lens_instruction in LAYER1_LENSES:
-                if lens_name == recommended:
-                    return lens_name, lens_instruction
-        uncovered_titles = GenerationService._uncovered_titles(memory)
-        if uncovered_titles:
-            title_blob = " ".join(uncovered_titles).lower()
-            for lens_name, lens_instruction in LAYER1_LENSES:
-                lens_blob = f"{lens_name} {lens_instruction}".lower()
-                if any(word in lens_blob for word in title_blob.split()):
-                    return lens_name, lens_instruction
+    def _layer1_lens_for_round(round_index: int, *, model_role: str) -> tuple[str, str]:
+        """Choose the active lens without letting critic recommendations directly control the sequence."""
+        if model_role == "Challenger":
+            return LAYER1_LENSES[(round_index + 2) % len(LAYER1_LENSES)]
         return LAYER1_LENSES[round_index % len(LAYER1_LENSES)]
+
+    @staticmethod
+    def _critic_advisory_lens(memory: Any) -> str | None:
+        """Expose the critic-suggested lens as a soft advisory signal rather than a routing directive."""
+        if memory and isinstance(memory.content.get("recommended_next_lens"), str):
+            return memory.content["recommended_next_lens"]
+        return None
 
     @staticmethod
     def _assessment_for_pillar(title: str, assessments: list[PillarAssessment]) -> PillarAssessment | None:
@@ -948,7 +1235,7 @@ class GenerationService:
         )
 
     @staticmethod
-    def _layer1_model_role(profile: ModelProfile, models_used: list[str]) -> tuple[str, str]:
+    def _layer1_model_role(profile: dict[str, Any], models_used: list[str]) -> tuple[str, str]:
         if len(models_used) <= 1:
             return (
                 "Explorer",
@@ -956,42 +1243,76 @@ class GenerationService:
             )
         return (
             "Challenger",
-            "Do not re-cover established territory. Hunt for missing pillar families, blind spots, and underexplored strategic areas."
+            "Do not re-cover established territory. Treat critic guidance as hypothesis, not law, and hunt for missing pillar families, blind spots, and alternate top-level framings."
         )
 
-    def _resolve_layer1_profiles(self, model_profiles: list[ModelProfile] | None) -> list[ModelProfile]:
+    def _resolve_layer1_profiles(
+        self,
+        project_id: str | None = None,
+        model_profiles: list[ModelProfile] | None = None,
+    ) -> list[dict[str, Any]]:
         if model_profiles:
-            return model_profiles
+            return [
+                {
+                    "id": profile.alias,
+                    "label": profile.display_name,
+                    "base_url": "",
+                    "model_name": profile.alias,
+                    "local_path": str(profile.path) if profile.path else "",
+                }
+                for profile in model_profiles
+            ]
+        settings = self.db.get_project_model_settings(project_id) if project_id is not None else None
+        if settings is not None:
+            payload = settings.model_dump(mode="json")
+            profiles = llm_profiles_by_id(payload)
+            assignment = payload.get("assignments", {}).get("layer1_generation", [])
+            if isinstance(assignment, list):
+                resolved = [profiles[item] for item in assignment if item in profiles]
+                if resolved:
+                    return resolved
         if self.server_manager is not None:
             current_alias = self.server_manager.get_loaded_model_alias()
             if current_alias:
                 managed_profile = self.server_manager.get_managed_profile(current_alias)
                 if managed_profile is not None:
-                    return [managed_profile]
-                return [ModelProfile(alias=current_alias, display_name=current_alias, path=None)]
+                    return [
+                        {
+                            "id": managed_profile.alias,
+                            "label": managed_profile.display_name,
+                            "base_url": "",
+                            "model_name": managed_profile.alias,
+                            "local_path": str(managed_profile.path) if managed_profile.path else "",
+                        }
+                    ]
+                return [{"id": current_alias, "label": current_alias, "base_url": "", "model_name": current_alias, "local_path": ""}]
         fallback_alias = self.llm_client.model_name or "default"
-        return [ModelProfile(alias=fallback_alias, display_name=fallback_alias, path=None)]
+        return [{"id": fallback_alias, "label": fallback_alias, "base_url": "", "model_name": fallback_alias, "local_path": ""}]
 
-    def _ensure_profile_loaded(self, profile: ModelProfile, *, thinking_enabled: bool = False) -> None:
-        if profile.path is None:
+    def _published_product_idea(self, project_id: str) -> str:
+        """Return the published Layer 0 idea, blocking Layer 1 while the brief is draft."""
+        brief = self.db.get_project_brief(project_id)
+        if brief is None or brief.status != "published":
+            raise ValueError("Publish the Layer 0 brief before generating Layer 1.")
+        return brief.product_idea
+
+    def _ensure_profile_loaded(self, profile: dict[str, Any], *, thinking_enabled: bool = False) -> None:
+        local_path = str(profile.get("local_path", "")).strip()
+        if not local_path:
             return
         if self.server_manager is None:
             raise LLMError("Model sequencing requires a server manager, but none is configured.")
         try:
-            self.server_manager.ensure_model_loaded(profile, thinking_enabled=thinking_enabled)
+            self.server_manager.ensure_model_loaded(
+                ModelProfile(
+                    alias=str(profile["id"]),
+                    display_name=str(profile.get("label", profile["id"])),
+                    path=Path(local_path),
+                ),
+                thinking_enabled=thinking_enabled,
+            )
         except ServerManagerError as exc:
             raise LLMError(str(exc)) from exc
-
-    def _ensure_current_server_mode(self, *, thinking_enabled: bool) -> None:
-        if self.server_manager is None:
-            return
-        current_alias = self.server_manager.get_loaded_model_alias()
-        if current_alias is None:
-            return
-        managed_profile = self.server_manager.get_managed_profile(current_alias)
-        if managed_profile is None:
-            return
-        self._ensure_profile_loaded(managed_profile, thinking_enabled=thinking_enabled)
 
     def _project_subfeature_nodes(self, project_id: str, *, exclude_parent_id: str | None = None) -> list[Node]:
         nodes = self.db.list_nodes(project_id, parent_id="__any__", layer=2, node_type="subfeature")
@@ -1039,13 +1360,58 @@ class GenerationService:
             content={"items": items[-100:]},
         )
 
+    def _project_llm_runtime(self, project_id: str, assignment: str) -> dict[str, Any]:
+        """Resolve a project-scoped LLM profile for the requested assignment."""
+        settings = self.db.get_project_model_settings(project_id)
+        if settings is None:
+            fallback_alias = self.llm_client.model_name or "default"
+            return {"id": fallback_alias, "label": fallback_alias, "base_url": "", "model_name": fallback_alias, "local_path": ""}
+        payload = settings.model_dump(mode="json")
+        assignment_id = str(payload.get("assignments", {}).get(assignment, "")).strip()
+        profile = llm_profiles_by_id(payload).get(assignment_id)
+        if profile is not None:
+            return profile
+        fallback_alias = self.llm_client.model_name or "default"
+        return {"id": fallback_alias, "label": fallback_alias, "base_url": "", "model_name": fallback_alias, "local_path": ""}
+
+    def _embedding_model_name(self, project_id: str, assignment: str) -> str:
+        """Resolve the embedding model configured for this project assignment."""
+        if self.embedding_service is None:
+            return ""
+        settings = self.db.get_project_model_settings(project_id)
+        if settings is None:
+            return self.embedding_service.model_name
+        payload = settings.model_dump(mode="json")
+        assignment_id = str(payload.get("assignments", {}).get(assignment, "")).strip()
+        profile = embedding_profiles_by_id(payload).get(assignment_id)
+        if profile is None:
+            return self.embedding_service.model_name
+        return str(profile.get("model_name", "")).strip() or self.embedding_service.model_name
+
+    @staticmethod
+    def _runtime_model_name(runtime_profile: dict[str, Any] | None) -> str | None:
+        """Choose the model identifier sent to the target chat endpoint."""
+        if runtime_profile is None:
+            return None
+        local_path = str(runtime_profile.get("local_path", "")).strip()
+        if local_path:
+            return str(runtime_profile.get("id", "")).strip() or None
+        return str(runtime_profile.get("model_name", "")).strip() or None
+
+    @staticmethod
+    def _runtime_base_url(runtime_profile: dict[str, Any] | None) -> str | None:
+        """Choose the endpoint URL used for a scoped chat request."""
+        if runtime_profile is None:
+            return None
+        return str(runtime_profile.get("base_url", "")).strip() or None
+
     def _call_structured_json_pass(
         self,
         *,
         project_id: str,
         node_id: str | None,
         prompt: str,
-        model_alias: str | None,
+        runtime_profile: dict[str, Any] | None,
         max_tokens: int,
         validator: Callable[[dict[str, Any]], Any],
         schema_label: str,
@@ -1059,7 +1425,8 @@ class GenerationService:
                 response = self.llm_client.generate_json(
                     system_prompt=self.system_prompt,
                     user_prompt=prompt,
-                    model_name=model_alias,
+                    model_name=self._runtime_model_name(runtime_profile),
+                    base_url=self._runtime_base_url(runtime_profile),
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
@@ -1074,6 +1441,9 @@ class GenerationService:
                 try:
                     return response, validator(response.parsed_json)
                 except LLMError:
+                    # Generation often fails because the structure is "close but
+                    # not valid". Repairing the JSON is much cheaper than rerunning
+                    # the full reasoning pass from scratch.
                     repair_prompt = build_json_repair_prompt(
                         schema_label=schema_label,
                         schema_instructions=schema_instructions,
@@ -1082,7 +1452,8 @@ class GenerationService:
                     repair_response = self.llm_client.generate_json(
                         system_prompt=self.system_prompt,
                         user_prompt=repair_prompt,
-                        model_name=model_alias,
+                        model_name=self._runtime_model_name(runtime_profile),
+                        base_url=self._runtime_base_url(runtime_profile),
                         max_tokens=max_tokens,
                         temperature=0.1,
                     )

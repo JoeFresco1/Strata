@@ -16,9 +16,11 @@ def build_tree(nodes: list[Node]) -> list[dict[str, Any]]:
     def _build(parent_id: str | None) -> list[dict[str, Any]]:
         branch: list[dict[str, Any]] = []
         for node in by_parent.get(parent_id, []):
+            children = _build(node.id)
             branch.append(
                 {
                     "id": node.id,
+                    "parent_id": node.parent_id,
                     "title": node.title,
                     "description": node.description,
                     "layer": node.layer,
@@ -26,7 +28,8 @@ def build_tree(nodes: list[Node]) -> list[dict[str, Any]]:
                     "status": node.status,
                     "priority": node.priority,
                     "json_payload": node.json_payload,
-                    "children": _build(node.id),
+                    "child_count": len(children),
+                    "children": children,
                 }
             )
         return branch

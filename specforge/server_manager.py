@@ -26,6 +26,11 @@ class LlamaServerManager:
         self.base_url = config.llama_base_url.rstrip("/")
         self.server_exe = resolve_llama_server_executable(config)
 
+    def refresh_runtime_settings(self) -> None:
+        """Re-read endpoint and executable settings after runtime config changes."""
+        self.base_url = self.config.llama_base_url.rstrip("/")
+        self.server_exe = resolve_llama_server_executable(self.config)
+
     def get_loaded_model_alias(self) -> str | None:
         try:
             response = requests.get(f"{self.base_url}/v1/models", timeout=5)
