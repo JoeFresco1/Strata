@@ -11,7 +11,7 @@ from specforge.embeddings import EmbeddingService
 from specforge.generation import GenerationService
 from specforge.llm import LlamaCppClient
 from specforge.models import PillarAssessment, ProjectMemory, SimilarityMatch
-from specforge.project_settings import default_project_model_settings
+from specforge.project_settings import default_project_model_settings, normalize_model_settings
 from specforge.prompts import build_pillar_prompt, build_pillar_research_assessment_prompt, build_system_prompt, render_prompt
 from specforge.brief import BriefService
 from specforge.research import ResearchService
@@ -127,6 +127,40 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(stored.embedding_profiles[0].id, "default-embedding")
             self.assertEqual(stored.assignments["layer2_generation"], "default-chat")
             self.assertEqual(stored.prompt_catalog["system_json_generator"], "You are SpecForge, a local product specification generation engine. You must return valid JSON that matches the requested schema and avoid prose outside the JSON.")
+
+
+class ProjectSettingsTests(unittest.TestCase):
+    def test_normalize_model_settings_filters_invalid_profiles_and_assignments(self) -> None:
+        config = AppConfig()
+        normalized = normalize_model_settings(
+            {
+                "llm_profiles": [
+                    {"id": "alpha", "label": "Alpha", "base_url": "http://localhost:8080/", "model_name": "alpha-model"},
+                    {"id": "alpha", "label": "Duplicate", "base_url": "http://localhost:9999", "model_name": "ignored"},
+                    {"id": "missing-model", "label": "Missing Model", "base_url": "http://localhost:8081"},
+                ],
+                "embedding_profiles": [
+                    {"id": "embed-a", "label": "Embed A", "model_name": "embed-model"},
+                    {"id": "embed-a", "label": "Duplicate", "model_name": "ignored"},
+                    {"id": "embed-bad", "label": "Broken", "model_name": ""},
+                ],
+                "assignments": {
+                    "layer0_plan": "alpha",
+                    "layer1_generation": ["alpha", "missing", ""],
+                    "research_embeddings": "embed-a",
+                    "layer0_research": "missing",
+                },
+            },
+            config,
+        )
+
+        self.assertEqual(len(normalized["llm_profiles"]), 1)
+        self.assertEqual(normalized["llm_profiles"][0]["base_url"], "http://localhost:8080")
+        self.assertEqual(len(normalized["embedding_profiles"]), 1)
+        self.assertEqual(normalized["assignments"]["layer0_plan"], "alpha")
+        self.assertEqual(normalized["assignments"]["layer1_generation"], ["alpha"])
+        self.assertEqual(normalized["assignments"]["research_embeddings"], "embed-a")
+        self.assertEqual(normalized["assignments"]["layer0_research"], "default-chat")
 
 
 class EmbeddingServiceTests(unittest.TestCase):

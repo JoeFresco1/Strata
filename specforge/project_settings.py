@@ -65,73 +65,138 @@ def default_app_model_settings(config: AppConfig) -> dict[str, Any]:
     return deepcopy(_base_model_settings(config))
 
 
+def _normalize_llm_profiles(raw_profiles: Any, fallback_profiles: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Keep valid unique LLM profiles while falling back to the runtime baseline when needed."""
+    seen_ids: set[str] = set()
+    normalized_profiles: list[dict[str, str]] = []
+    if isinstance(raw_profiles, list):
+        for raw_profile in raw_profiles:
+            if not isinstance(raw_profile, dict):
+                continue
+            normalized_profile = _normalize_llm_profile(raw_profile)
+            if normalized_profile is None:
+                continue
+            profile_id = normalized_profile["id"]
+            if profile_id in seen_ids:
+                continue
+            seen_ids.add(profile_id)
+            normalized_profiles.append(normalized_profile)
+    return normalized_profiles or fallback_profiles
+
+
+def _normalize_llm_profile(raw_profile: dict[str, Any]) -> dict[str, str] | None:
+    """Normalize one LLM profile and reject entries that cannot be used safely."""
+    profile_id = str(raw_profile.get("id", "")).strip()
+    label = str(raw_profile.get("label", "")).strip()
+    base_url = str(raw_profile.get("base_url", "")).strip().rstrip("/")
+    model_name = str(raw_profile.get("model_name", "")).strip()
+    local_path = str(raw_profile.get("local_path", "")).strip()
+    if not profile_id or not label:
+        return None
+    if not model_name and not local_path:
+        return None
+    return {
+        "id": profile_id,
+        "label": label,
+        "base_url": base_url,
+        "model_name": model_name,
+        "local_path": local_path,
+    }
+
+
+def _normalize_embedding_profiles(
+    raw_profiles: Any,
+    fallback_profiles: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Keep valid unique embedding profiles while preserving a usable fallback option."""
+    seen_ids: set[str] = set()
+    normalized_profiles: list[dict[str, str]] = []
+    if isinstance(raw_profiles, list):
+        for raw_profile in raw_profiles:
+            if not isinstance(raw_profile, dict):
+                continue
+            normalized_profile = _normalize_embedding_profile(raw_profile)
+            if normalized_profile is None:
+                continue
+            profile_id = normalized_profile["id"]
+            if profile_id in seen_ids:
+                continue
+            seen_ids.add(profile_id)
+            normalized_profiles.append(normalized_profile)
+    return normalized_profiles or fallback_profiles
+
+
+def _normalize_embedding_profile(raw_profile: dict[str, Any]) -> dict[str, str] | None:
+    """Normalize one embedding profile and reject incomplete entries."""
+    profile_id = str(raw_profile.get("id", "")).strip()
+    label = str(raw_profile.get("label", "")).strip()
+    model_name = str(raw_profile.get("model_name", "")).strip()
+    if not profile_id or not label or not model_name:
+        return None
+    return {
+        "id": profile_id,
+        "label": label,
+        "model_name": model_name,
+    }
+
+
+def _normalize_assignments(
+    raw_assignments: Any,
+    fallback_assignments: dict[str, Any],
+    llm_profiles: list[dict[str, str]],
+    embedding_profiles: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Validate assignment ids against the normalized profile sets."""
+    assignments = deepcopy(fallback_assignments)
+    if not isinstance(raw_assignments, dict):
+        return assignments
+
+    llm_profile_ids = {profile["id"] for profile in llm_profiles}
+    embedding_profile_ids = {profile["id"] for profile in embedding_profiles}
+    for assignment in PROJECT_LLM_ASSIGNMENTS:
+        if assignment == "layer1_generation":
+            assignments[assignment] = _normalize_layer1_assignment(
+                raw_assignments.get(assignment, assignments[assignment]),
+                llm_profile_ids,
+                llm_profiles[0]["id"],
+            )
+            continue
+        value = str(raw_assignments.get(assignment, assignments[assignment])).strip()
+        if value in llm_profile_ids:
+            assignments[assignment] = value
+
+    for assignment in PROJECT_EMBEDDING_ASSIGNMENTS:
+        value = str(raw_assignments.get(assignment, assignments[assignment])).strip()
+        if value in embedding_profile_ids:
+            assignments[assignment] = value
+    return assignments
+
+
+def _normalize_layer1_assignment(value: Any, allowed_ids: set[str], fallback_id: str) -> list[str]:
+    """Keep the multi-model Layer 1 assignment list valid and non-empty."""
+    if not isinstance(value, list):
+        return [fallback_id]
+    resolved = [str(item).strip() for item in value if str(item).strip() in allowed_ids]
+    return resolved or [fallback_id]
+
+
 def normalize_model_settings(payload: dict[str, Any], config: AppConfig) -> dict[str, Any]:
     """Validate and normalize an app-level or project-level model settings payload."""
     normalized = _base_model_settings(config)
-    seen_llm_ids: set[str] = set()
-    llm_profiles: list[dict[str, str]] = []
-    for raw_profile in payload.get("llm_profiles", []):
-        profile_id = str(raw_profile.get("id", "")).strip()
-        label = str(raw_profile.get("label", "")).strip()
-        base_url = str(raw_profile.get("base_url", "")).strip().rstrip("/")
-        model_name = str(raw_profile.get("model_name", "")).strip()
-        local_path = str(raw_profile.get("local_path", "")).strip()
-        if not profile_id or not label or profile_id in seen_llm_ids:
-            continue
-        if not model_name and not local_path:
-            continue
-        seen_llm_ids.add(profile_id)
-        llm_profiles.append(
-            {
-                "id": profile_id,
-                "label": label,
-                "base_url": base_url,
-                "model_name": model_name,
-                "local_path": local_path,
-            }
-        )
-    if llm_profiles:
-        normalized["llm_profiles"] = llm_profiles
-
-    seen_embedding_ids: set[str] = set()
-    embedding_profiles: list[dict[str, str]] = []
-    for raw_profile in payload.get("embedding_profiles", []):
-        profile_id = str(raw_profile.get("id", "")).strip()
-        label = str(raw_profile.get("label", "")).strip()
-        model_name = str(raw_profile.get("model_name", "")).strip()
-        if not profile_id or not label or not model_name or profile_id in seen_embedding_ids:
-            continue
-        seen_embedding_ids.add(profile_id)
-        embedding_profiles.append(
-            {
-                "id": profile_id,
-                "label": label,
-                "model_name": model_name,
-            }
-        )
-    if embedding_profiles:
-        normalized["embedding_profiles"] = embedding_profiles
-
-    llm_profile_ids = {profile["id"] for profile in normalized["llm_profiles"]}
-    embedding_profile_ids = {profile["id"] for profile in normalized["embedding_profiles"]}
-    assignments = normalized["assignments"]
-    raw_assignments = payload.get("assignments", {})
-    if isinstance(raw_assignments, dict):
-        for assignment in PROJECT_LLM_ASSIGNMENTS:
-            if assignment == "layer1_generation":
-                value = raw_assignments.get(assignment, assignments[assignment])
-                if isinstance(value, list):
-                    resolved = [str(item).strip() for item in value if str(item).strip() in llm_profile_ids]
-                    assignments[assignment] = resolved or [normalized["llm_profiles"][0]["id"]]
-            else:
-                value = str(raw_assignments.get(assignment, assignments[assignment])).strip()
-                if value in llm_profile_ids:
-                    assignments[assignment] = value
-        for assignment in PROJECT_EMBEDDING_ASSIGNMENTS:
-            value = str(raw_assignments.get(assignment, assignments[assignment])).strip()
-            if value in embedding_profile_ids:
-                assignments[assignment] = value
-    normalized["assignments"] = assignments
+    normalized["llm_profiles"] = _normalize_llm_profiles(
+        payload.get("llm_profiles"),
+        normalized["llm_profiles"],
+    )
+    normalized["embedding_profiles"] = _normalize_embedding_profiles(
+        payload.get("embedding_profiles"),
+        normalized["embedding_profiles"],
+    )
+    normalized["assignments"] = _normalize_assignments(
+        payload.get("assignments"),
+        normalized["assignments"],
+        normalized["llm_profiles"],
+        normalized["embedding_profiles"],
+    )
     normalized["prompt_catalog"] = _normalize_prompt_catalog(payload.get("prompt_catalog"), normalized["prompt_catalog"])
     return normalized
 
