@@ -640,12 +640,41 @@ function PillarResearch({ node, findings }) {
     (item) => item.scope === "layer1" && item.scope_id === node.id && item.finding_type === "pillar_coverage_matrix",
   );
   const matrix = finding?.payload?.matrix || [];
-  if (!matrix.length) {
+  const profile = finding?.payload?.engineering_profile || null;
+  if (!matrix.length && !profile) {
     return null;
   }
   return (
     <div className="tree-detail-section">
       <h4>Research Evidence</h4>
+      {profile ? (
+        <div className="research-scorecard">
+          <div className="research-scorecard-head">
+            <strong>Implementation profile</strong>
+            <div className="research-scorecard-head-meta">
+              <span className="status-pill">confidence {profile.confidence}/100</span>
+              <span className="research-index-pill">indexed score {profile.indexed_score ?? 0}/100</span>
+            </div>
+          </div>
+          <p className="research-scorecard-summary">{profile.summary}</p>
+          <div className="research-rating-grid">
+            {(profile.ratings || []).map((rating) => (
+              <div key={rating.name} className="research-rating-card">
+                <span>{rating.label}</span>
+                <strong>{rating.rating}/10</strong>
+                <p>{rating.rationale}</p>
+              </div>
+            ))}
+          </div>
+          {profile.implications?.length ? (
+            <ul className="summary-list">
+              {profile.implications.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       <ul className="summary-list">
         {matrix.slice(0, 5).map((row) => (
           <li key={row.competitor_name}>

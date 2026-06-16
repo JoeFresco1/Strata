@@ -62,6 +62,7 @@ const PROMPT_FIELD_HELP = {
   layer1_pillar_generation: "Guides broad Layer 1 pillar brainstorming.",
   layer1_pillar_normalization: "Cleans raw Layer 1 ideas into stable pillar concepts.",
   layer1_pillar_assessment: "Scores and clusters candidate Layer 1 pillars.",
+  layer1_pillar_research_assessment: "Rates how hard a pillar looks to build, run, and maintain after competitor research.",
   layer2_subfeature_generation: "Expands a pillar into Layer 2 subfeatures.",
   layer3_spec_generation: "Drafts the final Layer 3 implementation spec.",
   coverage_critic: "Summarizes overlap and saturation across generation loops.",
@@ -445,12 +446,39 @@ function CoverageMatrix({ node, findings, onRerun }) {
   }
   const finding = findings.find((item) => item.scope === "layer1" && item.scope_id === node.id && item.finding_type === "pillar_coverage_matrix");
   const matrix = finding?.payload?.matrix || [];
+  const profile = finding?.payload?.engineering_profile || null;
   return (
     <div className="coverage-box">
       <div className="panel-header">
         <strong>Competitor Coverage</strong>
         <button type="button" onClick={() => onRerun([node.id])}>Rerun</button>
       </div>
+      {profile ? (
+        <div className="research-scorecard">
+          <div className="research-scorecard-head">
+            <strong>Implementation profile</strong>
+            <div className="research-scorecard-head-meta">
+              <span className="status-pill">confidence {profile.confidence}/100</span>
+              <span className="research-index-pill">indexed score {profile.indexed_score ?? 0}/100</span>
+            </div>
+          </div>
+          <p className="research-scorecard-summary">{profile.summary}</p>
+          <div className="research-rating-grid">
+            {(profile.ratings || []).map((rating) => (
+              <div key={rating.name} className="research-rating-card">
+                <span>{rating.label}</span>
+                <strong>{rating.rating}/10</strong>
+                <p>{rating.rationale}</p>
+              </div>
+            ))}
+          </div>
+          {profile.implications?.length ? (
+            <ul className="summary-list">
+              {profile.implications.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       {node.json_payload?.research_stale ? <p className="warning">Research is stale for this edited pillar.</p> : null}
       {matrix.length ? (
         <div className="matrix-table">

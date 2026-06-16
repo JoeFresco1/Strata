@@ -200,6 +200,21 @@ class PillarCandidate(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class PillarResearchRating(BaseModel):
+    name: str
+    label: str
+    rating: int = Field(ge=1, le=10)
+    rationale: str
+
+
+class PillarResearchAssessment(BaseModel):
+    summary: str
+    confidence: int = Field(ge=0, le=100)
+    indexed_score: int = Field(ge=0, le=100, default=0)
+    ratings: list[PillarResearchRating] = Field(default_factory=list)
+    implications: list[str] = Field(default_factory=list)
+
+
 class SubfeatureCandidate(BaseModel):
     title: str
     description: str

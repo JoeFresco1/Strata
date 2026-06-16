@@ -15,9 +15,14 @@ from specforge.config import ModelProfile
 from specforge.db import Database
 from specforge.embeddings import EmbeddingService
 from specforge.llm import LLMError, LlamaCppClient
-from specforge.models import Node, ProjectBrief, ResearchJob
+from specforge.models import Node, PillarResearchAssessment, PillarResearchRating, ProjectBrief, ResearchJob
 from specforge.project_settings import embedding_profiles_by_id, llm_profiles_by_id
 from specforge.server_manager import LlamaServerManager, ServerManagerError
+from specforge.prompts import (
+    build_pillar_research_assessment_prompt,
+    build_system_prompt,
+    load_prompt_catalog,
+)
 
 
 SEARCH_URL = "https://duckduckgo.com/html/?q={query}"
@@ -55,6 +60,17 @@ class ResearchService:
         self.llm_client = llm_client
         self.embedding_service = embedding_service
         self.server_manager = server_manager
+
+    def _prompt_catalog(self, project_id: str) -> dict[str, str]:
+        """Resolve the prompt catalog snapshot stored for this project."""
+        settings = self.db.get_project_model_settings(project_id)
+        if settings is not None and settings.prompt_catalog:
+            return settings.prompt_catalog
+        return load_prompt_catalog()
+
+    def _system_prompt(self, project_id: str) -> str:
+        """Render a project-scoped system prompt from the editable prompt catalog."""
+        return build_system_prompt(prompt_catalog=self._prompt_catalog(project_id))
 
     def enqueue_layer0(self, project_id: str, *, reason: str = "publish") -> ResearchJob:
         """Create a Layer 0 landscape job; callers run it through the local background runner."""
@@ -256,18 +272,185 @@ class ResearchService:
                     "confidence": confidence,
                 }
             )
+        analysis = self._analyze_pillar_research(project_id, pillar, pages, matrix)
         self.db.insert_research_finding(
             project_id=project_id,
             scope="layer1",
             scope_id=pillar.id,
             finding_type="pillar_coverage_matrix",
             title=f"Competitor Coverage: {pillar.title}",
-            summary=f"Coverage matrix for {pillar.title} across {len(matrix)} competitors.",
-            payload={"pillar_id": pillar.id, "pillar_title": pillar.title, "matrix": matrix},
+            summary=f"Coverage matrix for {pillar.title} across {len(matrix)} competitors. {analysis.summary}",
+            payload={
+                "pillar_id": pillar.id,
+                "pillar_title": pillar.title,
+                "matrix": matrix,
+                "engineering_profile": analysis.model_dump(mode="json"),
+            },
         )
         payload = dict(pillar.json_payload or {})
+        payload["research_profile"] = analysis.model_dump(mode="json")
         payload.pop("research_stale", None)
         self.db.update_node(pillar.id, json_payload=payload)
+
+    def _analyze_pillar_research(
+        self,
+        project_id: str,
+        pillar: Node,
+        pages: list[ExtractedPage],
+        matrix: list[dict[str, Any]],
+    ) -> PillarResearchAssessment:
+        """Translate competitor evidence into practical implementation ratings."""
+        evidence = self._evidence_payload(pages, limit=8)
+        prompt_catalog = self._prompt_catalog(project_id)
+        prompt = build_pillar_research_assessment_prompt(
+            product_idea=self.db.get_project(project_id).idea,
+            pillar_title=pillar.title,
+            pillar_description=pillar.description or "",
+            competitor_matrix=matrix,
+            evidence=evidence,
+            prompt_catalog=prompt_catalog,
+        )
+        try:
+            runtime = self._llm_runtime(project_id, "layer1_research")
+            if runtime["base_url"] or runtime["model_name"]:
+                response = self.llm_client.generate_json(
+                    system_prompt=self._system_prompt(project_id),
+                    user_prompt=prompt,
+                    base_url=runtime["base_url"],
+                    model_name=runtime["model_name"],
+                    max_tokens=1200,
+                    temperature=0.2,
+                )
+                return self._validate_pillar_research_assessment(response.parsed_json, pillar, matrix)
+        except LLMError:
+            pass
+        return self._fallback_pillar_research_assessment(pillar, pages, matrix)
+
+    @staticmethod
+    def _validate_pillar_research_assessment(
+        payload: dict[str, Any],
+        pillar: Node,
+        matrix: list[dict[str, Any]],
+    ) -> PillarResearchAssessment:
+        try:
+            assessment = PillarResearchAssessment.model_validate(payload)
+        except Exception as exc:  # noqa: BLE001 - bad model output should fall back cleanly.
+            raise LLMError(f"Invalid pillar research payload for {pillar.title}: {exc}") from exc
+        if not assessment.ratings:
+            raise LLMError(f"Pillar research payload missing ratings for {pillar.title}.")
+        expected = {
+            "build_complexity",
+            "infrastructure_demand",
+            "maintenance_burden",
+            "integration_complexity",
+            "operational_risk",
+            "competitive_research",
+        }
+        seen = {rating.name for rating in assessment.ratings}
+        if not expected.issubset(seen):
+            raise LLMError(f"Pillar research payload missing dimensions for {pillar.title}.")
+        return self._normalize_pillar_research_assessment(assessment)
+
+    @staticmethod
+    def _indexed_score(ratings: list[PillarResearchRating]) -> int:
+        if not ratings:
+            return 0
+        average = sum(rating.rating for rating in ratings) / len(ratings)
+        indexed = round(((average - 1) / 9) * 100)
+        return min(100, max(0, indexed))
+
+    def _normalize_pillar_research_assessment(
+        self,
+        assessment: PillarResearchAssessment,
+    ) -> PillarResearchAssessment:
+        indexed_score = self._indexed_score(assessment.ratings)
+        return PillarResearchAssessment(
+            summary=assessment.summary,
+            confidence=assessment.confidence,
+            indexed_score=indexed_score,
+            ratings=assessment.ratings,
+            implications=assessment.implications,
+        )
+
+    def _fallback_pillar_research_assessment(
+        self,
+        pillar: Node,
+        pages: list[ExtractedPage],
+        matrix: list[dict[str, Any]],
+    ) -> PillarResearchAssessment:
+        """Generate a deterministic scorecard when the local model is unavailable."""
+        text = " ".join([pillar.title, pillar.description or "", " ".join(page.text for page in pages)]).lower()
+        evidence_count = len(matrix)
+        build_complexity = min(10, max(1, 4 + self._keyword_score(text, ["workflow", "permissions", "audit", "integration", "automation", "approval", "analytics"])))
+        infrastructure_demand = min(10, max(1, 3 + self._keyword_score(text, ["realtime", "sync", "search", "pipeline", "storage", "embedding", "notification"]) + (1 if evidence_count > 2 else 0)))
+        maintenance_burden = min(10, max(1, 4 + self._keyword_score(text, ["rules", "exceptions", "compliance", "integration", "monitoring", "permissions"])))
+        integration_complexity = min(10, max(1, 4 + self._keyword_score(text, ["integration", "api", "sync", "import", "export", "webhook"])))
+        operational_risk = min(10, max(1, 3 + self._keyword_score(text, ["compliance", "security", "data", "privacy", "access", "audit"])))
+        competitive_research = min(10, max(1, 3 + self._keyword_score(text, ["market", "competitor", "competitive", "benchmark", "positioning", "pricing", "alternative"])))
+        ratings = [
+            PillarResearchRating(
+                name="build_complexity",
+                label="Build complexity",
+                rating=build_complexity,
+                rationale="Estimated from workflow depth, decision surfaces, and coordination needed across the cited evidence.",
+            ),
+            PillarResearchRating(
+                name="infrastructure_demand",
+                label="Infrastructure demand",
+                rating=infrastructure_demand,
+                rationale="Estimated from infrastructure-like language such as storage, sync, search, or background processing.",
+            ),
+            PillarResearchRating(
+                name="maintenance_burden",
+                label="Maintenance burden",
+                rating=maintenance_burden,
+                rationale="Estimated from how many rules, exceptions, or long-lived support surfaces the pillar implies.",
+            ),
+            PillarResearchRating(
+                name="integration_complexity",
+                label="Integration complexity",
+                rating=integration_complexity,
+                rationale="Estimated from external connections, imports/exports, or API coordination mentioned in the evidence.",
+            ),
+            PillarResearchRating(
+                name="operational_risk",
+                label="Operational risk",
+                rating=operational_risk,
+                rationale="Estimated from compliance, privacy, access control, and other failure-sensitive language.",
+            ),
+            PillarResearchRating(
+                name="competitive_research",
+                label="Competitive research",
+                rating=competitive_research,
+                rationale="Estimated from how much market scanning, competitor analysis, and positioning work the pillar appears to require.",
+            ),
+        ]
+        confidence = min(90, 35 + evidence_count * 8)
+        assessment = PillarResearchAssessment(
+            summary=f"{pillar.title} looks like a {self._rating_label(build_complexity)} build with {self._rating_label(maintenance_burden)} upkeep.",
+            confidence=confidence,
+            ratings=ratings,
+            implications=[
+                "Prioritize the pieces that reduce operational and integration risk first.",
+                "If this pillar ships, plan for ongoing monitoring and support before broad rollout.",
+            ],
+        )
+        return self._normalize_pillar_research_assessment(assessment)
+
+    @staticmethod
+    def _keyword_score(text: str, keywords: list[str]) -> int:
+        hits = sum(1 for keyword in keywords if keyword in text)
+        return hits
+
+    @staticmethod
+    def _rating_label(score: int) -> str:
+        if score <= 3:
+            return "lighter"
+        if score <= 5:
+            return "moderate"
+        if score <= 7:
+            return "heavy"
+        return "very heavy"
 
     def _first_search_result(self, query: str) -> str | None:
         """Scrape the first plausible organic result from DuckDuckGo's HTML endpoint."""
