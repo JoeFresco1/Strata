@@ -33,6 +33,7 @@ from specforge.prompts import (
     build_pillar_prompt,
     build_spec_prompt,
     build_subfeature_prompt,
+    load_prompt_catalog,
 )
 from specforge.server_manager import LlamaServerManager, ServerManagerError
 from specforge.tree import collect_approved_directions
@@ -172,7 +173,17 @@ class GenerationService:
         self.llm_client = llm_client
         self.server_manager = server_manager
         self.embedding_service = embedding_service
-        self.system_prompt = build_system_prompt()
+
+    def _prompt_catalog(self, project_id: str) -> dict[str, str]:
+        """Resolve the prompt catalog snapshot stored for this project."""
+        settings = self.db.get_project_model_settings(project_id)
+        if settings is not None and settings.prompt_catalog:
+            return settings.prompt_catalog
+        return load_prompt_catalog()
+
+    def _system_prompt(self, project_id: str) -> str:
+        """Build the system prompt from the project-scoped prompt catalog."""
+        return build_system_prompt(prompt_catalog=self._prompt_catalog(project_id))
 
     def generate_pillars(self, project_id: str) -> list[Node]:
         summary = self.generate_pillars_until_exhausted(project_id)
@@ -204,6 +215,7 @@ class GenerationService:
         models_used: list[str] = []
         round_summaries: list[str] = []
         active_profiles = self._resolve_layer1_profiles(project_id, model_profiles)
+        prompt_catalog = self._prompt_catalog(project_id)
 
         round_index = 0
         stop_all_models = False
@@ -240,6 +252,7 @@ class GenerationService:
                     context.model_role,
                     context.role_instruction,
                     target_count=target_per_round,
+                    prompt_catalog=prompt_catalog,
                 )
                 _, raw_parsed = self._call_structured_json_pass(
                     project_id=project_id,
@@ -682,6 +695,7 @@ class GenerationService:
         round_summaries: list[str] = []
         runtime_profile = self._project_llm_runtime(project_id, "layer2_generation")
         self._ensure_profile_loaded(runtime_profile, thinking_enabled=thinking_enabled)
+        prompt_catalog = self._prompt_catalog(project_id)
 
         for _ in range(max_rounds):
             approved = collect_approved_directions(self.db.list_all_nodes(project_id))
@@ -703,6 +717,7 @@ class GenerationService:
                 approved,
                 self._coverage_summary(memory),
                 self._uncovered_titles(memory),
+                prompt_catalog=prompt_catalog,
             )
             _, parsed = self._call_structured_json_pass(
                 project_id=project_id,
@@ -809,6 +824,7 @@ class GenerationService:
     def generate_subfeatures(self, project_id: str, pillar_ids: list[str]) -> list[Node]:
         runtime_profile = self._project_llm_runtime(project_id, "layer2_generation")
         self._ensure_profile_loaded(runtime_profile, thinking_enabled=False)
+        prompt_catalog = self._prompt_catalog(project_id)
         project = self.db.get_project(project_id)
         rejected = self.db.get_rejected_ideas(project_id)
         approved = collect_approved_directions(self.db.list_all_nodes(project_id))
@@ -833,6 +849,7 @@ class GenerationService:
                 approved,
                 self._coverage_summary(memory),
                 self._uncovered_titles(memory),
+                prompt_catalog=prompt_catalog,
             )
             _, parsed = self._call_structured_json_pass(
                 project_id=project_id,
@@ -872,6 +889,7 @@ class GenerationService:
     def generate_specs(self, project_id: str, subfeature_ids: list[str], *, thinking_enabled: bool = False) -> list[Node]:
         runtime_profile = self._project_llm_runtime(project_id, "layer3_generation")
         self._ensure_profile_loaded(runtime_profile, thinking_enabled=thinking_enabled)
+        prompt_catalog = self._prompt_catalog(project_id)
         project = self.db.get_project(project_id)
         rejected = self.db.get_rejected_ideas(project_id)
         approved = collect_approved_directions(self.db.list_all_nodes(project_id))
@@ -890,6 +908,7 @@ class GenerationService:
                 self._shared_project_subfeatures(project_id, exclude_parent_id=subfeature.parent_id),
                 rejected,
                 approved,
+                prompt_catalog=prompt_catalog,
             )
             _, parsed = self._call_structured_json_pass(
                 project_id=project_id,
@@ -971,6 +990,7 @@ class GenerationService:
             new_items=self._memory_packet(new_nodes),
             previous_summary=self._coverage_summary(previous_memory),
             available_lenses=[name for name, _ in LAYER1_LENSES] if scope == "layer1" else [],
+            prompt_catalog=self._prompt_catalog(project_id),
         )
         _, critic = self._call_structured_json_pass(
             project_id=project_id,
@@ -1016,6 +1036,7 @@ class GenerationService:
             lens_name=lens_name,
             existing_pillars=existing_pillars,
             raw_candidates=raw_candidates,
+            prompt_catalog=self._prompt_catalog(project_id),
         )
         _, normalized = self._call_structured_json_pass(
             project_id=project_id,
@@ -1052,6 +1073,7 @@ class GenerationService:
             product_idea=product_idea,
             existing_pillars=existing_pillars,
             candidate_pillars=candidate_packet,
+            prompt_catalog=self._prompt_catalog(project_id),
         )
         _, assessments = self._call_structured_json_pass(
             project_id=project_id,
@@ -1423,7 +1445,7 @@ class GenerationService:
         for attempt in range(max_attempts):
             try:
                 response = self.llm_client.generate_json(
-                    system_prompt=self.system_prompt,
+                    system_prompt=self._system_prompt(project_id),
                     user_prompt=prompt,
                     model_name=self._runtime_model_name(runtime_profile),
                     base_url=self._runtime_base_url(runtime_profile),
@@ -1450,7 +1472,7 @@ class GenerationService:
                         candidate_content=json.dumps(response.parsed_json, ensure_ascii=True),
                     )
                     repair_response = self.llm_client.generate_json(
-                        system_prompt=self.system_prompt,
+                        system_prompt=self._system_prompt(project_id),
                         user_prompt=repair_prompt,
                         model_name=self._runtime_model_name(runtime_profile),
                         base_url=self._runtime_base_url(runtime_profile),

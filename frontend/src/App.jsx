@@ -55,6 +55,18 @@ const GUIDE_SECTIONS = [
     body: "Each project can override the global defaults for planning, generation, research, and embeddings without changing the rest of the library.",
   },
 ];
+const PROMPT_FIELD_HELP = {
+  system_json_generator: "Base system instruction for every structured JSON response.",
+  layer0_brief_extraction: "Extracts brief field updates from Plan mode messages.",
+  layer0_plan_guidance: "Shapes the short assistant reply and next questions in Plan mode.",
+  layer1_pillar_generation: "Guides broad Layer 1 pillar brainstorming.",
+  layer1_pillar_normalization: "Cleans raw Layer 1 ideas into stable pillar concepts.",
+  layer1_pillar_assessment: "Scores and clusters candidate Layer 1 pillars.",
+  layer2_subfeature_generation: "Expands a pillar into Layer 2 subfeatures.",
+  layer3_spec_generation: "Drafts the final Layer 3 implementation spec.",
+  coverage_critic: "Summarizes overlap and saturation across generation loops.",
+  json_schema_repair: "Repairs near-miss model output into valid JSON.",
+};
 
 // Fetch JSON from the local API and surface readable errors to the UI.
 async function apiFetch(path, options = {}) {
@@ -843,6 +855,64 @@ function GuideModal({ onClose }) {
   );
 }
 
+function PromptCatalogEditor({ settings, onChange, onSave, saveState }) {
+  if (!settings) {
+    return (
+      <div className="panel">
+        <p className="muted">Prompts are loading.</p>
+      </div>
+    );
+  }
+
+  const promptCatalog = settings.prompt_catalog || {};
+  const promptEntries = Object.entries(promptCatalog);
+
+  function updatePrompt(key, value) {
+    onChange({
+      ...settings,
+      prompt_catalog: {
+        ...promptCatalog,
+        [key]: value,
+      },
+    });
+  }
+
+  return (
+    <div className="prompt-editor">
+      <div className="panel prompt-editor-header">
+        <div>
+          <h3>System Prompt Catalog</h3>
+          <p className="muted">
+            Changes here only affect projects created after you save. Existing projects keep the prompt snapshot they already have.
+          </p>
+        </div>
+        <button type="button" onClick={onSave} disabled={saveState === "saving"}>
+          {saveState === "saving" ? "Saving..." : "Save Prompts"}
+        </button>
+      </div>
+
+      <div className="prompt-grid">
+        {promptEntries.map(([key, value]) => (
+          <div key={key} className="panel prompt-card">
+            <div className="prompt-card-header">
+              <div>
+                <h4>{key}</h4>
+                <p className="muted">{PROMPT_FIELD_HELP[key] || "Editable template used by the local generation pipeline."}</p>
+              </div>
+            </div>
+            <textarea
+              className="prompt-textarea"
+              value={value}
+              onChange={(event) => updatePrompt(key, event.target.value)}
+              rows={10}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AssignmentField({ label, help, children }) {
   return (
     <div className="assignment-field" title={help}>
@@ -1184,6 +1254,7 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
+  const [showPrompts, setShowPrompts] = useState(false);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [modelSettingsSaveState, setModelSettingsSaveState] = useState("idle");
   const [projectSettingsSaveState, setProjectSettingsSaveState] = useState("idle");
@@ -1537,6 +1608,9 @@ export default function App() {
               <button type="button" className="rail-action" onClick={() => setShowGuide(true)}>
                 Guide
               </button>
+              <button type="button" className="rail-action" onClick={() => setShowPrompts(true)}>
+                System Prompts
+              </button>
               <button type="button" className="rail-action" onClick={() => setShowSettings(true)}>
                 Settings
               </button>
@@ -1808,6 +1882,21 @@ export default function App() {
           onSave={handleSaveModelSettings}
           onClose={() => setShowSettings(false)}
         />
+      ) : null}
+      {showPrompts ? (
+        <ModalFrame
+          title="System Prompts"
+          subtitle="Edit the shared prompt templates here. These edits apply to new projects created after you save."
+          onClose={() => setShowPrompts(false)}
+          className="prompts-modal"
+        >
+          <PromptCatalogEditor
+            settings={appSettings}
+            onChange={setAppSettings}
+            onSave={handleSaveModelSettings}
+            saveState={modelSettingsSaveState}
+          />
+        </ModalFrame>
       ) : null}
       {showGuide ? <GuideModal onClose={() => setShowGuide(false)} /> : null}
     </div>

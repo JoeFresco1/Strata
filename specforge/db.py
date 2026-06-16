@@ -253,6 +253,7 @@ class Database:
         llm_profiles: list[dict[str, Any]],
         embedding_profiles: list[dict[str, Any]],
         assignments: dict[str, Any],
+        prompt_catalog: dict[str, Any],
     ) -> ProjectModelSettings:
         """Create or update the per-project model profile and assignment map."""
         now = utc_now()
@@ -264,15 +265,16 @@ class Database:
             self._execute(
                 f"""
                 INSERT INTO project_model_settings (
-                    project_id, llm_profiles, embedding_profiles, assignments, created_at, updated_at
+                    project_id, llm_profiles, embedding_profiles, assignments, prompt_catalog, created_at, updated_at
                 )
-                VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
+                VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
                 """,
                 (
                     project_id,
                     self._dump_json(llm_profiles),
                     self._dump_json(embedding_profiles),
                     self._dump_json(assignments),
+                    self._dump_json(prompt_catalog),
                     now,
                     now,
                 ),
@@ -284,6 +286,7 @@ class Database:
                 SET llm_profiles = {self.param},
                     embedding_profiles = {self.param},
                     assignments = {self.param},
+                    prompt_catalog = {self.param},
                     updated_at = {self.param}
                 WHERE project_id = {self.param}
                 """,
@@ -291,6 +294,7 @@ class Database:
                     self._dump_json(llm_profiles),
                     self._dump_json(embedding_profiles),
                     self._dump_json(assignments),
+                    self._dump_json(prompt_catalog),
                     now,
                     project_id,
                 ),
@@ -1173,6 +1177,7 @@ class Database:
                     llm_profiles TEXT NOT NULL,
                     embedding_profiles TEXT NOT NULL,
                     assignments TEXT NOT NULL,
+                    prompt_catalog TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
@@ -1323,6 +1328,13 @@ class Database:
                 ON research_findings(project_id, scope, COALESCE(scope_id, ''), updated_at);
                 """
             )
+        try:
+            self._execute(
+                "ALTER TABLE project_model_settings ADD COLUMN prompt_catalog TEXT NOT NULL DEFAULT '{}'"
+            )
+        except Exception as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
 
     def _initialize_postgres(self) -> None:
         """Create the PostgreSQL schema and enable pgvector for future retrieval work."""
@@ -1373,6 +1385,7 @@ class Database:
                         llm_profiles JSONB NOT NULL,
                         embedding_profiles JSONB NOT NULL,
                         assignments JSONB NOT NULL,
+                        prompt_catalog JSONB NOT NULL DEFAULT '{}'::jsonb,
                         created_at TIMESTAMPTZ NOT NULL,
                         updated_at TIMESTAMPTZ NOT NULL
                     )
@@ -1384,6 +1397,7 @@ class Database:
                 cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS rejected_directions JSONB NOT NULL DEFAULT '[]'::jsonb")
                 cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''")
                 cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft'")
+                cursor.execute("ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS prompt_catalog JSONB NOT NULL DEFAULT '{}'::jsonb")
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS brief_conversations (
@@ -1758,6 +1772,7 @@ class Database:
             llm_profiles=self._load_json_list(row["llm_profiles"]),
             embedding_profiles=self._load_json_list(row["embedding_profiles"]),
             assignments=self._load_json(row["assignments"]),
+            prompt_catalog=self._load_json(row["prompt_catalog"]),
             created_at=datetime.fromisoformat(str(row["created_at"])),
             updated_at=datetime.fromisoformat(str(row["updated_at"])),
         )

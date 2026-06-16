@@ -46,23 +46,40 @@ def _load_prompt_catalog(path_str: str) -> dict[str, str]:
     return {str(key): str(value) for key, value in payload.items()}
 
 
-def get_prompt_template(prompt_key: str, prompts_path: Path | None = None) -> str:
-    catalog = _load_prompt_catalog(str(prompts_path or DEFAULT_PROMPTS_PATH))
+def load_prompt_catalog(prompts_path: Path | None = None) -> dict[str, str]:
+    """Load the prompt catalog from disk so callers can snapshot or edit it in memory."""
+    return dict(_load_prompt_catalog(str(prompts_path or DEFAULT_PROMPTS_PATH)))
+
+
+def get_prompt_template(
+    prompt_key: str,
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    catalog = prompt_catalog or _load_prompt_catalog(str(prompts_path or DEFAULT_PROMPTS_PATH))
     try:
         return catalog[prompt_key]
     except KeyError as exc:
         raise KeyError(f"Prompt template not found: {prompt_key}") from exc
 
 
-def render_prompt(prompt_key: str, variables: dict[str, Any], prompts_path: Path | None = None) -> str:
-    rendered = get_prompt_template(prompt_key, prompts_path=prompts_path)
+def render_prompt(
+    prompt_key: str,
+    variables: dict[str, Any],
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    rendered = get_prompt_template(prompt_key, prompts_path=prompts_path, prompt_catalog=prompt_catalog)
     for key, value in variables.items():
         rendered = rendered.replace(f"{{{{{key}}}}}", str(value))
     return rendered.strip()
 
 
-def build_system_prompt(prompts_path: Path | None = None) -> str:
-    return get_prompt_template("system_json_generator", prompts_path=prompts_path).strip()
+def build_system_prompt(
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    return get_prompt_template("system_json_generator", prompts_path=prompts_path, prompt_catalog=prompt_catalog).strip()
 
 
 def build_pillar_prompt(
@@ -80,6 +97,7 @@ def build_pillar_prompt(
     role_instruction: str,
     target_count: int = 12,
     prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
 ) -> str:
     return render_prompt(
         "layer1_pillar_generation",
@@ -99,6 +117,7 @@ def build_pillar_prompt(
             "product_idea": product_idea,
         },
         prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
     )
 
 
@@ -109,6 +128,7 @@ def build_pillar_normalization_prompt(
     existing_pillars: list[dict[str, Any]],
     raw_candidates: list[dict[str, Any]],
     prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
 ) -> str:
     return render_prompt(
         "layer1_pillar_normalization",
@@ -119,6 +139,7 @@ def build_pillar_normalization_prompt(
             "raw_candidates": _format_memory_items(raw_candidates),
         },
         prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
     )
 
 
@@ -128,6 +149,7 @@ def build_pillar_assessment_prompt(
     existing_pillars: list[dict[str, Any]],
     candidate_pillars: list[dict[str, Any]],
     prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
 ) -> str:
     return render_prompt(
         "layer1_pillar_assessment",
@@ -137,6 +159,7 @@ def build_pillar_assessment_prompt(
             "candidate_pillars": _format_memory_items(candidate_pillars),
         },
         prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
     )
 
 
@@ -151,6 +174,7 @@ def build_subfeature_prompt(
     coverage_summary: str,
     uncovered_areas: list[str],
     prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
 ) -> str:
     return render_prompt(
         "layer2_subfeature_generation",
@@ -166,6 +190,7 @@ def build_subfeature_prompt(
             "approved_directions": _format_list(approved_directions),
         },
         prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
     )
 
 
@@ -179,6 +204,7 @@ def build_critic_prompt(
     previous_summary: str,
     available_lenses: list[str],
     prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
 ) -> str:
     return render_prompt(
         "coverage_critic",
@@ -192,6 +218,7 @@ def build_critic_prompt(
             "available_lenses": _format_list(available_lenses),
         },
         prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
     )
 
 
@@ -204,6 +231,7 @@ def build_spec_prompt(
     rejected_ideas: list[str],
     approved_directions: list[str],
     prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
 ) -> str:
     return render_prompt(
         "layer3_spec_generation",
@@ -217,6 +245,7 @@ def build_spec_prompt(
             "approved_directions": _format_list(approved_directions),
         },
         prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
     )
 
 
@@ -226,6 +255,7 @@ def build_json_repair_prompt(
     schema_instructions: str,
     candidate_content: str,
     prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
 ) -> str:
     return render_prompt(
         "json_schema_repair",
@@ -235,6 +265,7 @@ def build_json_repair_prompt(
             "candidate_content": candidate_content,
         },
         prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
     )
 
 
@@ -244,6 +275,7 @@ def build_layer0_brief_extraction_prompt(
     conversation_tail: list[dict[str, str]],
     user_message: str,
     prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
 ) -> str:
     """Ask the local model to convert a Plan-mode turn into canonical brief edits."""
     return render_prompt(
@@ -254,6 +286,7 @@ def build_layer0_brief_extraction_prompt(
             "user_message": user_message,
         },
         prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
     )
 
 
@@ -265,6 +298,7 @@ def build_layer0_plan_reply_prompt(
     extracted_updates: dict[str, Any],
     open_fields: list[str],
     prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
 ) -> str:
     """Ask the local model for a structured intake reply after extracting brief fields."""
     return render_prompt(
@@ -277,4 +311,5 @@ def build_layer0_plan_reply_prompt(
             "open_fields": json.dumps(open_fields, ensure_ascii=True),
         },
         prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
     )

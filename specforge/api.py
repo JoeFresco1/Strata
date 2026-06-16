@@ -48,6 +48,7 @@ from specforge.project_settings import (
     normalize_model_settings,
     normalize_project_model_settings,
 )
+from specforge.prompts import load_prompt_catalog
 from specforge.server_manager import LlamaServerManager
 from specforge.storage import build_database
 from specforge.tree import build_tree
@@ -147,6 +148,7 @@ def _load_app_model_settings(services: AppServices) -> dict[str, object]:
     raw_llm_profiles = services.db.get_app_setting("app_llm_profiles")
     raw_embedding_profiles = services.db.get_app_setting("app_embedding_profiles")
     raw_assignments = services.db.get_app_setting("app_assignments")
+    raw_prompt_catalog = services.db.get_app_setting("app_prompt_catalog")
     payload: dict[str, object] = {}
     try:
         payload["llm_profiles"] = json.loads(raw_llm_profiles) if raw_llm_profiles else []
@@ -160,6 +162,10 @@ def _load_app_model_settings(services: AppServices) -> dict[str, object]:
         payload["assignments"] = json.loads(raw_assignments) if raw_assignments else {}
     except json.JSONDecodeError:
         payload["assignments"] = {}
+    try:
+        payload["prompt_catalog"] = json.loads(raw_prompt_catalog) if raw_prompt_catalog else load_prompt_catalog()
+    except json.JSONDecodeError:
+        payload["prompt_catalog"] = load_prompt_catalog()
     return normalize_model_settings(payload, services.config)
 
 
@@ -168,6 +174,7 @@ def _persist_app_model_settings(services: AppServices, settings: dict[str, objec
     services.db.set_app_setting("app_llm_profiles", json.dumps(settings.get("llm_profiles", [])))
     services.db.set_app_setting("app_embedding_profiles", json.dumps(settings.get("embedding_profiles", [])))
     services.db.set_app_setting("app_assignments", json.dumps(settings.get("assignments", {})))
+    services.db.set_app_setting("app_prompt_catalog", json.dumps(settings.get("prompt_catalog", {})))
 
 
 def _sync_default_app_profiles(settings: dict[str, object], services: AppServices) -> dict[str, object]:
@@ -205,6 +212,10 @@ def _ensure_project_model_settings(services: AppServices, project_id: str):
     """Return project model settings, creating a default record from app config when missing."""
     existing = services.db.get_project_model_settings(project_id)
     if existing is not None:
+        if not existing.prompt_catalog:
+            payload = existing.model_dump(mode="json")
+            payload["prompt_catalog"] = load_prompt_catalog()
+            return services.db.upsert_project_model_settings(project_id=project_id, **payload)
         return existing
     payload = default_project_model_settings(services.config, _load_app_model_settings(services))
     return services.db.upsert_project_model_settings(project_id=project_id, **payload)
@@ -255,6 +266,7 @@ def create_app() -> FastAPI:
             llm_profiles=app_model_settings["llm_profiles"],
             embedding_profiles=app_model_settings["embedding_profiles"],
             assignments=app_model_settings["assignments"],
+            prompt_catalog=app_model_settings["prompt_catalog"],
         )
 
     @app.get("/api/projects")
@@ -331,7 +343,11 @@ def create_app() -> FastAPI:
         """Persist project-scoped LLM and embedding profiles plus assignment routing."""
         try:
             services.db.get_project(project_id)
-            payload = normalize_project_model_settings(request.model_dump(mode="json"), services.config)
+            payload_data = request.model_dump(mode="json")
+            existing = services.db.get_project_model_settings(project_id)
+            if existing is not None and not payload_data.get("prompt_catalog"):
+                payload_data["prompt_catalog"] = existing.prompt_catalog
+            payload = normalize_project_model_settings(payload_data, services.config)
             settings = services.db.upsert_project_model_settings(project_id=project_id, **payload)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

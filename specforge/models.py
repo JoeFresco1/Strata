@@ -41,6 +41,7 @@ class ProjectModelSettings(BaseModel):
     llm_profiles: list[ProjectLLMProfile] = Field(default_factory=list)
     embedding_profiles: list[ProjectEmbeddingProfile] = Field(default_factory=list)
     assignments: dict[str, Any] = Field(default_factory=dict)
+    prompt_catalog: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 

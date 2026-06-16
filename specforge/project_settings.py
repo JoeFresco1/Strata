@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from specforge.config import AppConfig
+from specforge.prompts import load_prompt_catalog
 
 
 PROJECT_LLM_ASSIGNMENTS = (
@@ -55,6 +56,7 @@ def _base_model_settings(config: AppConfig) -> dict[str, Any]:
             "layer1_similarity_embeddings": DEFAULT_EMBEDDING_PROFILE_ID,
             "research_embeddings": DEFAULT_EMBEDDING_PROFILE_ID,
         },
+        "prompt_catalog": load_prompt_catalog(),
     }
 
 
@@ -130,6 +132,22 @@ def normalize_model_settings(payload: dict[str, Any], config: AppConfig) -> dict
             if value in embedding_profile_ids:
                 assignments[assignment] = value
     normalized["assignments"] = assignments
+    normalized["prompt_catalog"] = _normalize_prompt_catalog(payload.get("prompt_catalog"), normalized["prompt_catalog"])
+    return normalized
+
+
+def _normalize_prompt_catalog(raw_catalog: Any, fallback_catalog: dict[str, str]) -> dict[str, str]:
+    """Merge edited prompt templates with the built-in catalog and keep empty values safe."""
+    normalized = dict(fallback_catalog)
+    if not isinstance(raw_catalog, dict):
+        return normalized
+    for key, value in raw_catalog.items():
+        prompt_key = str(key).strip()
+        if not prompt_key:
+            continue
+        cleaned = str(value).strip()
+        if cleaned:
+            normalized[prompt_key] = cleaned
     return normalized
 
 

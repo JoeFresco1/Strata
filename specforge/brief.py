@@ -12,6 +12,7 @@ from specforge.prompts import (
     build_layer0_brief_extraction_prompt,
     build_layer0_plan_reply_prompt,
     build_system_prompt,
+    load_prompt_catalog,
 )
 from specforge.server_manager import LlamaServerManager, ServerManagerError
 
@@ -52,7 +53,6 @@ class BriefService:
         self.db = db
         self.llm_client = llm_client
         self.server_manager = server_manager
-        self.system_prompt = build_system_prompt()
 
     def ensure_brief(self, project_id: str) -> ProjectBrief:
         """Create the canonical brief from the project idea when no draft exists yet."""
@@ -114,15 +114,17 @@ class BriefService:
 
     def _extract_updates(self, current: ProjectBrief, tail: list[dict[str, str]], message: str) -> dict[str, Any]:
         """Run the local structured extraction pass and normalize unsafe model output."""
+        prompt_catalog = self._prompt_catalog(current.project_id)
         prompt = build_layer0_brief_extraction_prompt(
             current_brief=self._brief_payload(current),
             conversation_tail=tail,
             user_message=message,
+            prompt_catalog=prompt_catalog,
         )
         try:
             runtime = self._llm_runtime(current.project_id, "layer0_extraction")
             response = self.llm_client.generate_json(
-                system_prompt=self.system_prompt,
+                system_prompt=build_system_prompt(prompt_catalog=prompt_catalog),
                 user_prompt=prompt,
                 base_url=runtime["base_url"],
                 model_name=runtime["model_name"],
@@ -143,17 +145,19 @@ class BriefService:
     ) -> dict[str, Any]:
         """Generate structured intake guidance with a deterministic fallback."""
         open_fields = self._open_fields(brief)
+        prompt_catalog = self._prompt_catalog(brief.project_id)
         prompt = build_layer0_plan_reply_prompt(
             current_brief=self._brief_payload(brief),
             conversation_tail=tail,
             user_message=message,
             extracted_updates=updates,
             open_fields=open_fields,
+            prompt_catalog=prompt_catalog,
         )
         try:
             runtime = self._llm_runtime(brief.project_id, "layer0_plan")
             response = self.llm_client.generate_json(
-                system_prompt=self.system_prompt,
+                system_prompt=build_system_prompt(prompt_catalog=prompt_catalog),
                 user_prompt=prompt,
                 base_url=runtime["base_url"],
                 model_name=runtime["model_name"],
@@ -256,6 +260,13 @@ class BriefService:
             "next_questions": next_questions[:2],
             "confidence": "medium",
         }
+
+    def _prompt_catalog(self, project_id: str) -> dict[str, str]:
+        """Resolve the prompt catalog snapshot stored for this project."""
+        settings = self.db.get_project_model_settings(project_id)
+        if settings is not None and settings.prompt_catalog:
+            return settings.prompt_catalog
+        return load_prompt_catalog()
 
     def _merged_brief_payload(self, current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
         """Merge clean updates into the canonical brief payload without changing publish state."""

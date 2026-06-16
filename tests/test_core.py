@@ -126,6 +126,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(stored.llm_profiles[0].id, "default-chat")
             self.assertEqual(stored.embedding_profiles[0].id, "default-embedding")
             self.assertEqual(stored.assignments["layer2_generation"], "default-chat")
+            self.assertEqual(stored.prompt_catalog["system_json_generator"], "You are SpecForge, a local product specification generation engine. You must return valid JSON that matches the requested schema and avoid prose outside the JSON.")
 
 
 class EmbeddingServiceTests(unittest.TestCase):
@@ -503,6 +504,11 @@ class PromptTests(unittest.TestCase):
             rendered = build_system_prompt(prompts_path=prompt_file)
 
             self.assertEqual(rendered, "System prompt text")
+
+    def test_build_system_prompt_uses_prompt_catalog_override(self) -> None:
+        rendered = build_system_prompt(prompt_catalog={"system_json_generator": "Override prompt"})
+
+        self.assertEqual(rendered, "Override prompt")
 
     def test_build_pillar_prompt_separates_memory_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
