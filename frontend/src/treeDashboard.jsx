@@ -156,6 +156,16 @@ function collectOverlapEdges(root) {
     semanticMatches.forEach((match) => {
       addEdge(node.id, match.node_id, "semantic_similarity", `Cosine similarity ${match.score}`, Number(match.score || 0));
     });
+    const overlapRelationships = node.json_payload?.overlap_relationships || [];
+    overlapRelationships.forEach((relationship) => {
+      addEdge(
+        node.id,
+        relationship.target_node_id,
+        relationship.relationship_type || "cluster_neighbor",
+        relationship.detail || `Cluster overlap ${relationship.score}`,
+        Number(relationship.score || 0),
+      );
+    });
     if (node.layer === 1 && node.node_type === "pillar") {
       const stale = node.json_payload?.research_stale;
       if (stale) {

@@ -107,6 +107,14 @@ class ProjectMemory(BaseModel):
     updated_at: datetime
 
 
+class SimilarityEdge(BaseModel):
+    source_node_id: str
+    target_node_id: str
+    source_title: str
+    target_title: str
+    score: float
+
+
 class ResearchJob(BaseModel):
     id: str
     project_id: str

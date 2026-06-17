@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from specforge.config import AppConfig, ModelProfile, build_model_profiles, resolve_default_model_profile, resolve_reasoning_settings
@@ -10,7 +11,7 @@ from specforge.db import Database
 from specforge.embeddings import EmbeddingService
 from specforge.generation import GenerationService
 from specforge.llm import LlamaCppClient
-from specforge.models import PillarAssessment, ProjectMemory, SimilarityMatch
+from specforge.models import Node, PillarAssessment, ProjectMemory, SimilarityMatch
 from specforge.project_settings import default_project_model_settings, normalize_model_settings
 from specforge.prompts import build_pillar_prompt, build_pillar_research_assessment_prompt, build_system_prompt, render_prompt
 from specforge.brief import BriefService
@@ -342,6 +343,62 @@ class GenerationHelperTests(unittest.TestCase):
             self.assertEqual(len(packet), 1)
             self.assertEqual(packet[0]["title"], "Cash Flow Intelligence")
 
+    def test_representative_pillar_memory_collapses_same_overlap_cluster(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            service = GenerationService(db, llm_client=None)  # type: ignore[arg-type]
+            cluster_payload = {
+                "overlap_cluster": {
+                    "cluster_id": "semantic-financial-ops",
+                    "representative_node_id": "n1",
+                    "representative_title": "Financial Operations Intelligence",
+                    "member_count": 2,
+                    "member_node_ids": ["n1", "n2"],
+                    "member_titles": ["Financial Operations Intelligence", "Budget Workflow Intelligence"],
+                    "average_score": 0.84,
+                }
+            }
+            node_one = Node(
+                id="n1",
+                project_id="p1",
+                layer=1,
+                node_type="pillar",
+                title="Financial Operations Intelligence",
+                description="Track budgets and approvals.",
+                json_payload=cluster_payload,
+                created_at=datetime.now(),
+            )
+            node_two = Node(
+                id="n2",
+                project_id="p1",
+                layer=1,
+                node_type="pillar",
+                title="Budget Workflow Intelligence",
+                description="Related overlap cluster.",
+                json_payload=cluster_payload,
+                created_at=datetime.now(),
+            )
+
+            packet = service._representative_pillar_memory([node_one, node_two])
+
+            self.assertEqual(len(packet), 1)
+            self.assertEqual(packet[0]["title"], "Financial Operations Intelligence")
+
+    def test_connected_similarity_clusters_group_linked_neighbors(self) -> None:
+        nodes = [
+            Node(id="n1", project_id="p1", layer=1, node_type="pillar", title="A", created_at=datetime.now()),
+            Node(id="n2", project_id="p1", layer=1, node_type="pillar", title="B", created_at=datetime.now()),
+            Node(id="n3", project_id="p1", layer=1, node_type="pillar", title="C", created_at=datetime.now()),
+        ]
+        adjacency = {"n1": {"n2"}, "n2": {"n1", "n3"}, "n3": {"n2"}}
+        edge_scores = {("n1", "n2"): 0.82, ("n2", "n3"): 0.88}
+
+        clusters = GenerationService._connected_similarity_clusters(nodes, adjacency, edge_scores)
+
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0].representative_node_id, "n2")
+        self.assertEqual(clusters[0].member_node_ids, ["n1", "n2", "n3"])
+
     def test_layer1_lens_prefers_critic_recommendation(self) -> None:
         lens_name, _ = GenerationService._layer1_lens_for_round(0, model_role="Explorer")
         self.assertEqual(lens_name, "Core Outcomes")
@@ -410,6 +467,10 @@ class GenerationHelperTests(unittest.TestCase):
                     [SimilarityMatch(node_id="n1", title="Budget", description=None, layer=1, node_type="pillar", score=0.82)]
                 )
             )
+
+    def test_overlap_relationship_type_distinguishes_near_duplicates(self) -> None:
+        self.assertEqual(GenerationService._overlap_relationship_type(0.93, 0.9), "near_duplicate")
+        self.assertEqual(GenerationService._overlap_relationship_type(0.84, 0.9), "cluster_neighbor")
 
     def test_resolve_layer1_profiles_prefers_managed_current_model(self) -> None:
         class StubServerManager:
