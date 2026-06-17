@@ -10,6 +10,8 @@ from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 import requests
 import trafilatura
 from bs4 import BeautifulSoup
+from requests import Response
+from requests.exceptions import SSLError
 
 from specforge.config import ModelProfile
 from specforge.db import Database
@@ -183,15 +185,17 @@ class ResearchService:
         """Fetch a focused set of public pages instead of attempting a full site crawl."""
         pages: list[ExtractedPage] = []
         for seed in seeds:
-            start_url = seed.url or self._first_search_result(f"{seed.name} {query_context}")
-            if not start_url:
-                continue
-            for url in self._focused_urls(start_url):
-                page = self._fetch_extract(seed.name, url)
-                if page and page.text:
-                    pages.append(page)
-                if len([item for item in pages if item.competitor_name == seed.name]) >= 4:
+            competitor_pages: list[ExtractedPage] = []
+            for start_url in self._seed_start_urls(seed, query_context):
+                for url in self._focused_urls(start_url):
+                    page = self._fetch_extract(seed.name, url)
+                    if page and page.text and self._looks_like_competitor_page(seed.name, page):
+                        competitor_pages.append(page)
+                    if len(competitor_pages) >= 4:
+                        break
+                if competitor_pages:
                     break
+            pages.extend(competitor_pages[:4])
         return pages
 
     def _store_pages(self, project_id: str, scope: str, scope_id: str | None, pages: list[ExtractedPage]) -> int:
@@ -455,7 +459,7 @@ class ResearchService:
     def _first_search_result(self, query: str) -> str | None:
         """Scrape the first plausible organic result from DuckDuckGo's HTML endpoint."""
         try:
-            response = requests.get(
+            response = self._research_get(
                 SEARCH_URL.format(query=quote_plus(query)),
                 headers=REQUEST_HEADERS,
                 timeout=12,
@@ -475,10 +479,59 @@ class ResearchService:
                     return target
         return None
 
+    def _seed_start_urls(self, seed: CompetitorSeed, query_context: str) -> list[str]:
+        """Prefer likely official homepages for named competitors before brittle free-search scraping."""
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def add(url: str | None) -> None:
+            if not url:
+                return
+            cleaned = url.strip().rstrip("/")
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                candidates.append(cleaned)
+
+        add(seed.url)
+        for url in self._homepage_candidates(seed.name):
+            add(url)
+        for query in (f"{seed.name} official site", f"{seed.name} product", f"{seed.name} {query_context}", seed.name):
+            add(self._first_search_result(query))
+        return candidates
+
+    @staticmethod
+    def _homepage_candidates(name: str) -> list[str]:
+        """Generate a few likely homepage domains for brand-like competitor names."""
+        parts = [part for part in re.findall(r"[A-Za-z0-9]+", name.lower()) if part]
+        if not parts:
+            return []
+        combined = "".join(parts)
+        stems = [combined]
+        if len(parts) > 1:
+            stems.append(parts[0])
+        candidates: list[str] = []
+        for stem in stems:
+            for tld in ("com", "io", "ai", "co"):
+                candidates.append(f"https://www.{stem}.{tld}")
+                candidates.append(f"https://{stem}.{tld}")
+        return candidates
+
+    @staticmethod
+    def _looks_like_competitor_page(competitor_name: str, page: ExtractedPage) -> bool:
+        """Avoid accepting unrelated domains just because a guessed homepage returned readable text."""
+        haystack = f"{page.title or ''} {page.domain} {page.text[:1200]}".lower()
+        tokens = [token for token in re.findall(r"[A-Za-z0-9]+", competitor_name.lower()) if len(token) >= 4]
+        if not tokens:
+            return True
+        required = {tokens[0]}
+        if len(tokens) > 1:
+            required.add("".join(tokens))
+        return any(token in haystack for token in required)
+
     def _fetch_extract(self, competitor_name: str, url: str) -> ExtractedPage | None:
         """Fetch one page and extract readable text with trafilatura plus HTML fallback."""
         try:
-            response = requests.get(url, headers=REQUEST_HEADERS, timeout=15)
+            response = self._research_get(url, headers=REQUEST_HEADERS, timeout=15)
         except requests.RequestException:
             return None
         content_type = response.headers.get("content-type", "")
@@ -507,6 +560,15 @@ class ResearchService:
             status_code=response.status_code,
             text=text[:16000],
         )
+
+    @staticmethod
+    def _research_get(url: str, **kwargs: Any) -> Response:
+        """Retry public-web research fetches without TLS verification when local CA trust is broken."""
+        try:
+            return requests.get(url, **kwargs)
+        except SSLError:
+            requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
+            return requests.get(url, verify=False, **kwargs)
 
     @staticmethod
     def _split_competitor_seed(value: str) -> tuple[str, str | None]:

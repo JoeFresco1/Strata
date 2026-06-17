@@ -1464,9 +1464,31 @@ class GenerationService:
     @staticmethod
     def _validate_pillar_assessment(payload: dict[str, Any]) -> PillarAssessmentResponse:
         try:
-            return PillarAssessmentResponse.model_validate(payload)
+            response = PillarAssessmentResponse.model_validate(payload)
         except ValidationError as exc:
             raise LLMError(f"Invalid pillar assessment payload: {exc}") from exc
+        normalized: list[PillarAssessment] = []
+        for assessment in response.assessments:
+            normalized.append(GenerationService._normalized_pillar_assessment_scores(assessment))
+        return PillarAssessmentResponse(assessments=normalized)
+
+    @staticmethod
+    def _normalized_pillar_assessment_scores(assessment: PillarAssessment) -> PillarAssessment:
+        """Accept common 1-10 model scoring drift by scaling it into the 0-100 gate range."""
+        score_fields = (
+            assessment.distinctiveness_score,
+            assessment.strategic_value_score,
+            assessment.pillar_quality_score,
+        )
+        if all(0 <= score <= 10 for score in score_fields):
+            return assessment.model_copy(
+                update={
+                    "distinctiveness_score": assessment.distinctiveness_score * 10,
+                    "strategic_value_score": assessment.strategic_value_score * 10,
+                    "pillar_quality_score": assessment.pillar_quality_score * 10,
+                }
+            )
+        return assessment
 
     @staticmethod
     def _layer1_lens_for_round(round_index: int, *, model_role: str) -> tuple[str, str]:

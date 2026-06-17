@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from specforge.config import AppConfig, ModelProfile, build_model_profiles, resolve_default_model_profile, resolve_reasoning_settings
 from specforge.db import Database
@@ -16,6 +17,8 @@ from specforge.project_settings import default_project_model_settings, normalize
 from specforge.prompts import build_pillar_prompt, build_pillar_research_assessment_prompt, build_system_prompt, render_prompt
 from specforge.brief import BriefService
 from specforge.research import ResearchService
+from specforge.research import ExtractedPage
+from requests.exceptions import SSLError
 
 
 class DatabaseTests(unittest.TestCase):
@@ -183,6 +186,16 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(client.base_url, "http://localhost:9000")
         self.assertEqual(client.model_name, "custom-chat-model")
 
+    def test_strip_reasoning_wrappers_extracts_json_after_prefix(self) -> None:
+        cleaned = LlamaCppClient._strip_reasoning_wrappers('thought\n{"pillars":[{"title":"A"}]}')
+
+        self.assertEqual(cleaned, '{"pillars":[{"title":"A"}]}')
+
+    def test_strip_reasoning_wrappers_handles_code_fences(self) -> None:
+        cleaned = LlamaCppClient._strip_reasoning_wrappers('```json\n{"ok": true}\n```')
+
+        self.assertEqual(cleaned, '{"ok": true}')
+
 
 class BriefServiceTests(unittest.TestCase):
     def test_plan_turn_updates_same_canonical_brief(self) -> None:
@@ -313,6 +326,34 @@ class GenerationHelperTests(unittest.TestCase):
         )
 
         self.assertFalse(GenerationService._passes_pillar_quality_gate(weak_assessment))
+
+    def test_validate_pillar_assessment_scales_1_to_10_scores(self) -> None:
+        response = GenerationService._validate_pillar_assessment(
+            {
+                "assessments": [
+                    {
+                        "title": "Predictive Health",
+                        "canonical_title": "Predictive Health",
+                        "cluster_id": "predictive-health",
+                        "is_true_pillar": True,
+                        "distinctiveness_score": 8,
+                        "strategic_value_score": 9,
+                        "pillar_quality_score": 8,
+                        "too_narrow": False,
+                        "too_implementation_specific": False,
+                        "too_broad_generic": False,
+                        "merge_into": None,
+                        "rename_to": None,
+                        "sharpen_to": None,
+                        "rationale": "Strong pillar.",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(response.assessments[0].distinctiveness_score, 80)
+        self.assertEqual(response.assessments[0].strategic_value_score, 90)
+        self.assertEqual(response.assessments[0].pillar_quality_score, 80)
 
     def test_representative_pillar_memory_collapses_same_family(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -579,6 +620,47 @@ class ResearchServiceTests(unittest.TestCase):
         self.assertEqual(ResearchService._coverage_values(40), ("partially_supported", "emerging", 55))
         self.assertEqual(ResearchService._coverage_values(20), ("unclear", "unclear", 45))
         self.assertEqual(ResearchService._coverage_values(0), ("not_evident", "rare", 35))
+
+    @patch("specforge.research.requests.packages.urllib3.disable_warnings")
+    @patch("specforge.research.requests.get")
+    def test_research_get_retries_without_tls_verification_on_ssl_error(self, mock_get, mock_disable_warnings) -> None:
+        secure_error = SSLError("tls")
+        fallback_response = object()
+        mock_get.side_effect = [secure_error, fallback_response]
+
+        response = ResearchService._research_get("https://example.com", headers={"User-Agent": "SpecForge"})
+
+        self.assertIs(response, fallback_response)
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertEqual(mock_get.call_args_list[1].kwargs["verify"], False)
+        mock_disable_warnings.assert_called_once()
+
+    def test_homepage_candidates_cover_combined_and_primary_brand_forms(self) -> None:
+        candidates = ResearchService._homepage_candidates("Salesforce Customer Success")
+
+        self.assertIn("https://www.salesforcecustomersuccess.com", candidates)
+        self.assertIn("https://www.salesforce.com", candidates)
+
+    def test_looks_like_competitor_page_rejects_unrelated_brand(self) -> None:
+        unrelated = ExtractedPage(
+            competitor_name="Gainsight",
+            url="https://www.example.com",
+            domain="www.example.com",
+            title="Example Domain",
+            status_code=200,
+            text="Example content about sample placeholders and testing only.",
+        )
+        related = ExtractedPage(
+            competitor_name="Gainsight",
+            url="https://www.gainsight.com",
+            domain="www.gainsight.com",
+            title="Customer Success and Product Experience Software | Gainsight",
+            status_code=200,
+            text="Gainsight helps customer success teams retain and grow accounts.",
+        )
+
+        self.assertFalse(ResearchService._looks_like_competitor_page("Gainsight", unrelated))
+        self.assertTrue(ResearchService._looks_like_competitor_page("Gainsight", related))
 
 
 class PromptTests(unittest.TestCase):

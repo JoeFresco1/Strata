@@ -48,7 +48,51 @@ class LlamaCppClient:
     def _strip_reasoning_wrappers(content: str) -> str:
         cleaned = re.sub(r"(?is)<think>\s*</think>\s*", "", content).strip()
         cleaned = re.sub(r"(?is)^<think>.*?</think>\s*", "", cleaned).strip()
+        cleaned = re.sub(r"(?is)^```(?:json)?\s*", "", cleaned).strip()
+        cleaned = re.sub(r"(?is)\s*```$", "", cleaned).strip()
+        extracted = LlamaCppClient._extract_first_json_block(cleaned)
+        if extracted:
+            return extracted
         return cleaned
+
+    @staticmethod
+    def _extract_first_json_block(content: str) -> str | None:
+        """Recover the first balanced JSON object or array from noisy model output."""
+        start = -1
+        opening = ""
+        closing = ""
+        for marker, closing_marker in (("{", "}"), ("[", "]")):
+            position = content.find(marker)
+            if position != -1 and (start == -1 or position < start):
+                start = position
+                opening, closing = marker, closing_marker
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(content)):
+            char = content[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                continue
+            if char == opening:
+                depth += 1
+                continue
+            if char == closing:
+                depth -= 1
+                if depth == 0:
+                    return content[start : index + 1].strip()
+        return None
 
     def healthcheck(self) -> tuple[bool, str]:
         for path in ("/health", "/v1/models"):
