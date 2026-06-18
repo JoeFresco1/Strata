@@ -68,6 +68,43 @@ const PROMPT_FIELD_HELP = {
   coverage_critic: "Summarizes overlap and saturation across generation loops.",
   json_schema_repair: "Repairs near-miss model output into valid JSON.",
 };
+const PROMPT_GROUPS = [
+  {
+    title: "Shared Core",
+    description: "Prompts that power every layer, plus the JSON repair fallback.",
+    fields: ["system_json_generator", "json_schema_repair"],
+  },
+  {
+    title: "Layer 0",
+    description: "Planning and brief-intake prompts used before publish.",
+    fields: ["layer0_brief_extraction", "layer0_plan_guidance"],
+  },
+  {
+    title: "Layer 1",
+    description: "Pillar generation, normalization, assessment, and research review.",
+    fields: [
+      "layer1_pillar_generation",
+      "layer1_pillar_normalization",
+      "layer1_pillar_assessment",
+      "layer1_pillar_research_assessment",
+    ],
+  },
+  {
+    title: "Layer 2",
+    description: "Subfeature expansion prompts used after a pillar is selected.",
+    fields: ["layer2_subfeature_generation"],
+  },
+  {
+    title: "Layer 3",
+    description: "Final implementation-spec drafting prompts.",
+    fields: ["layer3_spec_generation"],
+  },
+  {
+    title: "Review",
+    description: "Coverage critic prompts that watch for repetition and saturation.",
+    fields: ["coverage_critic"],
+  },
+];
 
 // Fetch JSON from the local API and surface readable errors to the UI.
 async function apiFetch(path, options = {}) {
@@ -894,6 +931,22 @@ function PromptCatalogEditor({ settings, onChange, onSave, saveState }) {
 
   const promptCatalog = settings.prompt_catalog || {};
   const promptEntries = Object.entries(promptCatalog);
+  const groupedPrompts = PROMPT_GROUPS.map((group) => ({
+    ...group,
+    entries: group.fields
+      .map((key) => [key, promptCatalog[key]])
+      .filter(([, value]) => typeof value === "string"),
+  })).filter((group) => group.entries.length);
+
+  const groupedKeys = new Set(PROMPT_GROUPS.flatMap((group) => group.fields));
+  const ungroupedEntries = promptEntries.filter(([key]) => !groupedKeys.has(key));
+  if (ungroupedEntries.length) {
+    groupedPrompts.push({
+      title: "Other",
+      description: "Prompt templates that do not currently map to a specific layer group.",
+      entries: ungroupedEntries,
+    });
+  }
 
   function updatePrompt(key, value) {
     onChange({
@@ -919,22 +972,35 @@ function PromptCatalogEditor({ settings, onChange, onSave, saveState }) {
         </button>
       </div>
 
-      <div className="prompt-grid">
-        {promptEntries.map(([key, value]) => (
-          <div key={key} className="panel prompt-card">
-            <div className="prompt-card-header">
+      <div className="prompt-sections">
+        {groupedPrompts.map((group) => (
+          <section key={group.title} className="prompt-section panel">
+            <div className="panel-header prompt-section-header">
               <div>
-                <h4>{key}</h4>
-                <p className="muted">{PROMPT_FIELD_HELP[key] || "Editable template used by the local generation pipeline."}</p>
+                <h4>{group.title}</h4>
+                <p className="muted">{group.description}</p>
               </div>
+              <span className="status-pill">{group.entries.length} prompt{group.entries.length === 1 ? "" : "s"}</span>
             </div>
-            <textarea
-              className="prompt-textarea"
-              value={value}
-              onChange={(event) => updatePrompt(key, event.target.value)}
-              rows={10}
-            />
-          </div>
+            <div className="prompt-grid">
+              {group.entries.map(([key, value]) => (
+                <div key={key} className="panel prompt-card">
+                  <div className="prompt-card-header">
+                    <div>
+                      <h4>{key}</h4>
+                      <p className="muted">{PROMPT_FIELD_HELP[key] || "Editable template used by the local generation pipeline."}</p>
+                    </div>
+                  </div>
+                  <textarea
+                    className="prompt-textarea"
+                    value={value}
+                    onChange={(event) => updatePrompt(key, event.target.value)}
+                    rows={10}
+                  />
+                </div>
+              ))}
+            </div>
+          </section>
         ))}
       </div>
     </div>

@@ -549,6 +549,33 @@ pre {
   align-items: center;
 }
 
+.prompt-sections {
+  display: grid;
+  gap: 1rem;
+}
+
+.prompt-section {
+  display: grid;
+  gap: 1rem;
+  border-radius: 20px;
+  border-color: #cfdbe2;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(243, 248, 250, 0.98) 100%);
+}
+
+.prompt-section-header {
+  align-items: flex-start;
+}
+
+.prompt-section-header h4 {
+  margin: 0;
+  font-size: 1.02rem;
+}
+
+.prompt-section-header p {
+  margin: 0.3rem 0 0;
+  max-width: 62ch;
+}
+
 .prompt-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
