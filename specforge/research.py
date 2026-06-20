@@ -28,7 +28,7 @@ from specforge.prompts import (
 
 
 SEARCH_URL = "https://duckduckgo.com/html/?q={query}"
-REQUEST_HEADERS = {"User-Agent": "SpecForgeLocalResearch/0.1"}
+REQUEST_HEADERS = {"User-Agent": "StrataLocalResearch/0.1"}
 FOCUSED_PATHS = ("", "/features", "/solutions", "/product", "/pricing", "/customers", "/about")
 
 

@@ -46,7 +46,7 @@ def _project_label(project: Project) -> str:
 
 
 def _render_sidebar(config: AppConfig, db: Database, llm_client: LlamaCppClient) -> str | None:
-    st.sidebar.title("SpecForge")
+    st.sidebar.title("Strata")
     ok, message = llm_client.healthcheck()
     if ok:
         st.sidebar.success(f"LLM server: {message}")
@@ -74,7 +74,7 @@ def _render_sidebar(config: AppConfig, db: Database, llm_client: LlamaCppClient)
 def _render_new_project(db: Database) -> str | None:
     st.subheader("New Project")
     with st.form("new_project_form", clear_on_submit=False):
-        name = st.text_input("Project name", placeholder="SpecForge demo")
+        name = st.text_input("Project name", placeholder="Strata demo")
         idea = st.text_area(
             "Product idea",
             height=180,
@@ -338,7 +338,7 @@ def _render_generation_controls(
         defaults=(6, 12, 2),
         bounds=((1, 12), (4, 20), (1, 10)),
         thinking_label="Enable model thinking mode",
-        thinking_help="When enabled, SpecForge restarts llama.cpp with reasoning enabled for the selected Layer 1 models.",
+        thinking_help="When enabled, Strata restarts llama.cpp with reasoning enabled for the selected Layer 1 models.",
     )
 
     if st.button("Broaden Layer 1 Until Exhausted", use_container_width=True):
@@ -523,8 +523,8 @@ def _render_export(project: Project, db: Database, config: AppConfig) -> None:
 
 
 def run_app() -> None:
-    st.set_page_config(page_title="SpecForge", layout="wide")
-    st.title("SpecForge")
+    st.set_page_config(page_title="Strata", layout="wide")
+    st.title("Strata")
     st.caption("A local recursive feature decomposition engine with human-in-the-loop pruning.")
 
     config, db, llm_client, generation_service = _bootstrap()

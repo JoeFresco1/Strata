@@ -1,6 +1,6 @@
 # Storage And Memory
 
-SpecForge should keep the database as the source of truth and use compressed memory for prompting.
+Strata should keep the database as the source of truth and use compressed memory for prompting.
 
 ## SQLite tables
 
@@ -26,4 +26,3 @@ SpecForge should keep the database as the source of truth and use compressed mem
 - Prefer indexed, repeated reads over scanning the entire table each time.
 - Keep layer-specific memory scoped to the relevant parent item.
 - Preserve priority when editing nodes unless the user explicitly clears it.
-

@@ -1,6 +1,6 @@
 # UI And Export
 
-SpecForge should feel like a working review tool, not a chat app.
+Strata should feel like a working review tool, not a chat app.
 
 ## Main flow
 
@@ -24,4 +24,3 @@ SpecForge should feel like a working review tool, not a chat app.
 - Export the current tree as Markdown for quick reading.
 - Export a JSON copy for downstream tooling.
 - Include the project idea and the tree structure in the export.
-

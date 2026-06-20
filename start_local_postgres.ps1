@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-# Start or initialize the repo-local PostgreSQL cluster used by SpecForge.
+# Start or initialize the repo-local PostgreSQL cluster used by Strata.
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $localDir = Join-Path $root ".local"
 $dataDir = Join-Path $localDir "postgres-data"
@@ -42,4 +42,4 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-Write-Host "SpecForge local PostgreSQL is running on port $port"
+Write-Host "Strata local PostgreSQL is running on port $port"

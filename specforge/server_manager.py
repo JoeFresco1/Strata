@@ -72,13 +72,13 @@ class LlamaServerManager:
         current_alias = self.get_loaded_model_alias()
         if current_alias is not None and current_alias != profile.alias:
             raise ServerManagerError(
-                f"llama.cpp is already serving '{current_alias}' and was not started by SpecForge. "
+                f"llama.cpp is already serving '{current_alias}' and was not started by Strata. "
                 "Stop that server before switching models."
             )
         if current_alias == profile.alias and current_meta is None:
             raise ServerManagerError(
-                "llama.cpp is already running with the requested model, but SpecForge cannot verify its thinking mode. "
-                "Stop that server first so SpecForge can restart it with the requested setting."
+                "llama.cpp is already running with the requested model, but Strata cannot verify its thinking mode. "
+                "Stop that server first so Strata can restart it with the requested setting."
             )
         self._start_server(profile, thinking_enabled=thinking_enabled)
         deadline = time.time() + timeout_seconds

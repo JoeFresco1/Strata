@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -83,6 +83,35 @@ class Layer3GenerateRequest(BaseModel):
     thinking_enabled: bool = False
 
 
+class Layer2ReviewActionRequest(BaseModel):
+    action_type: Literal[
+        "keep",
+        "cut",
+        "rename",
+        "merge",
+        "reassign_owner",
+        "add_relationship",
+        "remove_relationship",
+        "prioritize",
+        "approve_for_layer3",
+    ]
+    feature_id: str | None = None
+    target_feature_id: str | None = None
+    title: str | None = None
+    description: str | None = None
+    owner_pillar_id: str | None = None
+    relationship_type: Literal[
+        "related_to",
+        "depends_on",
+        "enables",
+        "overlaps_with",
+        "uses_shared_service",
+        "duplicate_of",
+        "conflicts_with",
+    ] | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class ExportResponse(BaseModel):
     markdown_path: str
     json_path: str
@@ -138,6 +167,7 @@ class AppSnapshotResponse(BaseModel):
     memory: list[dict[str, Any]]
     research_jobs: list[dict[str, Any]] = Field(default_factory=list)
     research_findings: list[dict[str, Any]] = Field(default_factory=list)
+    layer2_graph: dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelProfileResponse(BaseModel):

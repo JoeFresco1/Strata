@@ -19,4 +19,4 @@ foreach ($pidFile in @($frontendPidFile, $apiPidFile, $streamlitPidFile, $server
 
 powershell -ExecutionPolicy Bypass -File (Join-Path $root "stop_local_postgres.ps1")
 
-Write-Host "SpecForge background processes stopped."
+Write-Host "Strata background processes stopped."

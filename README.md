@@ -1,6 +1,6 @@
-# SpecForge
+# Strata
 
-SpecForge is a local recursive product-spec generator built around GGUF models served through `llama.cpp`.
+Strata is a local recursive product-spec generator built around GGUF models served through `llama.cpp`.
 The default UX runs as a localhost app with `FastAPI + React`, and the default database now runs on a repo-local `PostgreSQL + pgvector` cluster.
 
 ## MVP capabilities
@@ -85,7 +85,7 @@ cd ..
 
 ## Local PostgreSQL + pgvector
 
-SpecForge now defaults to a repo-local PostgreSQL cluster under `.local/postgres-data` on port `55433`.
+Strata now defaults to a repo-local PostgreSQL cluster under `.local/postgres-data` on port `55433`.
 That avoids relying on a passworded machine-wide service and keeps the project self-contained.
 
 The default env values are:
@@ -108,7 +108,7 @@ powershell -ExecutionPolicy Bypass -File .\start_local_postgres.ps1
 powershell -ExecutionPolicy Bypass -File .\stop_local_postgres.ps1
 ```
 
-On first boot, SpecForge will:
+On first boot, Strata will:
 
 - initialize the local PostgreSQL cluster if it does not exist
 - create the `specforge` database if it does not exist
@@ -118,7 +118,7 @@ On first boot, SpecForge will:
 
 ## Start llama.cpp server
 
-SpecForge auto-discovers GGUF models under `C:\Users\Fresc\.cache\lm-studio\models` and prefers the Qwen 3.6 27B no-thinking model when available.
+Strata auto-discovers GGUF models under `C:\Users\Fresc\.cache\lm-studio\models` and prefers the Qwen 3.6 27B no-thinking model when available.
 It also prefers the CUDA-enabled `llama-server.exe` bundled by LM Studio when found on this machine.
 
 Example launch command:
@@ -158,7 +158,7 @@ The launcher reuses existing local state and installs frontend packages automati
 
 ## Layer 0 brief and local research
 
-Layer 0 is now a draft brief workspace. Plan mode lets you chat with the local model while SpecForge extracts structured fields into the same canonical brief that Form mode edits directly. The v1 brief fields are:
+Layer 0 is now a draft brief workspace. Plan mode lets you chat with the local model while Strata extracts structured fields into the same canonical brief that Form mode edits directly. The v1 brief fields are:
 
 - `product_idea`
 - `known_competitors`

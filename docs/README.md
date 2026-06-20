@@ -1,6 +1,6 @@
-# SpecForge Behavior Spec
+# Strata Behavior Spec
 
-This folder captures the working behavior contract for SpecForge as we shaped it in conversation.
+This folder captures the working behavior contract for Strata as we shaped it in conversation.
 
 The goal is to describe how the product should behave, not just what code exists today.
 
@@ -12,4 +12,3 @@ The goal is to describe how the product should behave, not just what code exists
 - `03-model-sequencing.md`: how multiple local models should be used in sequence
 - `04-storage-and-memory.md`: SQLite, generation logs, memory, and provenance rules
 - `05-ui-and-export.md`: the review workflow and export behavior
-

@@ -194,6 +194,72 @@ def build_subfeature_prompt(
     )
 
 
+def build_layer2_feature_prompt(
+    *,
+    product_idea: str,
+    pillar_title: str,
+    pillar_description: str,
+    lens_name: str,
+    lens_instruction: str,
+    scope_contract: dict[str, Any],
+    coverage_families: list[str],
+    coverage_summary: str,
+    sibling_features: list[dict[str, Any]],
+    cross_pillar_features: list[dict[str, Any]],
+    negative_cache: list[str],
+    target_count: int,
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    """Render the graph-native Layer 2 prompt for one scoped lens pass."""
+    return render_prompt(
+        "layer2_feature_graph_generation",
+        {
+            "product_idea": product_idea,
+            "pillar_title": pillar_title,
+            "pillar_description": pillar_description,
+            "lens_name": lens_name,
+            "lens_instruction": lens_instruction,
+            "scope_contract": json.dumps(scope_contract, indent=2),
+            "coverage_families": _format_list(coverage_families),
+            "coverage_summary": _format_scalar(coverage_summary, fallback="No Layer 2 coverage assessment yet."),
+            "sibling_features": _format_memory_items(sibling_features),
+            "cross_pillar_features": _format_memory_items(cross_pillar_features),
+            "negative_cache": _format_list(negative_cache),
+            "target_count": target_count,
+        },
+        prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
+    )
+
+
+def build_layer2_coverage_prompt(
+    *,
+    product_idea: str,
+    scope_contract: dict[str, Any],
+    coverage_families: list[str],
+    current_features: list[dict[str, Any]],
+    newest_features: list[dict[str, Any]],
+    previous_summary: str,
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    """Render the Layer 2 scoped coverage critic prompt."""
+    return render_prompt(
+        "layer2_scope_coverage_critic",
+        {
+            "product_idea": product_idea,
+            "scope_contract": json.dumps(scope_contract, indent=2),
+            "coverage_families": _format_list(coverage_families),
+            "current_features": _format_memory_items(current_features),
+            "newest_features": _format_memory_items(newest_features),
+            "previous_summary": _format_scalar(previous_summary, fallback="No prior Layer 2 coverage summary."),
+        },
+        prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
+    )
+
+
 def build_critic_prompt(
     *,
     layer_name: str,

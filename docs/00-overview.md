@@ -1,6 +1,6 @@
-# SpecForge Overview
+# Strata Overview
 
-SpecForge is a local recursive product-spec generator that turns one product idea into a tree of pillars, subfeatures, and implementation specs.
+Strata is a local recursive product-spec generator that turns one product idea into a tree of pillars, subfeatures, and implementation specs.
 
 The product should behave like a broad discovery engine with human-in-the-loop pruning. It should expand aggressively first, then let the user cut, merge, rename, and prioritize before descending to the next layer.
 
@@ -20,4 +20,3 @@ The product should behave like a broad discovery engine with human-in-the-loop p
 - Do not auto-delete questionable items.
 - Do not make Layer 1 behave like Layer 2.
 - Do not depend on external cloud services for the core workflow.
-

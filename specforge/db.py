@@ -17,8 +17,13 @@ from psycopg.errors import DuplicateDatabase, InvalidCatalogName
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from specforge.db_embeddings import DatabaseEmbeddingMixin
+from specforge.db_rows import DatabaseRowMixin
+from specforge.db_schema import DatabaseSchemaMixin
+from specforge.layer2_db import Layer2DatabaseMixin
 from specforge.models import (
     BriefConversationTurn,
+    Layer1PillarRecord,
     Node,
     Project,
     ProjectBrief,
@@ -28,8 +33,6 @@ from specforge.models import (
     ResearchFinding,
     ResearchJob,
     ResearchSource,
-    SimilarityEdge,
-    SimilarityMatch,
 )
 
 
@@ -41,10 +44,11 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class Database:
+class Database(Layer2DatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
     """Store SpecForge state in either PostgreSQL or SQLite through one stable API."""
 
     def __init__(self, target: str | Path, *, postgres_admin_url: str | None = None):
+        """Configure the database backend and initialize required schema objects."""
         self.target = target
         self.postgres_admin_url = postgres_admin_url
         self.is_postgres = self._is_postgres_target(target)
@@ -947,6 +951,39 @@ class Database:
             rejected.append(f"{title}: {description}" if description else title)
         return rejected
 
+    def upsert_layer1_pillar(self, node: Node) -> Layer1PillarRecord:
+        """Mirror an approved Layer 1 node into the graph schema used by Layer 2."""
+        now = utc_now()
+        self._execute(
+            f"""
+            INSERT INTO layer1_pillars (id, project_id, node_id, title, description, status, created_at, updated_at)
+            VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
+            ON CONFLICT (node_id) DO UPDATE SET
+                title = EXCLUDED.title,
+                description = EXCLUDED.description,
+                status = EXCLUDED.status,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (
+                node.id,
+                node.project_id,
+                node.id,
+                node.title,
+                node.description or "",
+                node.status,
+                now,
+                now,
+            ),
+        )
+        return self.get_layer1_pillar(node.id)
+
+    def get_layer1_pillar(self, pillar_id: str) -> Layer1PillarRecord:
+        """Return one Layer 1 pillar record by pillar/node id."""
+        row = self._fetchone(f"SELECT * FROM layer1_pillars WHERE id = {self.param}", (pillar_id,))
+        if row is None:
+            raise ValueError(f"Layer 1 pillar not found: {pillar_id}")
+        return self._row_to_layer1_pillar(row)
+
     def import_sqlite_file(self, sqlite_path: Path) -> None:
         """Seed the current database from a legacy SQLite file while preserving record ids."""
         if not sqlite_path.exists():
@@ -1003,168 +1040,6 @@ class Database:
                 ).fetchall(),
             )
 
-    def get_node_embedding_hash(self, node_id: str, embedding_model: str) -> str | None:
-        """Return the stored content hash for a node embedding when it exists."""
-        if not self.is_postgres:
-            return None
-        row = self._fetchone(
-            f"""
-            SELECT content_hash
-            FROM node_embeddings
-            WHERE node_id = {self.param} AND embedding_model = {self.param}
-            """,
-            (node_id, embedding_model),
-        )
-        if row is None:
-            return None
-        value = self._row_value(row, "content_hash")
-        return str(value) if value is not None else None
-
-    def upsert_node_embedding(
-        self,
-        *,
-        project_id: str,
-        node_id: str,
-        embedding_model: str,
-        embedding: list[float],
-        content_hash: str,
-    ) -> None:
-        """Store or refresh a node embedding in pgvector-backed storage."""
-        if not self.is_postgres:
-            return
-        now = utc_now()
-        self._execute(
-            f"""
-            INSERT INTO node_embeddings (
-                id, project_id, node_id, embedding_model, embedding, content_hash, created_at, updated_at
-            )
-            VALUES (
-                {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}
-            )
-            ON CONFLICT (node_id, embedding_model)
-            DO UPDATE SET
-                embedding = EXCLUDED.embedding,
-                content_hash = EXCLUDED.content_hash,
-                updated_at = EXCLUDED.updated_at
-            """,
-            (
-                str(uuid.uuid4()),
-                project_id,
-                node_id,
-                embedding_model,
-                Vector(embedding),
-                content_hash,
-                now,
-                now,
-            ),
-        )
-
-    def find_similar_nodes(
-        self,
-        *,
-        project_id: str,
-        embedding_model: str,
-        embedding: list[float],
-        layer: int | None = None,
-        node_type: str | None = None,
-        exclude_node_ids: list[str] | None = None,
-        min_similarity: float = 0.0,
-        limit: int = 5,
-    ) -> list[SimilarityMatch]:
-        """Return the most cosine-similar nodes for the supplied embedding."""
-        if not self.is_postgres:
-            return []
-        query = f"""
-            SELECT
-                nodes.id AS node_id,
-                nodes.title,
-                nodes.description,
-                nodes.layer,
-                nodes.node_type,
-                1 - (node_embeddings.embedding <=> {self.param}) AS score
-            FROM node_embeddings
-            JOIN nodes ON nodes.id = node_embeddings.node_id
-            WHERE node_embeddings.project_id = {self.param}
-              AND node_embeddings.embedding_model = {self.param}
-        """
-        vector = Vector(embedding)
-        params: list[Any] = [vector, project_id, embedding_model]
-        if layer is not None:
-            query += f" AND nodes.layer = {self.param}"
-            params.append(layer)
-        if node_type is not None:
-            query += f" AND nodes.node_type = {self.param}"
-            params.append(node_type)
-        if exclude_node_ids:
-            placeholders = ", ".join([self.param] * len(exclude_node_ids))
-            query += f" AND nodes.id NOT IN ({placeholders})"
-            params.extend(exclude_node_ids)
-        query += f" AND 1 - (node_embeddings.embedding <=> {self.param}) >= {self.param}"
-        params.extend([vector, min_similarity])
-        query += f" ORDER BY node_embeddings.embedding <=> {self.param} ASC LIMIT {self.param}"
-        params.extend([vector, limit])
-        rows = self._fetchall(query, tuple(params))
-        return [
-            SimilarityMatch(
-                node_id=str(self._row_value(row, "node_id")),
-                title=str(self._row_value(row, "title")),
-                description=self._row_value(row, "description"),
-                layer=int(self._row_value(row, "layer")),
-                node_type=str(self._row_value(row, "node_type")),
-                score=float(self._row_value(row, "score")),
-            )
-            for row in rows
-        ]
-
-    def list_similarity_edges(
-        self,
-        *,
-        project_id: str,
-        embedding_model: str,
-        layer: int,
-        node_type: str,
-        min_similarity: float,
-    ) -> list[SimilarityEdge]:
-        """Return pairwise similarity edges above the threshold using stored pgvector embeddings."""
-        if not self.is_postgres:
-            return []
-        rows = self._fetchall(
-            f"""
-            SELECT
-                left_nodes.id AS source_node_id,
-                right_nodes.id AS target_node_id,
-                left_nodes.title AS source_title,
-                right_nodes.title AS target_title,
-                1 - (left_embeddings.embedding <=> right_embeddings.embedding) AS score
-            FROM node_embeddings AS left_embeddings
-            JOIN node_embeddings AS right_embeddings
-              ON left_embeddings.project_id = right_embeddings.project_id
-             AND left_embeddings.embedding_model = right_embeddings.embedding_model
-             AND left_embeddings.node_id < right_embeddings.node_id
-            JOIN nodes AS left_nodes ON left_nodes.id = left_embeddings.node_id
-            JOIN nodes AS right_nodes ON right_nodes.id = right_embeddings.node_id
-            WHERE left_embeddings.project_id = {self.param}
-              AND left_embeddings.embedding_model = {self.param}
-              AND left_nodes.layer = {self.param}
-              AND right_nodes.layer = {self.param}
-              AND left_nodes.node_type = {self.param}
-              AND right_nodes.node_type = {self.param}
-              AND 1 - (left_embeddings.embedding <=> right_embeddings.embedding) >= {self.param}
-            ORDER BY score DESC
-            """,
-            (project_id, embedding_model, layer, layer, node_type, node_type, min_similarity),
-        )
-        return [
-            SimilarityEdge(
-                source_node_id=str(self._row_value(row, "source_node_id")),
-                target_node_id=str(self._row_value(row, "target_node_id")),
-                source_title=str(self._row_value(row, "source_title")),
-                target_title=str(self._row_value(row, "target_title")),
-                score=float(self._row_value(row, "score")),
-            )
-            for row in rows
-        ]
-
     def _copy_rows(self, table: str, columns: tuple[str, ...], rows: list[Any]) -> None:
         """Insert legacy rows into the current database only when they are not already present."""
         if not rows:
@@ -1185,491 +1060,6 @@ class Database:
         if isinstance(value, (dict, list)):
             return self._dump_json(value)
         return value
-
-    def _initialize_sqlite(self) -> None:
-        """Create the SQLite schema used by tests and legacy local setups."""
-        with self.connect() as conn:
-            conn.executescript(
-                """
-                PRAGMA foreign_keys = ON;
-
-                CREATE TABLE IF NOT EXISTS projects (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    idea TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS project_briefs (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL UNIQUE,
-                    product_idea TEXT NOT NULL,
-                    known_competitors TEXT NOT NULL,
-                    constraints TEXT NOT NULL,
-                    target_users TEXT NOT NULL DEFAULT '',
-                    goals TEXT NOT NULL DEFAULT '[]',
-                    preferred_directions TEXT NOT NULL DEFAULT '[]',
-                    rejected_directions TEXT NOT NULL DEFAULT '[]',
-                    notes TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'draft',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS app_settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS project_model_settings (
-                    project_id TEXT PRIMARY KEY,
-                    llm_profiles TEXT NOT NULL,
-                    embedding_profiles TEXT NOT NULL,
-                    assignments TEXT NOT NULL,
-                    prompt_catalog TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS brief_conversations (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    extracted_updates TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS nodes (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    parent_id TEXT,
-                    layer INTEGER NOT NULL,
-                    node_type TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    description TEXT,
-                    json_payload TEXT,
-                    status TEXT DEFAULT 'generated',
-                    priority INTEGER,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id),
-                    FOREIGN KEY(parent_id) REFERENCES nodes(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS generations (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    node_id TEXT,
-                    prompt TEXT NOT NULL,
-                    raw_response TEXT NOT NULL,
-                    parsed_json TEXT,
-                    model_name TEXT,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS project_memory (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    scope_id TEXT,
-                    memory_type TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS research_jobs (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    scope_id TEXT,
-                    job_type TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    progress INTEGER NOT NULL,
-                    details TEXT NOT NULL,
-                    error TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS research_sources (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    scope_id TEXT,
-                    competitor_name TEXT NOT NULL,
-                    domain TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    page_type TEXT NOT NULL,
-                    title TEXT,
-                    status_code INTEGER,
-                    fetched_at TEXT NOT NULL,
-                    content_hash TEXT,
-                    metadata TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS research_chunks (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    scope_id TEXT,
-                    source_id TEXT NOT NULL,
-                    competitor_name TEXT NOT NULL,
-                    domain TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    title TEXT,
-                    chunk_index INTEGER NOT NULL,
-                    text TEXT NOT NULL,
-                    embedding_model TEXT NOT NULL,
-                    embedding TEXT,
-                    metadata TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id),
-                    FOREIGN KEY(source_id) REFERENCES research_sources(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS research_findings (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    scope_id TEXT,
-                    finding_type TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id)
-                );
-
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_project_memory_scope
-                ON project_memory(project_id, scope, COALESCE(scope_id, ''), memory_type);
-
-                CREATE INDEX IF NOT EXISTS idx_nodes_project_parent_layer_type
-                ON nodes(project_id, COALESCE(parent_id, ''), layer, node_type);
-
-                CREATE INDEX IF NOT EXISTS idx_brief_conversations_project_created
-                ON brief_conversations(project_id, created_at);
-
-                CREATE INDEX IF NOT EXISTS idx_nodes_project_status
-                ON nodes(project_id, status);
-
-                CREATE INDEX IF NOT EXISTS idx_app_settings_key
-                ON app_settings(key);
-
-                CREATE INDEX IF NOT EXISTS idx_project_model_settings_project
-                ON project_model_settings(project_id);
-
-                CREATE INDEX IF NOT EXISTS idx_generations_project_node
-                ON generations(project_id, node_id, created_at);
-
-                CREATE INDEX IF NOT EXISTS idx_research_jobs_project_scope
-                ON research_jobs(project_id, scope, COALESCE(scope_id, ''), updated_at);
-
-                CREATE INDEX IF NOT EXISTS idx_research_sources_project_scope
-                ON research_sources(project_id, scope, COALESCE(scope_id, ''), fetched_at);
-
-                CREATE INDEX IF NOT EXISTS idx_research_findings_project_scope
-                ON research_findings(project_id, scope, COALESCE(scope_id, ''), updated_at);
-                """
-            )
-        try:
-            self._execute(
-                "ALTER TABLE project_model_settings ADD COLUMN prompt_catalog TEXT NOT NULL DEFAULT '{}'"
-            )
-        except Exception as exc:
-            if "duplicate column name" not in str(exc).lower():
-                raise
-
-    def _initialize_postgres(self) -> None:
-        """Create the PostgreSQL schema and enable pgvector for future retrieval work."""
-        with self.connect() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS projects (
-                        id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        idea TEXT NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS project_briefs (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
-                        product_idea TEXT NOT NULL,
-                        known_competitors JSONB NOT NULL,
-                        constraints TEXT NOT NULL,
-                        target_users TEXT NOT NULL DEFAULT '',
-                        goals JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        preferred_directions JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        rejected_directions JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        notes TEXT NOT NULL DEFAULT '',
-                        status TEXT NOT NULL DEFAULT 'draft',
-                        created_at TIMESTAMPTZ NOT NULL,
-                        updated_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS app_settings (
-                        key TEXT PRIMARY KEY,
-                        value TEXT NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS project_model_settings (
-                        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-                        llm_profiles JSONB NOT NULL,
-                        embedding_profiles JSONB NOT NULL,
-                        assignments JSONB NOT NULL,
-                        prompt_catalog JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        created_at TIMESTAMPTZ NOT NULL,
-                        updated_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS target_users TEXT NOT NULL DEFAULT ''")
-                cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS goals JSONB NOT NULL DEFAULT '[]'::jsonb")
-                cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS preferred_directions JSONB NOT NULL DEFAULT '[]'::jsonb")
-                cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS rejected_directions JSONB NOT NULL DEFAULT '[]'::jsonb")
-                cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''")
-                cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft'")
-                cursor.execute("ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS prompt_catalog JSONB NOT NULL DEFAULT '{}'::jsonb")
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS brief_conversations (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        role TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        extracted_updates JSONB NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS nodes (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        parent_id TEXT REFERENCES nodes(id) ON DELETE CASCADE,
-                        layer INTEGER NOT NULL,
-                        node_type TEXT NOT NULL,
-                        title TEXT NOT NULL,
-                        description TEXT,
-                        json_payload JSONB,
-                        status TEXT DEFAULT 'generated',
-                        priority INTEGER,
-                        created_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS generations (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
-                        prompt TEXT NOT NULL,
-                        raw_response TEXT NOT NULL,
-                        parsed_json JSONB,
-                        model_name TEXT,
-                        created_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS project_memory (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        scope TEXT NOT NULL,
-                        scope_id TEXT,
-                        memory_type TEXT NOT NULL,
-                        content JSONB NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL,
-                        updated_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS node_embeddings (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-                        embedding_model TEXT NOT NULL,
-                        embedding vector(384) NOT NULL,
-                        content_hash TEXT,
-                        created_at TIMESTAMPTZ NOT NULL,
-                        updated_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS research_jobs (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        scope TEXT NOT NULL,
-                        scope_id TEXT,
-                        job_type TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        progress INTEGER NOT NULL,
-                        details JSONB NOT NULL,
-                        error TEXT,
-                        created_at TIMESTAMPTZ NOT NULL,
-                        updated_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS research_sources (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        scope TEXT NOT NULL,
-                        scope_id TEXT,
-                        competitor_name TEXT NOT NULL,
-                        domain TEXT NOT NULL,
-                        url TEXT NOT NULL,
-                        page_type TEXT NOT NULL,
-                        title TEXT,
-                        status_code INTEGER,
-                        fetched_at TIMESTAMPTZ NOT NULL,
-                        content_hash TEXT,
-                        metadata JSONB NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS research_chunks (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        scope TEXT NOT NULL,
-                        scope_id TEXT,
-                        source_id TEXT NOT NULL REFERENCES research_sources(id) ON DELETE CASCADE,
-                        competitor_name TEXT NOT NULL,
-                        domain TEXT NOT NULL,
-                        url TEXT NOT NULL,
-                        title TEXT,
-                        chunk_index INTEGER NOT NULL,
-                        text TEXT NOT NULL,
-                        embedding_model TEXT NOT NULL,
-                        embedding vector(384) NOT NULL,
-                        metadata JSONB NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS research_findings (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        scope TEXT NOT NULL,
-                        scope_id TEXT,
-                        finding_type TEXT NOT NULL,
-                        title TEXT NOT NULL,
-                        summary TEXT NOT NULL,
-                        payload JSONB NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL,
-                        updated_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_project_memory_scope
-                    ON project_memory(project_id, scope, COALESCE(scope_id, ''), memory_type)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_nodes_project_parent_layer_type
-                    ON nodes(project_id, COALESCE(parent_id, ''), layer, node_type)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_brief_conversations_project_created
-                    ON brief_conversations(project_id, created_at)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_nodes_project_status
-                    ON nodes(project_id, status)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_app_settings_key
-                    ON app_settings(key)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_project_model_settings_project
-                    ON project_model_settings(project_id)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_generations_project_node
-                    ON generations(project_id, node_id, created_at)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_node_embeddings_project_node
-                    ON node_embeddings(project_id, node_id)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_node_embeddings_node_model
-                    ON node_embeddings(node_id, embedding_model)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_research_jobs_project_scope
-                    ON research_jobs(project_id, scope, COALESCE(scope_id, ''), updated_at)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_research_sources_project_scope
-                    ON research_sources(project_id, scope, COALESCE(scope_id, ''), fetched_at)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_research_findings_project_scope
-                    ON research_findings(project_id, scope, COALESCE(scope_id, ''), updated_at)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_research_chunks_project_scope
-                    ON research_chunks(project_id, scope, COALESCE(scope_id, ''), source_id)
-                    """
-                )
 
     def _ensure_postgres_database(self) -> None:
         """Create the target PostgreSQL database if it does not already exist."""
@@ -1772,164 +1162,3 @@ class Database:
             value = json.loads(payload or "[]")
             return value if isinstance(value, list) else []
         return []
-
-    @staticmethod
-    def _row_to_project(row: Any) -> Project:
-        """Convert a raw database row into a Project model."""
-        return Project(
-            id=row["id"],
-            name=row["name"],
-            idea=row["idea"],
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-        )
-
-    def _row_to_project_summary(self, row: Any) -> dict[str, Any]:
-        """Convert a project row with summary metadata into a plain payload for the hub."""
-        brief_updated_at = row["brief_updated_at"]
-        return {
-            "id": row["id"],
-            "name": row["name"],
-            "idea": row["idea"],
-            "created_at": datetime.fromisoformat(str(row["created_at"])),
-            "brief_status": row["brief_status"],
-            "brief_updated_at": datetime.fromisoformat(str(brief_updated_at)) if brief_updated_at else None,
-            "node_count": int(row["node_count"]),
-            "pillar_count": int(row["pillar_count"]),
-        }
-
-    def _row_to_project_brief(self, row: Any) -> ProjectBrief:
-        """Convert a raw database row into a ProjectBrief model."""
-        return ProjectBrief(
-            id=row["id"],
-            project_id=row["project_id"],
-            product_idea=row["product_idea"],
-            known_competitors=self._load_json_list(row["known_competitors"]),
-            constraints=row["constraints"],
-            target_users=row["target_users"],
-            goals=self._load_json_list(row["goals"]),
-            preferred_directions=self._load_json_list(row["preferred_directions"]),
-            rejected_directions=self._load_json_list(row["rejected_directions"]),
-            notes=row["notes"],
-            status=row["status"],
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-            updated_at=datetime.fromisoformat(str(row["updated_at"])),
-        )
-
-    def _row_to_project_model_settings(self, row: Any) -> ProjectModelSettings:
-        """Convert a raw database row into a ProjectModelSettings model."""
-        return ProjectModelSettings(
-            project_id=row["project_id"],
-            llm_profiles=self._load_json_list(row["llm_profiles"]),
-            embedding_profiles=self._load_json_list(row["embedding_profiles"]),
-            assignments=self._load_json(row["assignments"]),
-            prompt_catalog=self._load_json(row["prompt_catalog"]),
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-            updated_at=datetime.fromisoformat(str(row["updated_at"])),
-        )
-
-    def _row_to_brief_conversation_turn(self, row: Any) -> BriefConversationTurn:
-        """Convert a raw database row into a BriefConversationTurn model."""
-        return BriefConversationTurn(
-            id=row["id"],
-            project_id=row["project_id"],
-            role=row["role"],
-            content=row["content"],
-            extracted_updates=self._load_json(row["extracted_updates"]),
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-        )
-
-    def _row_to_node(self, row: Any) -> Node:
-        """Convert a raw database row into a Node model."""
-        return Node(
-            id=row["id"],
-            project_id=row["project_id"],
-            parent_id=row["parent_id"],
-            layer=row["layer"],
-            node_type=row["node_type"],
-            title=row["title"],
-            description=row["description"],
-            json_payload=self._load_json(row["json_payload"]),
-            status=row["status"],
-            priority=row["priority"],
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-        )
-
-    def _row_to_project_memory(self, row: Any) -> ProjectMemory:
-        """Convert a raw database row into a ProjectMemory model."""
-        return ProjectMemory(
-            id=row["id"],
-            project_id=row["project_id"],
-            scope=row["scope"],
-            scope_id=row["scope_id"],
-            memory_type=row["memory_type"],
-            content=self._load_json(row["content"]),
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-            updated_at=datetime.fromisoformat(str(row["updated_at"])),
-        )
-
-    def _row_to_research_job(self, row: Any) -> ResearchJob:
-        """Convert a raw database row into a ResearchJob model."""
-        return ResearchJob(
-            id=row["id"],
-            project_id=row["project_id"],
-            scope=row["scope"],
-            scope_id=row["scope_id"],
-            job_type=row["job_type"],
-            status=row["status"],
-            progress=int(row["progress"]),
-            details=self._load_json(row["details"]),
-            error=row["error"],
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-            updated_at=datetime.fromisoformat(str(row["updated_at"])),
-        )
-
-    def _row_to_research_source(self, row: Any) -> ResearchSource:
-        """Convert a raw database row into a ResearchSource model."""
-        return ResearchSource(
-            id=row["id"],
-            project_id=row["project_id"],
-            scope=row["scope"],
-            scope_id=row["scope_id"],
-            competitor_name=row["competitor_name"],
-            domain=row["domain"],
-            url=row["url"],
-            page_type=row["page_type"],
-            title=row["title"],
-            status_code=row["status_code"],
-            fetched_at=datetime.fromisoformat(str(row["fetched_at"])),
-            content_hash=row["content_hash"],
-            metadata=self._load_json(row["metadata"]),
-        )
-
-    def _row_to_research_chunk(self, row: Any) -> ResearchChunk:
-        """Convert a raw database row into a ResearchChunk model."""
-        return ResearchChunk(
-            id=row["id"],
-            project_id=row["project_id"],
-            scope=row["scope"],
-            scope_id=row["scope_id"],
-            source_id=row["source_id"],
-            competitor_name=row["competitor_name"],
-            domain=row["domain"],
-            url=row["url"],
-            title=row["title"],
-            chunk_index=int(row["chunk_index"]),
-            text=row["text"],
-            metadata=self._load_json(row["metadata"]),
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-        )
-
-    def _row_to_research_finding(self, row: Any) -> ResearchFinding:
-        """Convert a raw database row into a ResearchFinding model."""
-        return ResearchFinding(
-            id=row["id"],
-            project_id=row["project_id"],
-            scope=row["scope"],
-            scope_id=row["scope_id"],
-            finding_type=row["finding_type"],
-            title=row["title"],
-            summary=row["summary"],
-            payload=self._load_json(row["payload"]),
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-            updated_at=datetime.fromisoformat(str(row["updated_at"])),
-        )

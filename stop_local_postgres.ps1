@@ -10,4 +10,4 @@ if ((Test-Path $pgCtl) -and (Test-Path $dataDir)) {
     & $pgCtl -D $dataDir -m fast stop | Out-Null
 }
 
-Write-Host "SpecForge local PostgreSQL stop command sent."
+Write-Host "Strata local PostgreSQL stop command sent."

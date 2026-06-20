@@ -15,6 +15,7 @@ from specforge.api_models import (
     Layer0ChatResponse,
     Layer1GenerateRequest,
     Layer2GenerateRequest,
+    Layer2ReviewActionRequest,
     Layer3GenerateRequest,
     ModelProfileResponse,
     NodeUpdateRequest,
@@ -140,6 +141,7 @@ def _project_snapshot(services: AppServices, project_id: str) -> AppSnapshotResp
         memory=[item.model_dump(mode="json") for item in memory],
         research_jobs=[job.model_dump(mode="json") for job in jobs],
         research_findings=[finding.model_dump(mode="json") for finding in findings],
+        layer2_graph=services.db.layer2_graph_snapshot(project_id),
     )
 
 
@@ -212,9 +214,10 @@ def _ensure_project_model_settings(services: AppServices, project_id: str):
     """Return project model settings, creating a default record from app config when missing."""
     existing = services.db.get_project_model_settings(project_id)
     if existing is not None:
-        if not existing.prompt_catalog:
+        default_prompts = load_prompt_catalog()
+        if not existing.prompt_catalog or set(default_prompts) - set(existing.prompt_catalog):
             payload = existing.model_dump(mode="json")
-            payload["prompt_catalog"] = load_prompt_catalog()
+            payload["prompt_catalog"] = {**default_prompts, **existing.prompt_catalog}
             payload.pop("project_id", None)
             payload.pop("created_at", None)
             payload.pop("updated_at", None)
@@ -224,10 +227,145 @@ def _ensure_project_model_settings(services: AppServices, project_id: str):
     return services.db.upsert_project_model_settings(project_id=project_id, **payload)
 
 
+def _get_project_layer2_feature(services: AppServices, project_id: str, feature_id: str):
+    """Return a Layer 2 feature only when it belongs to the active project."""
+    feature = services.db.get_layer2_feature(feature_id)
+    if feature.project_id != project_id:
+        raise ValueError(f"Layer 2 feature does not belong to project: {feature_id}")
+    return feature
+
+
+def _validate_layer2_owner_pillar(services: AppServices, project_id: str, pillar_id: str) -> None:
+    """Ensure owner reassignment targets a Layer 1 pillar in the active project."""
+    pillar = services.db.get_node(pillar_id)
+    if pillar.project_id != project_id or pillar.layer != 1 or pillar.node_type != "pillar":
+        raise ValueError("Layer 2 owner must be a Layer 1 pillar in the active project.")
+
+
+def _apply_layer2_review_action(
+    services: AppServices,
+    project_id: str,
+    request: Layer2ReviewActionRequest,
+) -> None:
+    """Apply one Layer 2 review action and persist the audit record."""
+    services.db.get_project(project_id)
+    feature = _get_project_layer2_feature(services, project_id, request.feature_id) if request.feature_id else None
+    payload = request.payload or {}
+    if request.action_type == "keep" and feature is not None:
+        services.db.update_layer2_feature(feature.id, status="kept")
+    elif request.action_type == "cut" and feature is not None:
+        feature = services.db.update_layer2_feature(feature.id, status="cut")
+        services.db.create_layer2_negative_cache_entry(
+            project_id=project_id,
+            rejected_name=feature.canonical_name,
+            semantic_cluster=payload.get("semantic_cluster") or feature.canonical_name.lower(),
+            rejected_aliases=feature.aliases,
+            rejected_from_pillar_id=feature.owner_pillar_id,
+        )
+    elif request.action_type == "rename" and feature is not None:
+        if not request.title:
+            raise ValueError("Rename requires a title.")
+        services.db.update_layer2_feature(
+            feature.id,
+            canonical_name=request.title.strip(),
+            description=request.description.strip() if request.description else None,
+            status="renamed",
+        )
+    elif request.action_type == "reassign_owner" and feature is not None:
+        if not request.owner_pillar_id:
+            raise ValueError("Owner reassignment requires owner_pillar_id.")
+        _validate_layer2_owner_pillar(services, project_id, request.owner_pillar_id)
+        services.db.update_layer2_feature(feature.id, owner_pillar_id=request.owner_pillar_id, status="kept")
+    elif request.action_type == "merge" and feature is not None:
+        _record_layer2_merge(services, project_id, feature.id, request, payload)
+    elif request.action_type == "add_relationship":
+        _record_layer2_relationship(services, project_id, request, payload)
+    elif request.action_type == "remove_relationship":
+        _remove_layer2_relationship(services, project_id, request)
+    elif request.action_type == "prioritize" and feature is not None:
+        services.db.update_layer2_feature(feature.id, metadata={**feature.metadata, "priority": payload.get("priority", "high")})
+    elif request.action_type == "approve_for_layer3" and feature is not None:
+        services.db.update_layer2_feature(feature.id, status="approved")
+    else:
+        raise ValueError(f"Unsupported Layer 2 review action: {request.action_type}")
+    services.db.record_layer2_review_action(
+        project_id=project_id,
+        feature_id=request.feature_id,
+        action_type=request.action_type,
+        payload={
+            **payload,
+            "target_feature_id": request.target_feature_id,
+            "owner_pillar_id": request.owner_pillar_id,
+            "relationship_type": request.relationship_type,
+        },
+    )
+
+
+def _record_layer2_merge(
+    services: AppServices,
+    project_id: str,
+    feature_id: str,
+    request: Layer2ReviewActionRequest,
+    payload: dict[str, object],
+) -> None:
+    """Record a duplicate edge and mark the source feature merged."""
+    if not request.target_feature_id:
+        raise ValueError("Merge requires target_feature_id.")
+    _get_project_layer2_feature(services, project_id, request.target_feature_id)
+    services.db.insert_layer2_relationship(
+        project_id=project_id,
+        source_feature_id=feature_id,
+        target_feature_id=request.target_feature_id,
+        relationship_type="duplicate_of",
+        strength=float(payload.get("strength", 1.0)),
+        rationale=str(payload.get("rationale", "Reviewer merged duplicate Layer 2 features.")),
+    )
+    services.db.update_layer2_feature(feature_id, status="merged")
+
+
+def _record_layer2_relationship(
+    services: AppServices,
+    project_id: str,
+    request: Layer2ReviewActionRequest,
+    payload: dict[str, object],
+) -> None:
+    """Create a reviewer-approved Layer 2 relationship edge."""
+    if not request.feature_id or not request.target_feature_id:
+        raise ValueError("Relationship actions require feature_id and target_feature_id.")
+    _get_project_layer2_feature(services, project_id, request.feature_id)
+    _get_project_layer2_feature(services, project_id, request.target_feature_id)
+    services.db.insert_layer2_relationship(
+        project_id=project_id,
+        source_feature_id=request.feature_id,
+        target_feature_id=request.target_feature_id,
+        relationship_type=request.relationship_type or "related_to",
+        strength=float(payload.get("strength", 0.75)),
+        rationale=str(payload.get("rationale", "Reviewer added relationship.")),
+    )
+
+
+def _remove_layer2_relationship(
+    services: AppServices,
+    project_id: str,
+    request: Layer2ReviewActionRequest,
+) -> None:
+    """Remove a reviewer-selected Layer 2 relationship edge."""
+    if not request.feature_id or not request.target_feature_id:
+        raise ValueError("Relationship actions require feature_id and target_feature_id.")
+    removed = services.db.delete_layer2_relationship(
+        project_id=project_id,
+        source_feature_id=request.feature_id,
+        target_feature_id=request.target_feature_id,
+        relationship_type=request.relationship_type,
+    )
+    if removed == 0:
+        raise ValueError("No matching Layer 2 relationship was found to remove.")
+
+
 def create_app() -> FastAPI:
-    """Create the FastAPI localhost app and wire it to the existing SpecForge services."""
+    """Create the FastAPI localhost app and wire it to the existing Strata services."""
     services = _build_services()
-    app = FastAPI(title="SpecForge API", version="0.1.0")
+    app = FastAPI(title="Strata API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -490,28 +628,32 @@ def create_app() -> FastAPI:
 
     @app.post("/api/projects/{project_id}/generate/layer2")
     def generate_layer2(project_id: str, request: Layer2GenerateRequest) -> dict[str, object]:
-        """Run Layer 2 downward broadening for each selected kept pillar."""
-        summaries: list[dict[str, object]] = []
+        """Run graph-native Layer 2 feature generation for selected kept pillars."""
         try:
-            for pillar_id in request.pillar_ids:
-                summary = services.generation_service.generate_subfeatures_until_exhausted(
-                    project_id,
-                    pillar_id,
-                    thinking_enabled=request.thinking_enabled,
-                    max_rounds=request.max_rounds,
-                    target_per_round=request.target_per_round,
-                    min_new_items_per_round=request.min_new_items_per_round,
-                    stale_rounds_to_stop=request.stale_rounds_to_stop,
-                )
-                summaries.append({"pillar_id": pillar_id, "summary": asdict(summary)})
+            summary = services.generation_service.generate_layer2_feature_graph(
+                project_id,
+                request.pillar_ids,
+                thinking_enabled=request.thinking_enabled,
+                max_rounds=request.max_rounds,
+                target_per_lens=max(1, min(request.target_per_round, 8)),
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except LLMError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
-            "summaries": summaries,
+            "summary": summary,
             "snapshot": _project_snapshot(services, project_id).model_dump(mode="json"),
         }
+
+    @app.post("/api/projects/{project_id}/layer2/review")
+    def review_layer2_feature(project_id: str, request: Layer2ReviewActionRequest) -> dict[str, object]:
+        """Apply a review decision to the Layer 2 graph and keep rejected concepts in negative memory."""
+        try:
+            _apply_layer2_review_action(services, project_id, request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
 
     @app.post("/api/projects/{project_id}/generate/layer3")
     def generate_layer3(project_id: str, request: Layer3GenerateRequest) -> dict[str, object]:
@@ -544,6 +686,28 @@ def create_app() -> FastAPI:
             Path(services.config.exports_dir),
         )
         return ExportResponse(markdown_path=str(markdown_path), json_path=str(json_path))
+
+    @app.post("/api/projects/{project_id}/export/layer2")
+    def export_layer2_graph(project_id: str) -> dict[str, object]:
+        """Export structured Layer 2 graph JSON only after human review clears the queue."""
+        try:
+            project = services.db.get_project(project_id)
+            graph = services.db.layer2_graph_snapshot(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if graph.get("review_open"):
+            raise HTTPException(
+                status_code=409,
+                detail="Layer 2 still has candidate or needs_review features. Review them before structured export.",
+            )
+        slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in project.name).strip("-")
+        output_path = Path(services.config.exports_dir) / f"{slug or project.id}-layer2-graph.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps({"project": project.model_dump(mode="json"), "layer2_graph": graph}, indent=2),
+            encoding="utf-8",
+        )
+        return {"json_path": str(output_path), "layer2_graph": graph}
 
     return app
 

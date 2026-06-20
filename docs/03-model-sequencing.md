@@ -1,6 +1,6 @@
 # Model Sequencing
 
-SpecForge should support model sequencing for Layer 1, because different models can reveal different pillar families and blind spots.
+Strata should support model sequencing for Layer 1, because different models can reveal different pillar families and blind spots.
 
 ## Expected behavior
 
@@ -22,4 +22,3 @@ SpecForge should support model sequencing for Layer 1, because different models 
 - Each pillar should retain `source_model`.
 - Each generation pass should log the model name used for that pass.
 - Review should expose the source model so the user can judge which model produced the strongest structure.
-

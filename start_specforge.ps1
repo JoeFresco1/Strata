@@ -177,7 +177,7 @@ if (-not $frontendOk) {
 }
 
 Start-Process "http://127.0.0.1:$frontendPort"
-Write-Host "SpecForge frontend: http://127.0.0.1:$frontendPort"
-Write-Host "SpecForge API: http://127.0.0.1:$apiPort/api/health"
+Write-Host "Strata frontend: http://127.0.0.1:$frontendPort"
+Write-Host "Strata API: http://127.0.0.1:$apiPort/api/health"
 Write-Host "llama.cpp model: $modelPath"
 Write-Host "reasoning mode: $reasoningMode"

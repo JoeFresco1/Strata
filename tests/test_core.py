@@ -10,11 +10,26 @@ from unittest.mock import patch
 from specforge.config import AppConfig, ModelProfile, build_model_profiles, resolve_default_model_profile, resolve_reasoning_settings
 from specforge.db import Database
 from specforge.embeddings import EmbeddingService
-from specforge.generation import GenerationService
+from specforge.generation import LAYER2_EXHAUSTION_FAMILIES, LAYER2_LENSES, LAYER2_SURVEY_BUILDER_FAMILIES, GenerationService
 from specforge.llm import LlamaCppClient
-from specforge.models import Node, PillarAssessment, ProjectMemory, SimilarityMatch
+from specforge.models import (
+    Layer2Candidate,
+    Layer2CandidateResponse,
+    Layer2CoverageAssessmentResponse,
+    Layer2CoverageFamilyAssessment,
+    Node,
+    PillarAssessment,
+    ProjectMemory,
+    SimilarityMatch,
+)
 from specforge.project_settings import default_project_model_settings, normalize_model_settings
-from specforge.prompts import build_pillar_prompt, build_pillar_research_assessment_prompt, build_system_prompt, render_prompt
+from specforge.prompts import (
+    build_pillar_prompt,
+    build_pillar_research_assessment_prompt,
+    build_system_prompt,
+    load_prompt_catalog,
+    render_prompt,
+)
 from specforge.brief import BriefService
 from specforge.research import ResearchService
 from specforge.research import ExtractedPage
@@ -130,7 +145,120 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(stored.llm_profiles[0].id, "default-chat")
             self.assertEqual(stored.embedding_profiles[0].id, "default-embedding")
             self.assertEqual(stored.assignments["layer2_generation"], "default-chat")
-            self.assertEqual(stored.prompt_catalog["system_json_generator"], "You are SpecForge, a local product specification generation engine. You must return valid JSON that matches the requested schema and avoid prose outside the JSON.")
+            self.assertEqual(stored.prompt_catalog["system_json_generator"], "You are Strata, a local product specification generation engine. You must return valid JSON that matches the requested schema and avoid prose outside the JSON.")
+
+    def test_layer2_graph_records_provenance_review_and_negative_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            pillar = db.create_node(
+                project_id=project.id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title="Cash Flow Intelligence",
+                description="Understand household cash movement.",
+                status="kept",
+            )
+            db.upsert_layer1_pillar(pillar)
+            run = db.create_layer2_generation_run(
+                project_id=project.id,
+                source_pillar_ids=[pillar.id],
+                lenses=["core_workflows"],
+                source_model="local",
+            )
+            raw = db.insert_layer2_raw_candidate(
+                project_id=project.id,
+                generation_run_id=run.id,
+                source_pillar_id=pillar.id,
+                source_lens="core_workflows",
+                source_model="local",
+                generation_round=1,
+                raw_text="Transaction categorization",
+                payload={"canonical_name": "Transaction categorization"},
+            )
+            feature = db.create_layer2_feature(
+                project_id=project.id,
+                canonical_name="Transaction categorization",
+                description="Group transactions into useful household categories.",
+                feature_type="workflow",
+                owner_pillar_id=pillar.id,
+                candidate_source_ids=[raw.id],
+                aliases=["Spend categorization"],
+            )
+            db.insert_layer2_affinity(
+                project_id=project.id,
+                feature_id=feature.id,
+                pillar_id=pillar.id,
+                affinity_score=0.93,
+                recommended_owner_pillar_id=pillar.id,
+            )
+            db.record_layer2_review_action(
+                project_id=project.id,
+                feature_id=feature.id,
+                action_type="cut",
+                payload={"reason": "Out of scope"},
+            )
+            db.create_layer2_negative_cache_entry(
+                project_id=project.id,
+                rejected_name=feature.canonical_name,
+                semantic_cluster="transaction categorization",
+                rejected_aliases=feature.aliases,
+                rejected_from_pillar_id=pillar.id,
+            )
+
+            graph = db.layer2_graph_snapshot(project.id)
+
+            self.assertEqual(graph["features"][0]["candidate_source_ids"], [raw.id])
+            self.assertEqual(graph["affinity"][0]["recommended_owner_pillar_id"], pillar.id)
+            self.assertEqual(graph["review_actions"][0]["action_type"], "cut")
+            self.assertEqual(graph["negative_cache"][0]["rejected_at_layer"], 2)
+
+    def test_layer2_relationship_remove_action_deletes_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            pillar = db.create_node(
+                project_id=project.id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title="Cash Flow Intelligence",
+                description="Understand household cash movement.",
+                status="kept",
+            )
+            left = db.create_layer2_feature(
+                project_id=project.id,
+                canonical_name="Transaction categorization",
+                description="Group transactions.",
+                feature_type="workflow",
+                owner_pillar_id=pillar.id,
+                candidate_source_ids=[],
+            )
+            right = db.create_layer2_feature(
+                project_id=project.id,
+                canonical_name="Budget variance alerts",
+                description="Warn when budget drift appears.",
+                feature_type="notification",
+                owner_pillar_id=pillar.id,
+                candidate_source_ids=[],
+            )
+            db.insert_layer2_relationship(
+                project_id=project.id,
+                source_feature_id=left.id,
+                target_feature_id=right.id,
+                relationship_type="related_to",
+                strength=0.75,
+            )
+            removed = db.delete_layer2_relationship(
+                project_id=project.id,
+                source_feature_id=left.id,
+                target_feature_id=right.id,
+                relationship_type="related_to",
+            )
+
+            self.assertEqual(removed, 1)
+            self.assertEqual(db.list_layer2_relationships(project.id), [])
 
 
 class ProjectSettingsTests(unittest.TestCase):
@@ -213,11 +341,12 @@ class BriefServiceTests(unittest.TestCase):
             project = db.create_project("Test", "A useful product")
             service = BriefService(db, StubClient())  # type: ignore[arg-type]
 
-            reply, brief = service.append_plan_turn(project.id, "Competitor is Acme.")
+            reply, brief, guidance = service.append_plan_turn(project.id, "Competitor is Acme.")
 
-            self.assertIn("Captured", reply)
+            self.assertIn("What became clearer", reply)
             self.assertEqual(brief.known_competitors, ["Acme"])
             self.assertEqual(brief.goals, ["Faster review"])
+            self.assertIn("target users", guidance["assistant_message"])
             self.assertEqual(len(db.list_brief_conversation(project.id)), 2)
 
 
@@ -259,6 +388,94 @@ class GenerationHelperTests(unittest.TestCase):
         )
 
         self.assertIs(matched, assessment)
+
+    def test_layer2_graph_generation_creates_reviewable_feature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            db.upsert_project_brief(
+                project_id=project.id,
+                product_idea="A useful product",
+                known_competitors=[],
+                constraints="",
+                status="published",
+            )
+            pillar = db.create_node(
+                project_id=project.id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title="Cash Flow Intelligence",
+                description="Understand money movement.",
+                status="kept",
+            )
+            service = GenerationService(db, llm_client=None)  # type: ignore[arg-type]
+            service._project_llm_runtime = lambda *_args, **_kwargs: {"id": "stub", "label": "Stub Model"}  # type: ignore[method-assign]
+            service._ensure_profile_loaded = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+            def stub_pass(**kwargs: object):
+                if kwargs.get("schema_label") == "layer2_coverage_assessment":
+                    return "", Layer2CoverageAssessmentResponse(
+                        coverage_summary="Survey builder coverage is saturated for this stub.",
+                        family_assessments=[
+                            Layer2CoverageFamilyAssessment(
+                                family=family,
+                                status="covered",
+                                evidence_feature_ids=[],
+                            )
+                            for family, _ in LAYER2_SURVEY_BUILDER_FAMILIES
+                        ],
+                        saturation_signal="high",
+                        novelty_score=10,
+                        continue_recommendation=False,
+                        reasoning="Stubbed coverage says stop.",
+                    )
+                return "", Layer2CandidateResponse(
+                    features=[
+                        Layer2Candidate(
+                            canonical_name="Transaction categorization",
+                            description="Group incoming and outgoing transactions into meaningful categories.",
+                            feature_type="workflow",
+                            aliases=["Spend categorization"],
+                            specificity_score=90,
+                            pillar_fit_score=92,
+                            distinctiveness_score=80,
+                            implementation_leakage_score=5,
+                            strategic_value_score=88,
+                        )
+                    ]
+                )
+
+            service._call_structured_json_pass = stub_pass  # type: ignore[method-assign]
+
+            summary = service.generate_layer2_feature_graph(
+                project.id,
+                [pillar.id],
+                max_rounds=1,
+                target_per_lens=1,
+            )
+
+            graph = db.layer2_graph_snapshot(project.id)
+            expected_first_round_calls = len(LAYER2_LENSES) + len(LAYER2_EXHAUSTION_FAMILIES)
+            self.assertEqual(summary["raw_candidate_count"], expected_first_round_calls)
+            self.assertEqual(len(graph["features"]), expected_first_round_calls)
+            self.assertTrue(graph["review_open"])
+            self.assertEqual(graph["features"][0]["canonical_name"], "Transaction categorization")
+            self.assertTrue(graph["features"][0]["candidate_source_ids"])
+            self.assertEqual(len(graph["coverage"]), 1)
+            self.assertEqual(graph["coverage"][0]["content"]["saturation_signal"], "high")
+
+    def test_layer2_scope_gate_routes_drift_to_review(self) -> None:
+        candidate = Layer2Candidate(
+            canonical_name="Executive dashboard",
+            description="Shows aggregate survey analytics for leaders.",
+            scope_classification="adjacent_owned_elsewhere",
+            pillar_fit_score=35,
+        )
+
+        status = GenerationService._layer2_candidate_status(candidate, negative_match=False)
+
+        self.assertEqual(status, "needs_review")
 
     def test_pillar_quality_gate_rejects_narrow_low_quality_items(self) -> None:
         weak_assessment = PillarAssessment(
@@ -565,8 +782,9 @@ class ConfigTests(unittest.TestCase):
 
             profiles = build_model_profiles(config)
 
-            self.assertEqual(len(profiles), 1)
-            self.assertEqual(profiles[0].path.name, "Qwen3.5-9B-Q6_K.gguf")
+            discovered = [profile for profile in profiles if profile.path and profile.path.parent == model_dir]
+            self.assertEqual(len(discovered), 1)
+            self.assertEqual(discovered[0].path.name, "Qwen3.5-9B-Q6_K.gguf")
 
     def test_default_profile_prefers_configured_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -628,7 +846,7 @@ class ResearchServiceTests(unittest.TestCase):
         fallback_response = object()
         mock_get.side_effect = [secure_error, fallback_response]
 
-        response = ResearchService._research_get("https://example.com", headers={"User-Agent": "SpecForge"})
+        response = ResearchService._research_get("https://example.com", headers={"User-Agent": "Strata"})
 
         self.assertIs(response, fallback_response)
         self.assertEqual(mock_get.call_count, 2)
@@ -669,9 +887,9 @@ class PromptTests(unittest.TestCase):
             prompt_file = Path(tmpdir) / "prompts.json"
             prompt_file.write_text('{"demo":"Hello {{name}}"}', encoding="utf-8")
 
-            rendered = render_prompt("demo", {"name": "SpecForge"}, prompts_path=prompt_file)
+            rendered = render_prompt("demo", {"name": "Strata"}, prompts_path=prompt_file)
 
-            self.assertEqual(rendered, "Hello SpecForge")
+            self.assertEqual(rendered, "Hello Strata")
 
     def test_build_system_prompt_reads_external_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -686,6 +904,23 @@ class PromptTests(unittest.TestCase):
         rendered = build_system_prompt(prompt_catalog={"system_json_generator": "Override prompt"})
 
         self.assertEqual(rendered, "Override prompt")
+
+    def test_default_prompt_catalog_exposes_layer2_sub_agent_prompts(self) -> None:
+        catalog = load_prompt_catalog()
+
+        expected_keys = {
+            "layer2_dynamic_coverage_family_discovery",
+            "layer2_scope_coverage_critic",
+            "layer2_granularity_critic",
+            "layer2_overlap_dedupe_critic",
+            "layer2_shared_concern_critic",
+            "layer2_ambiguity_critic",
+            "layer2_negative_cache_critic",
+        }
+
+        self.assertTrue(expected_keys.issubset(catalog))
+        for key in expected_keys:
+            self.assertIn("Return valid JSON only", catalog[key])
 
     def test_build_pillar_prompt_separates_memory_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

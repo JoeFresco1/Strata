@@ -8,6 +8,27 @@ from pydantic import BaseModel, Field
 
 NodeStatus = Literal["generated", "kept", "cut", "merged", "prioritized"]
 NodeType = Literal["product_idea", "pillar", "subfeature", "spec"]
+Layer2FeatureStatus = Literal["candidate", "kept", "cut", "merged", "renamed", "needs_review", "approved"]
+Layer2RelationshipType = Literal[
+    "related_to",
+    "depends_on",
+    "enables",
+    "overlaps_with",
+    "uses_shared_service",
+    "duplicate_of",
+    "conflicts_with",
+]
+Layer2ReviewActionType = Literal[
+    "keep",
+    "cut",
+    "rename",
+    "merge",
+    "reassign_owner",
+    "add_relationship",
+    "remove_relationship",
+    "prioritize",
+    "approve_for_layer3",
+]
 ResearchJobStatus = Literal["queued", "running", "completed", "failed"]
 ResearchJobType = Literal["layer0_competitors", "layer1_pillar_competitors"]
 ResearchScope = Literal["layer0", "layer1"]
@@ -82,6 +103,109 @@ class Node(BaseModel):
     json_payload: dict[str, Any] = Field(default_factory=dict)
     status: NodeStatus = "generated"
     priority: int | None = None
+    created_at: datetime
+
+
+class Layer1PillarRecord(BaseModel):
+    id: str
+    project_id: str
+    node_id: str
+    title: str
+    description: str = ""
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class Layer2GenerationRun(BaseModel):
+    id: str
+    project_id: str
+    source_pillar_ids: list[str] = Field(default_factory=list)
+    lenses: list[str] = Field(default_factory=list)
+    source_model: str
+    status: str
+    summary: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class Layer2RawCandidate(BaseModel):
+    id: str
+    project_id: str
+    generation_run_id: str
+    source_pillar_id: str
+    source_lens: str
+    source_model: str
+    generation_round: int
+    raw_text: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    negative_cache_match: bool = False
+    negative_cache_reason: str = ""
+    created_at: datetime
+
+
+class Layer2Feature(BaseModel):
+    id: str
+    project_id: str
+    canonical_name: str
+    description: str
+    feature_type: str
+    owner_pillar_id: str
+    candidate_source_ids: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
+    status: Layer2FeatureStatus = "candidate"
+    related_pillar_ids: list[str] = Field(default_factory=list)
+    used_by_feature_ids: list[str] = Field(default_factory=list)
+    depends_on_feature_ids: list[str] = Field(default_factory=list)
+    specificity_score: int = Field(ge=0, le=100, default=50)
+    pillar_fit_score: int = Field(ge=0, le=100, default=50)
+    distinctiveness_score: int = Field(ge=0, le=100, default=50)
+    implementation_leakage_score: int = Field(ge=0, le=100, default=0)
+    strategic_value_score: int = Field(ge=0, le=100, default=50)
+    needs_human_review: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class Layer2PillarAffinity(BaseModel):
+    id: str
+    project_id: str
+    feature_id: str
+    pillar_id: str
+    affinity_score: float
+    recommended_owner_pillar_id: str
+    created_at: datetime
+
+
+class Layer2FeatureRelationship(BaseModel):
+    id: str
+    project_id: str
+    source_feature_id: str
+    target_feature_id: str
+    relationship_type: Layer2RelationshipType
+    strength: float
+    rationale: str = ""
+    created_at: datetime
+
+
+class Layer2NegativeCacheEntry(BaseModel):
+    id: str
+    project_id: str
+    rejected_name: str
+    semantic_cluster: str
+    rejected_aliases: list[str] = Field(default_factory=list)
+    rejected_at_layer: int = 2
+    rejected_from_pillar_id: str
+    created_at: datetime
+
+
+class Layer2ReviewAction(BaseModel):
+    id: str
+    project_id: str
+    feature_id: str | None = None
+    action_type: Layer2ReviewActionType
+    payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
 
@@ -230,6 +354,56 @@ class SubfeatureCandidate(BaseModel):
     complexity: Literal["low", "medium", "high"]
     dependencies: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+
+
+class Layer2Candidate(BaseModel):
+    canonical_name: str
+    description: str
+    feature_type: str = "capability"
+    coverage_family: str = "general_capability"
+    scope_classification: Literal[
+        "in_scope",
+        "adjacent_owned_elsewhere",
+        "new_layer1_pillar",
+        "too_low_level",
+        "implementation_detail",
+    ] = "in_scope"
+    pillar_fit_rationale: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    related_pillar_ids: list[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+    used_by: list[str] = Field(default_factory=list)
+    specificity_score: int = Field(ge=0, le=100, default=60)
+    pillar_fit_score: int = Field(ge=0, le=100, default=60)
+    distinctiveness_score: int = Field(ge=0, le=100, default=60)
+    implementation_leakage_score: int = Field(ge=0, le=100, default=0)
+    strategic_value_score: int = Field(ge=0, le=100, default=60)
+    needs_human_review: bool = True
+
+
+class Layer2CandidateResponse(BaseModel):
+    features: list[Layer2Candidate]
+
+
+class Layer2CoverageFamilyAssessment(BaseModel):
+    family: str
+    status: Literal["covered", "partial", "missing", "excluded"] = "missing"
+    evidence_feature_ids: list[str] = Field(default_factory=list)
+    missing_examples: list[str] = Field(default_factory=list)
+    next_lens: str | None = None
+    rationale: str = ""
+
+
+class Layer2CoverageAssessmentResponse(BaseModel):
+    coverage_summary: str
+    family_assessments: list[Layer2CoverageFamilyAssessment] = Field(default_factory=list)
+    drifted_feature_ids: list[str] = Field(default_factory=list)
+    adjacent_module_suggestions: list[str] = Field(default_factory=list)
+    saturation_signal: Literal["low", "medium", "high"]
+    novelty_score: int = Field(ge=0, le=100)
+    continue_recommendation: bool
+    recommended_next_lenses: list[str] = Field(default_factory=list)
+    reasoning: str
 
 
 class UserStory(BaseModel):
