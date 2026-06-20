@@ -7,12 +7,23 @@ from rapidfuzz import fuzz
 
 from specforge.llm import LLMError
 from specforge.models import (
+    FeatureGranularity,
     Layer2Candidate,
     Layer2CandidateResponse,
     Layer2CoverageAssessmentResponse,
+    Layer2CoverageFamilyDiscoveryResponse,
+    Layer2GraphCriticResponse,
+    Layer2IntegrityCriticResponse,
+    PillarScopeContract,
     Node,
 )
-from specforge.prompts import build_layer2_coverage_prompt, build_layer2_feature_prompt
+from specforge.prompts import (
+    build_layer2_coverage_prompt,
+    build_layer2_feature_prompt,
+    build_layer2_graph_critic_prompt,
+    build_layer2_integrity_critic_prompt,
+    build_layer2_scope_discovery_prompt,
+)
 
 
 LAYER2_LENSES: list[tuple[str, str]] = [
@@ -101,6 +112,43 @@ LAYER2_COVERAGE_SCHEMA = """{
   "reasoning": "..."
 }"""
 
+LAYER2_SCOPE_DISCOVERY_SCHEMA = """{
+  "coverage_families": [
+    {
+      "name": "...",
+      "description": "...",
+      "exhaustion_goal": "...",
+      "example_features": ["..."],
+      "anti_examples": ["..."]
+    }
+  ],
+  "reasoning": "..."
+}"""
+
+LAYER2_INTEGRITY_SCHEMA = """{
+  "assessments": [
+    {
+      "candidate_id": "...",
+      "granularity_class": "feature | feature_variant | workflow | rule | configuration | shared_concern | too_broad | too_low_level",
+      "is_out_of_bounds": false,
+      "ambiguity_score": 0.0,
+      "reason": "..."
+    }
+  ]
+}"""
+
+LAYER2_GRAPH_CRITIC_SCHEMA = """{
+  "duplicate_merges": [
+    {"source_feature_id": "...", "target_feature_id": "...", "confidence": 0.0, "reason": "..."}
+  ],
+  "cross_pillar_dependencies": [
+    {"source_feature_id": "...", "target_feature_id": "...", "relationship_type": "depends_on", "confidence": 0.0, "reason": "..."}
+  ],
+  "detected_shared_concerns": [
+    {"name": "...", "concern_type": "ingestion", "connected_feature_ids": ["..."], "planning_implication": "...", "confidence": 0.0}
+  ]
+}"""
+
 
 class Layer2EngineMixin:
     """Layer 2 graph generation helpers mixed into GenerationService.
@@ -175,17 +223,25 @@ class Layer2EngineMixin:
         target_per_lens: int,
         stats: dict[str, Any],
     ) -> None:
-        """Run scoped Layer 2 passes until the pillar coverage critic sees saturation."""
+        """Run the optimized Layer 2 intelligence pipeline for each selected pillar."""
         product_idea = self._published_product_idea(project_id)
         prompt_catalog = self._prompt_catalog(project_id)
         for pillar in selected_pillars:
             self.db.upsert_layer1_pillar(pillar)
-            scope_contract = self._layer2_scope_contract(project_id, pillar)
-            coverage_families = self._layer2_coverage_family_names(scope_contract)
+            scope_contract = self._discover_layer2_scope_contract(
+                project_id=project_id,
+                pillar=pillar,
+                product_idea=product_idea,
+                prompt_catalog=prompt_catalog,
+                runtime_profile=runtime_profile,
+            )
+            coverage_families = scope_contract.discovered_coverage_families
+            self._initialize_layer2_coverage_matrix(project_id, pillar.id, coverage_families)
             previous_assessment = self._layer2_coverage_memory(project_id, pillar.id)
             stale_rounds = 0
             for round_index in range(max(1, max_rounds)):
                 active_lenses = self._layer2_active_lenses(round_index, previous_assessment, coverage_families)
+                round_raw_count = 0
                 round_feature_ids: list[str] = []
                 for lens_name, lens_instruction in active_lenses:
                     parsed = self._call_layer2_lens(
@@ -194,39 +250,44 @@ class Layer2EngineMixin:
                         runtime_profile=runtime_profile,
                         product_idea=product_idea,
                         prompt_catalog=prompt_catalog,
-                        scope_contract=scope_contract,
+                        scope_contract=scope_contract.model_dump(mode="json"),
                         coverage_families=coverage_families,
                         coverage_summary=self._coverage_summary(previous_assessment),
                         lens_name=lens_name,
                         lens_instruction=lens_instruction,
                         target_per_lens=target_per_lens,
                     )
-                    for candidate in parsed.features:
-                        feature_id = self._persist_layer2_candidate(
+                    round_raw_count += len(parsed.features)
+                    round_feature_ids.extend(
+                        self._process_layer2_candidate_batch(
                             project_id=project_id,
                             run_id=run_id,
                             pillar=pillar,
                             selected_pillars=selected_pillars,
+                            runtime_profile=runtime_profile,
                             source_model=source_model,
                             lens_name=lens_name,
                             generation_round=round_index + 1,
-                            candidate=candidate,
+                            product_idea=product_idea,
+                            prompt_catalog=prompt_catalog,
+                            scope_contract=scope_contract,
+                            candidates=parsed.features,
                             stats=stats,
                         )
-                        if feature_id is not None:
-                            round_feature_ids.append(feature_id)
+                    )
+                novelty_score = (len(round_feature_ids) / round_raw_count) if round_raw_count else 0.0
                 previous_assessment = self._assess_layer2_coverage(
                     project_id=project_id,
                     pillar=pillar,
                     runtime_profile=runtime_profile,
                     product_idea=product_idea,
                     prompt_catalog=prompt_catalog,
-                    scope_contract=scope_contract,
+                    scope_contract=scope_contract.model_dump(mode="json"),
                     coverage_families=coverage_families,
                     newest_feature_ids=round_feature_ids,
                 )
                 stale_rounds = stale_rounds + 1 if len(round_feature_ids) == 0 else 0
-                if self._layer2_should_stop(previous_assessment, stale_rounds):
+                if self._layer2_should_stop(project_id, pillar.id, previous_assessment, stale_rounds, novelty_score):
                     break
 
     def _call_layer2_lens(
@@ -271,6 +332,432 @@ class Layer2EngineMixin:
             schema_instructions=LAYER2_FEATURE_SCHEMA,
         )
         return parsed
+
+    def _process_layer2_candidate_batch(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        pillar: Node,
+        selected_pillars: list[Node],
+        runtime_profile: dict[str, Any],
+        source_model: str,
+        lens_name: str,
+        generation_round: int,
+        product_idea: str,
+        prompt_catalog: dict[str, str],
+        scope_contract: PillarScopeContract,
+        candidates: list[Layer2Candidate],
+        stats: dict[str, Any],
+    ) -> list[str]:
+        """Persist raw candidates, apply semantic veto, run critics, and create graph features."""
+        raw_pairs: list[tuple[Any, Layer2Candidate]] = []
+        for candidate in candidates:
+            stats["raw_candidate_count"] += 1
+            veto = self._layer2_semantic_negative_cache_veto(project_id, candidate)
+            if veto and veto["action"] == "auto_reject":
+                stats["negative_cache_matches"] += 1
+                self.db.insert_layer2_raw_candidate(
+                    project_id=project_id,
+                    generation_run_id=run_id,
+                    source_pillar_id=pillar.id,
+                    source_lens=lens_name,
+                    source_model=source_model,
+                    generation_round=generation_round,
+                    raw_text=candidate.model_dump_json(),
+                    payload={**candidate.model_dump(mode="json"), "negative_cache_veto": veto},
+                    negative_cache_match=True,
+                    negative_cache_reason=f"Auto-rejected repeat of '{veto['rejected_name']}' at similarity {veto['similarity']}.",
+                )
+                continue
+            raw = self.db.insert_layer2_raw_candidate(
+                project_id=project_id,
+                generation_run_id=run_id,
+                source_pillar_id=pillar.id,
+                source_lens=lens_name,
+                source_model=source_model,
+                generation_round=generation_round,
+                raw_text=candidate.model_dump_json(),
+                payload={
+                    **candidate.model_dump(mode="json"),
+                    "is_potential_negative_cache_repeat": bool(veto),
+                    "negative_cache_context": veto or {},
+                },
+                negative_cache_match=bool(veto),
+                negative_cache_reason=(
+                    f"Potential repeat of '{veto['rejected_name']}' at similarity {veto['similarity']}."
+                    if veto else ""
+                ),
+            )
+            if veto:
+                stats["negative_cache_matches"] += 1
+            raw_pairs.append((raw, candidate))
+
+        if not raw_pairs:
+            return []
+
+        integrity = self._run_layer2_integrity_critic(
+            project_id=project_id,
+            pillar_id=pillar.id,
+            runtime_profile=runtime_profile,
+            product_idea=product_idea,
+            prompt_catalog=prompt_catalog,
+            scope_contract=scope_contract,
+            raw_pairs=raw_pairs,
+        )
+        integrity_by_id = {item.candidate_id: item for item in integrity.assessments}
+        created_feature_ids: list[str] = []
+        selected_pillar_ids = [item.id for item in selected_pillars]
+        for raw, candidate in raw_pairs:
+            assessment = integrity_by_id.get(raw.id)
+            granularity = assessment.granularity_class if assessment else FeatureGranularity.FEATURE
+            ambiguity_score = assessment.ambiguity_score if assessment else 0.0
+            drift_flag = bool(
+                (assessment and assessment.is_out_of_bounds)
+                or granularity in {FeatureGranularity.TOO_BROAD, FeatureGranularity.TOO_LOW_LEVEL}
+                or candidate.scope_classification != "in_scope"
+            )
+            metadata = self._layer2_feature_metadata(
+                candidate,
+                selected_pillars,
+                pillar.id,
+                lens_name,
+                source_model,
+                raw.negative_cache_match,
+                raw.negative_cache_reason,
+            )
+            metadata.update(
+                {
+                    "raw_candidate_id": raw.id,
+                    "granularity_class": granularity.value,
+                    "integrity_reason": assessment.reason if assessment else "",
+                    "ambiguity_score": ambiguity_score,
+                    "ambiguity_flag": ambiguity_score >= 0.55,
+                    "scope_drift_flag": drift_flag,
+                }
+            )
+            if granularity == FeatureGranularity.SHARED_CONCERN:
+                self._route_layer2_shared_concern(
+                    project_id=project_id,
+                    name=candidate.canonical_name,
+                    concern_type=self._infer_shared_concern_type(candidate),
+                    connected_feature_ids=[],
+                )
+                continue
+            status = self._layer2_candidate_status(candidate, raw.negative_cache_match)
+            if drift_flag or ambiguity_score >= 0.55:
+                status = "needs_review"
+            feature = self.db.create_layer2_feature(
+                project_id=project_id,
+                canonical_name=candidate.canonical_name.strip(),
+                description=candidate.description.strip(),
+                feature_type=self._safe_layer2_feature_type(candidate.feature_type),
+                granularity_class=granularity.value,
+                owner_pillar_id=pillar.id,
+                candidate_source_ids=[raw.id],
+                aliases=candidate.aliases,
+                status=status,
+                related_pillar_ids=self._valid_related_pillar_ids(candidate.related_pillar_ids, selected_pillar_ids),
+                used_by_feature_ids=[],
+                depends_on_feature_ids=[],
+                quality={**candidate.model_dump(mode="json"), "needs_human_review": status == "needs_review" or candidate.needs_human_review},
+                metadata=metadata,
+            )
+            stats["created_feature_ids"].append(feature.id)
+            created_feature_ids.append(feature.id)
+            self._store_layer2_affinities(project_id, feature.id, candidate, selected_pillars, pillar.id)
+            existing, overlap_score = self._find_layer2_overlap(project_id, candidate, exclude_feature_ids=[feature.id])
+            if existing is not None:
+                stats["duplicate_recommendations"] += 1
+                self._record_layer2_duplicate_recommendation(project_id, feature.id, existing.id, existing.canonical_name, overlap_score)
+
+        if created_feature_ids:
+            graph_critic = self._run_layer2_graph_critic(
+                project_id=project_id,
+                runtime_profile=runtime_profile,
+                product_idea=product_idea,
+                prompt_catalog=prompt_catalog,
+                current_feature_ids=created_feature_ids,
+            )
+            self._apply_layer2_graph_directives(project_id, graph_critic, stats)
+        return created_feature_ids
+
+    def _discover_layer2_scope_contract(
+        self,
+        *,
+        project_id: str,
+        pillar: Node,
+        product_idea: str,
+        prompt_catalog: dict[str, str],
+        runtime_profile: dict[str, Any],
+    ) -> PillarScopeContract:
+        """Run the dynamic pre-pass that defines pillar boundaries and coverage families."""
+        existing = self.db.get_project_memory(
+            project_id=project_id,
+            scope="layer2",
+            scope_id=pillar.id,
+            memory_type="scope_contract",
+        )
+        if existing:
+            try:
+                return PillarScopeContract.model_validate(existing.content)
+            except ValidationError:
+                pass
+        project_pillars = [
+            {"title": node.title, "description": node.description or "", "tags": [node.status], "fingerprint": node.id}
+            for node in self.db.list_nodes(project_id, parent_id=None, layer=1, node_type="pillar")
+        ]
+        prompt = build_layer2_scope_discovery_prompt(
+            product_idea=product_idea,
+            pillar_title=pillar.title,
+            pillar_description=pillar.description or "",
+            project_pillars=project_pillars,
+            prompt_catalog=prompt_catalog,
+        )
+        try:
+            _, discovery = self._call_structured_json_pass(
+                project_id=project_id,
+                node_id=pillar.id,
+                prompt=prompt,
+                runtime_profile=runtime_profile,
+                max_tokens=1800,
+                temperature=0.2,
+                validator=self._validate_layer2_scope_discovery,
+                schema_label="layer2_scope_discovery",
+                schema_instructions=LAYER2_SCOPE_DISCOVERY_SCHEMA,
+            )
+            if not isinstance(discovery, Layer2CoverageFamilyDiscoveryResponse):
+                raise LLMError("Scope discovery returned the wrong response schema.")
+            families = [self._safe_family_name(item.name) for item in discovery.coverage_families if item.name.strip()]
+            out_of_bounds = sorted(
+                {
+                    anti_example
+                    for family in discovery.coverage_families
+                    for anti_example in family.anti_examples
+                    if anti_example.strip()
+                }
+            )
+        except LLMError:
+            fallback = self._layer2_family_definitions(pillar)
+            families = [family_id for family_id, _ in fallback]
+            out_of_bounds = []
+        contract = PillarScopeContract(
+            pillar_id=pillar.id,
+            allowed_core_domains=families,
+            explicit_out_of_bounds=out_of_bounds,
+            discovered_coverage_families=families,
+        )
+        self.db.upsert_project_memory(
+            project_id=project_id,
+            scope="layer2",
+            scope_id=pillar.id,
+            memory_type="scope_contract",
+            content=contract.model_dump(mode="json"),
+        )
+        return contract
+
+    def _initialize_layer2_coverage_matrix(self, project_id: str, pillar_id: str, families: list[str]) -> None:
+        """Ensure each discovered family starts with a durable missing-state matrix row."""
+        for family in families:
+            existing = [
+                row for row in self.db.list_layer2_coverage_matrix(project_id, pillar_id=pillar_id)
+                if row.family_name == family
+            ]
+            if existing:
+                continue
+            self.db.upsert_layer2_coverage_matrix_row(
+                project_id=project_id,
+                pillar_id=pillar_id,
+                family_name=family,
+                status="missing",
+            )
+
+    def _run_layer2_integrity_critic(
+        self,
+        *,
+        project_id: str,
+        pillar_id: str,
+        runtime_profile: dict[str, Any],
+        product_idea: str,
+        prompt_catalog: dict[str, str],
+        scope_contract: PillarScopeContract,
+        raw_pairs: list[tuple[Any, Layer2Candidate]],
+    ) -> Layer2IntegrityCriticResponse:
+        """Run one batched integrity critic pass for a raw candidate batch."""
+        prompt = build_layer2_integrity_critic_prompt(
+            product_idea=product_idea,
+            scope_contract=scope_contract.model_dump(mode="json"),
+            normalized_features=[
+                {
+                    "candidate_id": raw.id,
+                    "canonical_name": candidate.canonical_name,
+                    "description": candidate.description,
+                    "feature_type": candidate.feature_type,
+                    "coverage_family": candidate.coverage_family,
+                    "scope_classification": candidate.scope_classification,
+                    "negative_cache_context": raw.payload.get("negative_cache_context", {}),
+                }
+                for raw, candidate in raw_pairs
+            ],
+            prompt_catalog=prompt_catalog,
+        )
+        try:
+            _, response = self._call_structured_json_pass(
+                project_id=project_id,
+                node_id=pillar_id,
+                prompt=prompt,
+                runtime_profile=runtime_profile,
+                max_tokens=1800,
+                temperature=0.1,
+                validator=self._validate_layer2_integrity,
+                schema_label="layer2_integrity_critic",
+                schema_instructions=LAYER2_INTEGRITY_SCHEMA,
+            )
+        except LLMError:
+            return Layer2IntegrityCriticResponse()
+        return response if isinstance(response, Layer2IntegrityCriticResponse) else Layer2IntegrityCriticResponse()
+
+    def _run_layer2_graph_critic(
+        self,
+        *,
+        project_id: str,
+        runtime_profile: dict[str, Any],
+        product_idea: str,
+        prompt_catalog: dict[str, str],
+        current_feature_ids: list[str],
+    ) -> Layer2GraphCriticResponse:
+        """Run one batched graph critic pass for the current round features."""
+        current_ids = set(current_feature_ids)
+        all_features = [self._layer2_feature_to_memory(feature) for feature in self.db.list_layer2_features(project_id)]
+        prompt = build_layer2_graph_critic_prompt(
+            product_idea=product_idea,
+            current_round_features=[item for item in all_features if item["id"] in current_ids],
+            existing_project_features=[item for item in all_features if item["id"] not in current_ids],
+            prompt_catalog=prompt_catalog,
+        )
+        try:
+            _, response = self._call_structured_json_pass(
+                project_id=project_id,
+                node_id=None,
+                prompt=prompt,
+                runtime_profile=runtime_profile,
+                max_tokens=2200,
+                temperature=0.1,
+                validator=self._validate_layer2_graph_critic,
+                schema_label="layer2_graph_critic",
+                schema_instructions=LAYER2_GRAPH_CRITIC_SCHEMA,
+            )
+        except LLMError:
+            return Layer2GraphCriticResponse()
+        return response if isinstance(response, Layer2GraphCriticResponse) else Layer2GraphCriticResponse()
+
+    def _apply_layer2_graph_directives(self, project_id: str, graph_critic: Layer2GraphCriticResponse, stats: dict[str, Any]) -> None:
+        """Persist graph critic directives as reviewable relationships and shared concerns."""
+        feature_ids = {feature.id for feature in self.db.list_layer2_features(project_id)}
+        for merge in graph_critic.duplicate_merges:
+            if merge.source_feature_id not in feature_ids or merge.target_feature_id not in feature_ids:
+                continue
+            stats["duplicate_recommendations"] += 1
+            self.db.insert_layer2_relationship(
+                project_id=project_id,
+                source_feature_id=merge.source_feature_id,
+                target_feature_id=merge.target_feature_id,
+                relationship_type="duplicate_of",
+                strength=merge.confidence,
+                rationale=merge.reason,
+            )
+            feature = self.db.get_layer2_feature(merge.source_feature_id)
+            self.db.update_layer2_feature(feature.id, status="needs_review", metadata={**feature.metadata, "graph_critic_duplicate": True})
+            self.db.record_layer2_review_action(
+                project_id=project_id,
+                feature_id=merge.source_feature_id,
+                action_type="merge",
+                payload={"recommended_target_feature_id": merge.target_feature_id, "reason": merge.reason, "confidence": merge.confidence},
+            )
+        for dependency in graph_critic.cross_pillar_dependencies:
+            if dependency.source_feature_id not in feature_ids or dependency.target_feature_id not in feature_ids:
+                continue
+            self.db.insert_layer2_relationship(
+                project_id=project_id,
+                source_feature_id=dependency.source_feature_id,
+                target_feature_id=dependency.target_feature_id,
+                relationship_type=dependency.relationship_type,
+                strength=dependency.confidence,
+                rationale=dependency.reason,
+            )
+        for concern in graph_critic.detected_shared_concerns:
+            connected_ids = [feature_id for feature_id in concern.connected_feature_ids if feature_id in feature_ids]
+            self._route_layer2_shared_concern(
+                project_id=project_id,
+                name=concern.name,
+                concern_type=concern.concern_type,
+                connected_feature_ids=connected_ids,
+            )
+
+    def _route_layer2_shared_concern(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        concern_type: str,
+        connected_feature_ids: list[str],
+    ) -> None:
+        """Store shared concerns outside the standard pillar-owned feature tree."""
+        self.db.upsert_layer2_shared_concern_cluster(
+            project_id=project_id,
+            name=name.strip() or concern_type,
+            concern_type=concern_type,
+            connected_feature_ids=connected_feature_ids,
+            status="flagged",
+        )
+
+    def _layer2_semantic_negative_cache_veto(self, project_id: str, candidate: Layer2Candidate) -> dict[str, Any] | None:
+        """Apply semantic negative-cache veto rules before canonical feature creation."""
+        candidate_text = f"{candidate.canonical_name} {candidate.description} {' '.join(candidate.aliases)}"
+        embedding_model = self._embedding_model_name(project_id, "layer1_similarity_embeddings")
+        embedding = self._layer2_embedding(candidate_text, embedding_model)
+        return self.db.find_layer2_negative_cache_match(
+            project_id=project_id,
+            candidate_text=candidate_text,
+            embedding_model=embedding_model,
+            embedding=embedding,
+        )
+
+    def _layer2_embedding(self, text: str, embedding_model: str) -> list[float] | None:
+        """Generate a Layer 2 semantic embedding when the embedding service is available."""
+        if self.embedding_service is None or not self.embedding_service.enabled() or not embedding_model:
+            return None
+        try:
+            return self.embedding_service.embed_text(text, embedding_model).embedding
+        except Exception:
+            return None
+
+    @staticmethod
+    def _safe_family_name(value: str) -> str:
+        """Normalize model-provided coverage family names into stable ids."""
+        cleaned = "".join(ch.lower() if ch.isalnum() else "_" for ch in value.strip())
+        while "__" in cleaned:
+            cleaned = cleaned.replace("__", "_")
+        return cleaned.strip("_") or "general_capability"
+
+    @staticmethod
+    def _infer_shared_concern_type(candidate: Layer2Candidate) -> str:
+        """Map a shared-concern candidate to the closest supported concern type."""
+        text = f"{candidate.canonical_name} {candidate.description} {candidate.coverage_family}".lower()
+        mapping = {
+            "ingestion": ("ingest", "import", "intake", "sync"),
+            "validation": ("valid", "quality", "constraint"),
+            "permissions": ("permission", "role", "access", "auth"),
+            "notifications": ("notification", "alert", "reminder", "message"),
+            "audit_logging": ("audit", "log", "trace"),
+            "templates": ("template", "reuse", "library"),
+            "workflow_state": ("workflow", "state", "status", "approval"),
+            "reporting": ("report", "analytics", "export", "dashboard"),
+        }
+        for concern_type, terms in mapping.items():
+            if any(term in text for term in terms):
+                return concern_type
+        return "workflow_state"
 
     def _persist_layer2_candidate(
         self,
@@ -480,6 +967,11 @@ class Layer2EngineMixin:
             schema_instructions=LAYER2_COVERAGE_SCHEMA,
         )
         self._apply_layer2_drift_flags(project_id, assessment.drifted_feature_ids)
+        self._update_layer2_coverage_matrix_from_assessment(
+            project_id=project_id,
+            pillar_id=pillar.id,
+            assessment=assessment,
+        )
         return self.db.upsert_project_memory(
             project_id=project_id,
             scope="layer2",
@@ -507,9 +999,30 @@ class Layer2EngineMixin:
                 metadata={**feature.metadata, "scope_drift_flag": True},
             )
 
-    @staticmethod
-    def _layer2_should_stop(assessment_memory: Any, stale_rounds: int) -> bool:
-        """Stop once scoped coverage is saturated or repeated rounds add nothing useful."""
+    def _update_layer2_coverage_matrix_from_assessment(
+        self,
+        *,
+        project_id: str,
+        pillar_id: str,
+        assessment: Layer2CoverageAssessmentResponse,
+    ) -> None:
+        """Persist the latest critic assessment into the inspectable coverage matrix."""
+        drifted = set(assessment.drifted_feature_ids)
+        for family in assessment.family_assessments:
+            self.db.upsert_layer2_coverage_matrix_row(
+                project_id=project_id,
+                pillar_id=pillar_id,
+                family_name=family.family,
+                status=family.status,
+                evidence_feature_ids=family.evidence_feature_ids,
+                missing_examples=family.missing_examples,
+                last_lens_run=family.next_lens or "",
+                drift_flags=bool(drifted),
+                ambiguity_flags=False,
+            )
+
+    def _layer2_should_stop(self, project_id: str, pillar_id: str, assessment_memory: Any, stale_rounds: int, novelty_score: float) -> bool:
+        """Stop once novelty is exhausted and all coverage families are resolved."""
         if stale_rounds >= 2:
             return True
         if not assessment_memory:
@@ -521,7 +1034,9 @@ class Layer2EngineMixin:
             return True
         families = content.get("family_assessments", [])
         open_families = [item for item in families if item.get("status") in {"missing", "partial"}]
-        return bool(families) and not open_families
+        matrix_rows = self.db.list_layer2_coverage_matrix(project_id, pillar_id=pillar_id)
+        matrix_resolved = bool(matrix_rows) and all(row.status in {"covered", "excluded"} for row in matrix_rows)
+        return (bool(families) and not open_families) or (novelty_score < 0.15 and matrix_resolved)
 
     @staticmethod
     def _validate_layer2_candidates(payload: dict[str, Any]) -> Layer2CandidateResponse:
@@ -538,6 +1053,30 @@ class Layer2EngineMixin:
             return Layer2CoverageAssessmentResponse.model_validate(payload)
         except ValidationError as exc:
             raise LLMError(f"Invalid Layer 2 coverage assessment payload: {exc}") from exc
+
+    @staticmethod
+    def _validate_layer2_scope_discovery(payload: dict[str, Any]) -> Layer2CoverageFamilyDiscoveryResponse:
+        """Validate the dynamic Layer 2 coverage-family discovery response."""
+        try:
+            return Layer2CoverageFamilyDiscoveryResponse.model_validate(payload)
+        except ValidationError as exc:
+            raise LLMError(f"Invalid Layer 2 scope discovery payload: {exc}") from exc
+
+    @staticmethod
+    def _validate_layer2_integrity(payload: dict[str, Any]) -> Layer2IntegrityCriticResponse:
+        """Validate the batched Layer 2 integrity critic response."""
+        try:
+            return Layer2IntegrityCriticResponse.model_validate(payload)
+        except ValidationError as exc:
+            raise LLMError(f"Invalid Layer 2 integrity critic payload: {exc}") from exc
+
+    @staticmethod
+    def _validate_layer2_graph_critic(payload: dict[str, Any]) -> Layer2GraphCriticResponse:
+        """Validate the batched Layer 2 graph critic response."""
+        try:
+            return Layer2GraphCriticResponse.model_validate(payload)
+        except ValidationError as exc:
+            raise LLMError(f"Invalid Layer 2 graph critic payload: {exc}") from exc
 
     def _approved_layer1_pillar(self, project_id: str, pillar_id: str) -> Node:
         """Return a user-approved Layer 1 pillar and reject unscoped descent targets."""
@@ -646,12 +1185,21 @@ class Layer2EngineMixin:
             ),
         }
 
-    def _find_layer2_overlap(self, project_id: str, candidate: Layer2Candidate) -> tuple[Any | None, float]:
+    def _find_layer2_overlap(
+        self,
+        project_id: str,
+        candidate: Layer2Candidate,
+        *,
+        exclude_feature_ids: list[str] | None = None,
+    ) -> tuple[Any | None, float]:
         """Find the strongest existing Layer 2 duplicate candidate without deleting either record."""
         best_feature = None
         best_score = 0.0
         candidate_text = f"{candidate.canonical_name} {candidate.description} {' '.join(candidate.aliases)}"
+        excluded = set(exclude_feature_ids or [])
         for feature in self.db.list_layer2_features(project_id):
+            if feature.id in excluded:
+                continue
             feature_text = f"{feature.canonical_name} {feature.description} {' '.join(feature.aliases)}"
             score = fuzz.token_set_ratio(candidate_text.lower(), feature_text.lower()) / 100
             if score > best_score:

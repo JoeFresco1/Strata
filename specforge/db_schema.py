@@ -214,6 +214,7 @@ class DatabaseSchemaMixin:
                     canonical_name TEXT NOT NULL,
                     description TEXT NOT NULL,
                     feature_type TEXT NOT NULL,
+                    granularity_class TEXT NOT NULL DEFAULT 'feature',
                     owner_pillar_id TEXT NOT NULL,
                     candidate_source_ids TEXT NOT NULL,
                     aliases TEXT NOT NULL,
@@ -273,7 +274,39 @@ class DatabaseSchemaMixin:
                     rejected_aliases TEXT NOT NULL,
                     rejected_at_layer INTEGER NOT NULL,
                     rejected_from_pillar_id TEXT NOT NULL,
+                    embedding_model TEXT NOT NULL DEFAULT '',
+                    embedding TEXT,
                     created_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS layer2_coverage_matrix (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    pillar_id TEXT NOT NULL,
+                    family_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    evidence_feature_ids TEXT NOT NULL,
+                    missing_examples TEXT NOT NULL,
+                    last_lens_run TEXT NOT NULL DEFAULT '',
+                    drift_flags INTEGER NOT NULL DEFAULT 0,
+                    ambiguity_flags INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(project_id, pillar_id, family_name),
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS layer2_shared_concern_clusters (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    concern_type TEXT NOT NULL,
+                    connected_feature_ids TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(project_id, name, concern_type),
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
 
@@ -328,6 +361,12 @@ class DatabaseSchemaMixin:
 
                 CREATE INDEX IF NOT EXISTS idx_layer2_review_project
                 ON layer2_review_actions(project_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_layer2_coverage_matrix_pillar
+                ON layer2_coverage_matrix(project_id, pillar_id, status);
+
+                CREATE INDEX IF NOT EXISTS idx_layer2_shared_concern_project
+                ON layer2_shared_concern_clusters(project_id, concern_type, status);
                 """
             )
         try:
@@ -337,6 +376,16 @@ class DatabaseSchemaMixin:
         except Exception as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+        for statement in (
+            "ALTER TABLE layer2_features ADD COLUMN granularity_class TEXT NOT NULL DEFAULT 'feature'",
+            "ALTER TABLE layer2_negative_cache ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE layer2_negative_cache ADD COLUMN embedding TEXT",
+        ):
+            try:
+                self._execute(statement)
+            except Exception as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
     def _initialize_postgres(self) -> None:
         """Create the PostgreSQL schema and enable pgvector for future retrieval work."""
@@ -599,6 +648,7 @@ class DatabaseSchemaMixin:
                         canonical_name TEXT NOT NULL,
                         description TEXT NOT NULL,
                         feature_type TEXT NOT NULL,
+                        granularity_class TEXT NOT NULL DEFAULT 'feature',
                         owner_pillar_id TEXT NOT NULL,
                         candidate_source_ids JSONB NOT NULL,
                         aliases JSONB NOT NULL,
@@ -618,6 +668,7 @@ class DatabaseSchemaMixin:
                     )
                     """
                 )
+                cursor.execute("ALTER TABLE layer2_features ADD COLUMN IF NOT EXISTS granularity_class TEXT NOT NULL DEFAULT 'feature'")
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS layer2_feature_aliases (
@@ -666,7 +717,45 @@ class DatabaseSchemaMixin:
                         rejected_aliases JSONB NOT NULL,
                         rejected_at_layer INTEGER NOT NULL,
                         rejected_from_pillar_id TEXT NOT NULL,
+                        embedding_model TEXT NOT NULL DEFAULT '',
+                        embedding vector(384),
                         created_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                cursor.execute("ALTER TABLE layer2_negative_cache ADD COLUMN IF NOT EXISTS embedding_model TEXT NOT NULL DEFAULT ''")
+                cursor.execute("ALTER TABLE layer2_negative_cache ADD COLUMN IF NOT EXISTS embedding vector(384)")
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS layer2_coverage_matrix (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        pillar_id TEXT NOT NULL,
+                        family_name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        evidence_feature_ids JSONB NOT NULL,
+                        missing_examples JSONB NOT NULL,
+                        last_lens_run TEXT NOT NULL DEFAULT '',
+                        drift_flags BOOLEAN NOT NULL DEFAULT FALSE,
+                        ambiguity_flags BOOLEAN NOT NULL DEFAULT FALSE,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        UNIQUE(project_id, pillar_id, family_name)
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS layer2_shared_concern_clusters (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        name TEXT NOT NULL,
+                        concern_type TEXT NOT NULL,
+                        connected_feature_ids JSONB NOT NULL,
+                        status TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        UNIQUE(project_id, name, concern_type)
                     )
                     """
                 )
@@ -782,6 +871,25 @@ class DatabaseSchemaMixin:
                     """
                     CREATE INDEX IF NOT EXISTS idx_layer2_review_project
                     ON layer2_review_actions(project_id, created_at)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_layer2_coverage_matrix_pillar
+                    ON layer2_coverage_matrix(project_id, pillar_id, status)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_layer2_shared_concern_project
+                    ON layer2_shared_concern_clusters(project_id, concern_type, status)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_layer2_negative_cache_vector
+                    ON layer2_negative_cache USING ivfflat (embedding vector_cosine_ops)
+                    WHERE embedding IS NOT NULL
                     """
                 )
 

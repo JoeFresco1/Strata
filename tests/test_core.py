@@ -21,6 +21,8 @@ from specforge.models import (
     PillarAssessment,
     ProjectMemory,
     SimilarityMatch,
+    SpecPayload,
+    SpecResponse,
 )
 from specforge.project_settings import default_project_model_settings, normalize_model_settings
 from specforge.prompts import (
@@ -476,6 +478,50 @@ class GenerationHelperTests(unittest.TestCase):
         status = GenerationService._layer2_candidate_status(candidate, negative_match=False)
 
         self.assertEqual(status, "needs_review")
+
+    def test_layer3_generation_accepts_approved_layer2_graph_feature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            db.upsert_project_brief(
+                project_id=project.id,
+                product_idea="A useful product",
+                known_competitors=[],
+                constraints="",
+                status="published",
+            )
+            pillar = db.create_node(
+                project_id=project.id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title="Survey Builder",
+                description="Build surveys.",
+                status="kept",
+            )
+            feature = db.create_layer2_feature(
+                project_id=project.id,
+                canonical_name="Branching logic rules",
+                description="Conditional routing inside surveys.",
+                feature_type="workflow",
+                granularity_class="rule",
+                owner_pillar_id=pillar.id,
+                candidate_source_ids=[],
+                status="approved",
+            )
+            service = GenerationService(db, llm_client=None)  # type: ignore[arg-type]
+            service._project_llm_runtime = lambda *_args, **_kwargs: {"id": "stub", "label": "Stub"}  # type: ignore[method-assign]
+            service._ensure_profile_loaded = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+            service._call_structured_json_pass = lambda **_kwargs: (  # type: ignore[method-assign]
+                "",
+                SpecResponse(spec=SpecPayload(overview="Spec overview")),
+            )
+
+            created = service.generate_specs(project.id, [feature.id])
+
+            self.assertEqual(len(created), 1)
+            self.assertEqual(created[0].parent_id, pillar.id)
+            self.assertEqual(created[0].json_payload["source_layer2_id"], feature.id)
 
     def test_pillar_quality_gate_rejects_narrow_low_quality_items(self) -> None:
         weak_assessment = PillarAssessment(

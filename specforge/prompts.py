@@ -260,6 +260,71 @@ def build_layer2_coverage_prompt(
     )
 
 
+def build_layer2_scope_discovery_prompt(
+    *,
+    product_idea: str,
+    pillar_title: str,
+    pillar_description: str,
+    project_pillars: list[dict[str, Any]],
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    """Render the pre-pass prompt that discovers Layer 2 pillar boundaries."""
+    return render_prompt(
+        "layer2_dynamic_coverage_family_discovery",
+        {
+            "product_idea": product_idea,
+            "pillar_title": pillar_title,
+            "pillar_description": pillar_description,
+            "project_pillars": _format_memory_items(project_pillars),
+        },
+        prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
+    )
+
+
+def build_layer2_integrity_critic_prompt(
+    *,
+    product_idea: str,
+    scope_contract: dict[str, Any],
+    normalized_features: list[dict[str, Any]],
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    """Render the batched Layer 2 integrity critic prompt."""
+    return render_prompt(
+        "layer2_integrity_critic",
+        {
+            "product_idea": product_idea,
+            "scope_contract": json.dumps(scope_contract, indent=2),
+            "normalized_features": json.dumps(normalized_features, indent=2),
+        },
+        prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
+    )
+
+
+def build_layer2_graph_critic_prompt(
+    *,
+    product_idea: str,
+    current_round_features: list[dict[str, Any]],
+    existing_project_features: list[dict[str, Any]],
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    """Render the batched Layer 2 graph critic prompt."""
+    return render_prompt(
+        "layer2_graph_critic",
+        {
+            "product_idea": product_idea,
+            "current_round_features": json.dumps(current_round_features, indent=2),
+            "existing_project_features": json.dumps(existing_project_features, indent=2),
+        },
+        prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
+    )
+
+
 def build_critic_prompt(
     *,
     layer_name: str,

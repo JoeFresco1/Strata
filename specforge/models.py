@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -34,6 +35,31 @@ ResearchJobType = Literal["layer0_competitors", "layer1_pillar_competitors"]
 ResearchScope = Literal["layer0", "layer1"]
 CoverageStatus = Literal["supported", "partially_supported", "unclear", "not_evident"]
 AdoptionLevel = Literal["common", "emerging", "rare", "unclear"]
+CoverageMatrixStatus = Literal["missing", "partial", "covered", "excluded"]
+SharedConcernType = Literal[
+    "ingestion",
+    "validation",
+    "permissions",
+    "notifications",
+    "audit_logging",
+    "templates",
+    "workflow_state",
+    "reporting",
+]
+SharedConcernStatus = Literal["flagged", "acknowledged", "promoted_to_l1", "dismissed"]
+
+
+class FeatureGranularity(str, Enum):
+    """Layer 2 product-capability granularity classes used by the integrity critic."""
+
+    FEATURE = "feature"
+    FEATURE_VARIANT = "feature_variant"
+    WORKFLOW = "workflow"
+    RULE = "rule"
+    CONFIGURATION = "configuration"
+    SHARED_CONCERN = "shared_concern"
+    TOO_BROAD = "too_broad"
+    TOO_LOW_LEVEL = "too_low_level"
 
 
 class Project(BaseModel):
@@ -150,6 +176,7 @@ class Layer2Feature(BaseModel):
     canonical_name: str
     description: str
     feature_type: str
+    granularity_class: FeatureGranularity = FeatureGranularity.FEATURE
     owner_pillar_id: str
     candidate_source_ids: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
@@ -197,7 +224,47 @@ class Layer2NegativeCacheEntry(BaseModel):
     rejected_aliases: list[str] = Field(default_factory=list)
     rejected_at_layer: int = 2
     rejected_from_pillar_id: str
+    embedding_model: str = ""
     created_at: datetime
+
+
+class PillarScopeContract(BaseModel):
+    """Boundary contract for one approved Layer 1 pillar before Layer 2 descent."""
+
+    pillar_id: str
+    allowed_core_domains: list[str] = Field(default_factory=list)
+    explicit_out_of_bounds: list[str] = Field(default_factory=list)
+    discovered_coverage_families: list[str] = Field(default_factory=list)
+
+
+class Layer2CoverageMatrixRow(BaseModel):
+    """Persistent per-family exhaustion state for one pillar."""
+
+    id: str
+    project_id: str
+    pillar_id: str
+    family_name: str
+    status: CoverageMatrixStatus = "missing"
+    evidence_feature_ids: list[str] = Field(default_factory=list)
+    missing_examples: list[str] = Field(default_factory=list)
+    last_lens_run: str = ""
+    drift_flags: bool = False
+    ambiguity_flags: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class Layer2SharedConcernCluster(BaseModel):
+    """Cross-cutting infrastructure signal discovered while mapping Layer 2 features."""
+
+    id: str
+    project_id: str
+    name: str
+    concern_type: SharedConcernType
+    connected_feature_ids: list[str] = Field(default_factory=list)
+    status: SharedConcernStatus = "flagged"
+    created_at: datetime
+    updated_at: datetime
 
 
 class Layer2ReviewAction(BaseModel):
@@ -381,8 +448,62 @@ class Layer2Candidate(BaseModel):
     needs_human_review: bool = True
 
 
+class Layer2IntegrityAssessment(BaseModel):
+    candidate_id: str
+    granularity_class: FeatureGranularity = FeatureGranularity.FEATURE
+    is_out_of_bounds: bool = False
+    ambiguity_score: float = Field(ge=0.0, le=1.0, default=0.0)
+    reason: str = ""
+
+
+class Layer2IntegrityCriticResponse(BaseModel):
+    assessments: list[Layer2IntegrityAssessment] = Field(default_factory=list)
+
+
+class Layer2DuplicateMergeDirective(BaseModel):
+    source_feature_id: str
+    target_feature_id: str
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+    reason: str = ""
+
+
+class Layer2DependencyDirective(BaseModel):
+    source_feature_id: str
+    target_feature_id: str
+    relationship_type: Layer2RelationshipType = "depends_on"
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+    reason: str = ""
+
+
+class Layer2SharedConcernDirective(BaseModel):
+    name: str
+    concern_type: SharedConcernType
+    connected_feature_ids: list[str] = Field(default_factory=list)
+    planning_implication: str = ""
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+
+
+class Layer2GraphCriticResponse(BaseModel):
+    duplicate_merges: list[Layer2DuplicateMergeDirective] = Field(default_factory=list)
+    cross_pillar_dependencies: list[Layer2DependencyDirective] = Field(default_factory=list)
+    detected_shared_concerns: list[Layer2SharedConcernDirective] = Field(default_factory=list)
+
+
 class Layer2CandidateResponse(BaseModel):
     features: list[Layer2Candidate]
+
+
+class Layer2CoverageFamilyDiscoveryItem(BaseModel):
+    name: str
+    description: str = ""
+    exhaustion_goal: str = ""
+    example_features: list[str] = Field(default_factory=list)
+    anti_examples: list[str] = Field(default_factory=list)
+
+
+class Layer2CoverageFamilyDiscoveryResponse(BaseModel):
+    coverage_families: list[Layer2CoverageFamilyDiscoveryItem] = Field(default_factory=list)
+    reasoning: str = ""
 
 
 class Layer2CoverageFamilyAssessment(BaseModel):

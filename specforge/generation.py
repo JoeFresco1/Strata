@@ -301,7 +301,7 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin):
         return created
 
     def generate_specs(self, project_id: str, subfeature_ids: list[str], *, thinking_enabled: bool = False) -> list[Node]:
-        """Generate Layer 3 implementation specs for approved subfeatures."""
+        """Generate Layer 3 implementation specs for legacy subfeatures or approved Layer 2 graph features."""
         runtime_profile = self._project_llm_runtime(project_id, "layer3_generation")
         self._ensure_profile_loaded(runtime_profile, thinking_enabled=thinking_enabled)
         prompt_catalog = self._prompt_catalog(project_id)
@@ -310,24 +310,44 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin):
         approved = collect_approved_directions(self.db.list_all_nodes(project_id))
         created: list[Node] = []
         for subfeature_id in subfeature_ids:
-            subfeature = self.db.get_node(subfeature_id)
-            if subfeature.parent_id is None:
-                raise ValueError("Subfeature must have a parent pillar.")
-            pillar = self.db.get_node(subfeature.parent_id)
-            siblings = self.db.list_nodes(project_id, parent_id=subfeature_id, layer=3, node_type="spec")
+            try:
+                subfeature = self.db.get_node(subfeature_id)
+                if subfeature.parent_id is None:
+                    raise ValueError("Subfeature must have a parent pillar.")
+                pillar = self.db.get_node(subfeature.parent_id)
+                spec_parent_id = subfeature_id
+                spec_source_id = subfeature_id
+                spec_title_base = subfeature.title
+                spec_description = subfeature.description or ""
+                shared_features = self._shared_project_subfeatures(project_id, exclude_parent_id=subfeature.parent_id)
+            except ValueError as node_error:
+                try:
+                    graph_feature = self.db.get_layer2_feature(subfeature_id)
+                except ValueError:
+                    raise node_error
+                if graph_feature.project_id != project_id:
+                    raise ValueError(f"Layer 2 feature does not belong to project: {subfeature_id}")
+                if graph_feature.status != "approved":
+                    raise ValueError(f"Layer 2 feature must be approved before Layer 3 generation: {subfeature_id}")
+                pillar = self.db.get_node(graph_feature.owner_pillar_id)
+                spec_parent_id = pillar.id
+                spec_source_id = pillar.id
+                spec_title_base = graph_feature.canonical_name
+                spec_description = graph_feature.description
+                shared_features = self._layer2_feature_memory(project_id, exclude_owner_pillar_id=graph_feature.owner_pillar_id)
             prompt = build_spec_prompt(
                 project.idea,
                 pillar.title,
-                subfeature.title,
-                subfeature.description or "",
-                self._shared_project_subfeatures(project_id, exclude_parent_id=subfeature.parent_id),
+                spec_title_base,
+                spec_description,
+                shared_features,
                 rejected,
                 approved,
                 prompt_catalog=prompt_catalog,
             )
             _, parsed = self._call_structured_json_pass(
                 project_id=project_id,
-                node_id=subfeature_id,
+                node_id=spec_source_id,
                 prompt=prompt,
                 runtime_profile=runtime_profile,
                 max_tokens=3200,
@@ -335,19 +355,21 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin):
                 schema_label="spec_response",
                 schema_instructions="Return {'spec': {overview, user_personas, user_stories, inputs, outputs, core_logic, edge_cases, ux_screens, data_requirements, acceptance_criteria, open_questions, risks, implementation_notes}}.",
             )
-            spec_title = f"{subfeature.title} Spec"
+            spec_title = f"{spec_title_base} Spec"
+            siblings = self.db.list_nodes(project_id, parent_id=spec_parent_id, layer=3, node_type="spec")
             duplicate = detect_possible_duplicates(
                 existing_nodes=siblings,
                 title=spec_title,
                 description=parsed.spec.overview,
             )
             payload = parsed.spec.model_dump(mode="json")
+            payload["source_layer2_id"] = subfeature_id
             if duplicate:
                 payload["possible_duplicate"] = duplicate
             created.append(
                 self.db.create_node(
                     project_id=project_id,
-                    parent_id=subfeature_id,
+                    parent_id=spec_parent_id,
                     layer=3,
                     node_type="spec",
                     title=spec_title,

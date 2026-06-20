@@ -9,6 +9,8 @@ const PROMPT_FIELD_HELP = {
   layer2_subfeature_generation: "Expands a pillar into Layer 2 subfeatures.",
   layer2_feature_graph_generation: "Runs scoped Layer 2 graph lens passes for concrete feature candidates.",
   layer2_scope_coverage_critic: "Assesses Layer 2 scope coverage, drift, and exhaustion.",
+  layer2_integrity_critic: "Batched critic for granularity, out-of-bounds checks, and ambiguity scoring.",
+  layer2_graph_critic: "Batched critic for duplicate directives, dependencies, and shared concern detection.",
   layer2_dynamic_coverage_family_discovery: "Finds the pillar-specific families that define Layer 2 exhaustion.",
   layer2_granularity_critic: "Flags candidates that are too broad, too narrow, or implementation-level.",
   layer2_overlap_dedupe_critic: "Finds duplicate and overlapping features within and across pillars.",
@@ -50,6 +52,8 @@ const PROMPT_GROUPS = [
     description: "Tunable critic prompts for exhaustion, overlap, shared concerns, ambiguity, and rejection memory.",
     fields: [
       "layer2_dynamic_coverage_family_discovery",
+      "layer2_integrity_critic",
+      "layer2_graph_critic",
       "layer2_scope_coverage_critic",
       "layer2_granularity_critic",
       "layer2_overlap_dedupe_critic",

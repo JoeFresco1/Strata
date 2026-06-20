@@ -4,7 +4,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from pgvector import Vector
+from rapidfuzz import fuzz
+
 from specforge.models import (
+    Layer2CoverageMatrixRow,
     Layer2Feature,
     Layer2FeatureRelationship,
     Layer2GenerationRun,
@@ -12,6 +16,7 @@ from specforge.models import (
     Layer2PillarAffinity,
     Layer2RawCandidate,
     Layer2ReviewAction,
+    Layer2SharedConcernCluster,
 )
 
 
@@ -128,6 +133,7 @@ class Layer2DatabaseMixin:
         canonical_name: str,
         description: str,
         feature_type: str,
+        granularity_class: str = "feature",
         owner_pillar_id: str,
         candidate_source_ids: list[str],
         aliases: list[str] | None = None,
@@ -146,12 +152,12 @@ class Layer2DatabaseMixin:
             f"""
             INSERT INTO layer2_features (
                 id, project_id, canonical_name, description, feature_type, owner_pillar_id,
-                candidate_source_ids, aliases, status, related_pillar_ids, used_by_feature_ids,
+                granularity_class, candidate_source_ids, aliases, status, related_pillar_ids, used_by_feature_ids,
                 depends_on_feature_ids, specificity_score, pillar_fit_score, distinctiveness_score,
                 implementation_leakage_score, strategic_value_score, needs_human_review, metadata,
                 created_at, updated_at
             )
-            VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
+            VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
             """,
             (
                 feature_id,
@@ -160,6 +166,7 @@ class Layer2DatabaseMixin:
                 description,
                 feature_type,
                 owner_pillar_id,
+                granularity_class,
                 self._dump_json(candidate_source_ids),
                 self._dump_json(aliases or []),
                 status,
@@ -366,16 +373,21 @@ class Layer2DatabaseMixin:
         semantic_cluster: str,
         rejected_aliases: list[str],
         rejected_from_pillar_id: str,
+        embedding_model: str = "",
+        embedding: list[float] | None = None,
     ) -> Layer2NegativeCacheEntry:
         """Persist a rejected Layer 2 concept so later generation can flag rediscovery."""
         entry_id = str(uuid.uuid4())
+        vector_value: Any = None
+        if embedding is not None:
+            vector_value = Vector(embedding) if self.is_postgres else self._dump_json(embedding)
         self._execute(
             f"""
             INSERT INTO layer2_negative_cache (
                 id, project_id, rejected_name, semantic_cluster, rejected_aliases, rejected_at_layer,
-                rejected_from_pillar_id, created_at
+                rejected_from_pillar_id, embedding_model, embedding, created_at
             )
-            VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
+            VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
             """,
             (
                 entry_id,
@@ -385,12 +397,74 @@ class Layer2DatabaseMixin:
                 self._dump_json(rejected_aliases),
                 2,
                 rejected_from_pillar_id,
+                embedding_model,
+                vector_value,
                 utc_now(),
             ),
         )
         return self._row_to_layer2_negative_cache(
             self._fetchone(f"SELECT * FROM layer2_negative_cache WHERE id = {self.param}", (entry_id,))
         )
+
+    def find_layer2_negative_cache_match(
+        self,
+        *,
+        project_id: str,
+        candidate_text: str,
+        embedding_model: str = "",
+        embedding: list[float] | None = None,
+        auto_reject_threshold: float = 0.95,
+        review_threshold: float = 0.85,
+    ) -> dict[str, Any] | None:
+        """Return the strongest negative-cache match using pgvector with a lexical fallback."""
+        if self.is_postgres and embedding is not None and embedding_model:
+            row = self._fetchone(
+                f"""
+                SELECT
+                    id,
+                    rejected_name,
+                    semantic_cluster,
+                    rejected_aliases,
+                    rejected_from_pillar_id,
+                    1 - (embedding <=> {self.param}) AS similarity
+                FROM layer2_negative_cache
+                WHERE project_id = {self.param}
+                  AND embedding_model = {self.param}
+                  AND embedding IS NOT NULL
+                ORDER BY embedding <=> {self.param} ASC
+                LIMIT 1
+                """,
+                (Vector(embedding), project_id, embedding_model, Vector(embedding)),
+            )
+            if row is not None:
+                similarity = float(self._row_value(row, "similarity"))
+                if similarity >= review_threshold:
+                    return {
+                        "id": self._row_value(row, "id"),
+                        "rejected_name": self._row_value(row, "rejected_name"),
+                        "semantic_cluster": self._row_value(row, "semantic_cluster"),
+                        "rejected_aliases": self._load_json_list(self._row_value(row, "rejected_aliases")),
+                        "rejected_from_pillar_id": self._row_value(row, "rejected_from_pillar_id"),
+                        "similarity": round(similarity, 4),
+                        "action": "auto_reject" if similarity > auto_reject_threshold else "review",
+                    }
+
+        candidate_lower = candidate_text.lower()
+        best: dict[str, Any] | None = None
+        for entry in self.list_layer2_negative_cache(project_id):
+            terms = [entry.rejected_name, entry.semantic_cluster, *entry.rejected_aliases]
+            score = max([fuzz.token_set_ratio(candidate_lower, term.lower()) / 100 for term in terms if term] or [0.0])
+            if score >= review_threshold and (best is None or score > float(best["similarity"])):
+                best = {
+                    "id": entry.id,
+                    "rejected_name": entry.rejected_name,
+                    "semantic_cluster": entry.semantic_cluster,
+                    "rejected_aliases": entry.rejected_aliases,
+                    "rejected_from_pillar_id": entry.rejected_from_pillar_id,
+                    "similarity": round(score, 4),
+                    "action": "auto_reject" if score > auto_reject_threshold else "review",
+                }
+        return best
 
     def list_layer2_negative_cache(self, project_id: str) -> list[Layer2NegativeCacheEntry]:
         """Return rejected Layer 2 semantic clusters for generation-time filtering."""
@@ -429,6 +503,147 @@ class Layer2DatabaseMixin:
         )
         return [self._row_to_layer2_review_action(row) for row in rows]
 
+    def upsert_layer2_coverage_matrix_row(
+        self,
+        *,
+        project_id: str,
+        pillar_id: str,
+        family_name: str,
+        status: str = "missing",
+        evidence_feature_ids: list[str] | None = None,
+        missing_examples: list[str] | None = None,
+        last_lens_run: str = "",
+        drift_flags: bool = False,
+        ambiguity_flags: bool = False,
+    ) -> Layer2CoverageMatrixRow:
+        """Create or update the exhaustion state for one Layer 2 coverage family."""
+        existing = self._fetchone(
+            f"""
+            SELECT * FROM layer2_coverage_matrix
+            WHERE project_id = {self.param} AND pillar_id = {self.param} AND family_name = {self.param}
+            """,
+            (project_id, pillar_id, family_name),
+        )
+        now = utc_now()
+        if existing is None:
+            row_id = str(uuid.uuid4())
+            self._execute(
+                f"""
+                INSERT INTO layer2_coverage_matrix (
+                    id, project_id, pillar_id, family_name, status, evidence_feature_ids, missing_examples,
+                    last_lens_run, drift_flags, ambiguity_flags, created_at, updated_at
+                )
+                VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
+                """,
+                (
+                    row_id,
+                    project_id,
+                    pillar_id,
+                    family_name,
+                    status,
+                    self._dump_json(evidence_feature_ids or []),
+                    self._dump_json(missing_examples or []),
+                    last_lens_run,
+                    bool(drift_flags),
+                    bool(ambiguity_flags),
+                    now,
+                    now,
+                ),
+            )
+            return self._row_to_layer2_coverage_matrix(
+                self._fetchone(f"SELECT * FROM layer2_coverage_matrix WHERE id = {self.param}", (row_id,))
+            )
+        self._execute(
+            f"""
+            UPDATE layer2_coverage_matrix
+            SET status = {self.param},
+                evidence_feature_ids = {self.param},
+                missing_examples = {self.param},
+                last_lens_run = {self.param},
+                drift_flags = {self.param},
+                ambiguity_flags = {self.param},
+                updated_at = {self.param}
+            WHERE id = {self.param}
+            """,
+            (
+                status,
+                self._dump_json(evidence_feature_ids or []),
+                self._dump_json(missing_examples or []),
+                last_lens_run,
+                bool(drift_flags),
+                bool(ambiguity_flags),
+                now,
+                self._row_value(existing, "id"),
+            ),
+        )
+        return self._row_to_layer2_coverage_matrix(
+            self._fetchone(f"SELECT * FROM layer2_coverage_matrix WHERE id = {self.param}", (self._row_value(existing, "id"),))
+        )
+
+    def list_layer2_coverage_matrix(self, project_id: str, *, pillar_id: str | None = None) -> list[Layer2CoverageMatrixRow]:
+        """Return Layer 2 exhaustion rows for a project or one pillar."""
+        query = f"SELECT * FROM layer2_coverage_matrix WHERE project_id = {self.param}"
+        params: list[Any] = [project_id]
+        if pillar_id is not None:
+            query += f" AND pillar_id = {self.param}"
+            params.append(pillar_id)
+        query += " ORDER BY pillar_id ASC, family_name ASC"
+        return [self._row_to_layer2_coverage_matrix(row) for row in self._fetchall(query, tuple(params))]
+
+    def upsert_layer2_shared_concern_cluster(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        concern_type: str,
+        connected_feature_ids: list[str],
+        status: str = "flagged",
+    ) -> Layer2SharedConcernCluster:
+        """Create or update a shared infrastructure concern discovered across features."""
+        existing = self._fetchone(
+            f"""
+            SELECT * FROM layer2_shared_concern_clusters
+            WHERE project_id = {self.param} AND name = {self.param} AND concern_type = {self.param}
+            """,
+            (project_id, name, concern_type),
+        )
+        now = utc_now()
+        if existing is None:
+            cluster_id = str(uuid.uuid4())
+            self._execute(
+                f"""
+                INSERT INTO layer2_shared_concern_clusters (
+                    id, project_id, name, concern_type, connected_feature_ids, status, created_at, updated_at
+                )
+                VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
+                """,
+                (cluster_id, project_id, name, concern_type, self._dump_json(connected_feature_ids), status, now, now),
+            )
+            return self._row_to_layer2_shared_concern(
+                self._fetchone(f"SELECT * FROM layer2_shared_concern_clusters WHERE id = {self.param}", (cluster_id,))
+            )
+        existing_ids = set(self._load_json_list(self._row_value(existing, "connected_feature_ids")))
+        merged_ids = sorted(existing_ids.union(connected_feature_ids))
+        self._execute(
+            f"""
+            UPDATE layer2_shared_concern_clusters
+            SET connected_feature_ids = {self.param}, status = {self.param}, updated_at = {self.param}
+            WHERE id = {self.param}
+            """,
+            (self._dump_json(merged_ids), status, now, self._row_value(existing, "id")),
+        )
+        return self._row_to_layer2_shared_concern(
+            self._fetchone(f"SELECT * FROM layer2_shared_concern_clusters WHERE id = {self.param}", (self._row_value(existing, "id"),))
+        )
+
+    def list_layer2_shared_concern_clusters(self, project_id: str) -> list[Layer2SharedConcernCluster]:
+        """Return shared concern clusters for project intelligence views."""
+        rows = self._fetchall(
+            f"SELECT * FROM layer2_shared_concern_clusters WHERE project_id = {self.param} ORDER BY concern_type ASC, name ASC",
+            (project_id,),
+        )
+        return [self._row_to_layer2_shared_concern(row) for row in rows]
+
     def layer2_graph_snapshot(self, project_id: str) -> dict[str, Any]:
         """Return the full Layer 2 graph and review queue as a serializable API payload."""
         features = self.list_layer2_features(project_id)
@@ -436,6 +651,8 @@ class Layer2DatabaseMixin:
         relationships = self.list_layer2_relationships(project_id)
         review_actions = self.list_layer2_review_actions(project_id)
         negative_cache = self.list_layer2_negative_cache(project_id)
+        coverage_matrix = self.list_layer2_coverage_matrix(project_id)
+        shared_concerns = self.list_layer2_shared_concern_clusters(project_id)
         coverage_memory = [
             item
             for item in self.list_project_memory(project_id)
@@ -456,6 +673,8 @@ class Layer2DatabaseMixin:
             "review_actions": [action.model_dump(mode="json") for action in review_actions],
             "negative_cache": [entry.model_dump(mode="json") for entry in negative_cache],
             "coverage": [item.model_dump(mode="json") for item in coverage_memory],
+            "coverage_matrix": [item.model_dump(mode="json") for item in coverage_matrix],
+            "shared_concerns": [item.model_dump(mode="json") for item in shared_concerns],
             "review_open": any(feature.status in {"candidate", "needs_review"} for feature in features),
         }
 
@@ -500,6 +719,7 @@ class Layer2DatabaseMixin:
             canonical_name=row["canonical_name"],
             description=row["description"],
             feature_type=row["feature_type"],
+            granularity_class=row["granularity_class"] if "granularity_class" in row.keys() else "feature",
             owner_pillar_id=row["owner_pillar_id"],
             candidate_source_ids=self._load_json_list(row["candidate_source_ids"]),
             aliases=self._load_json_list(row["aliases"]),
@@ -553,6 +773,7 @@ class Layer2DatabaseMixin:
             rejected_aliases=self._load_json_list(row["rejected_aliases"]),
             rejected_at_layer=int(row["rejected_at_layer"]),
             rejected_from_pillar_id=row["rejected_from_pillar_id"],
+            embedding_model=str(self._row_value(row, "embedding_model") or ""),
             created_at=datetime.fromisoformat(str(row["created_at"])),
         )
 
@@ -565,5 +786,35 @@ class Layer2DatabaseMixin:
             action_type=row["action_type"],
             payload=self._load_json(row["payload"]),
             created_at=datetime.fromisoformat(str(row["created_at"])),
+        )
+
+    def _row_to_layer2_coverage_matrix(self, row: Any) -> Layer2CoverageMatrixRow:
+        """Convert a raw database row into a Layer 2 coverage matrix row."""
+        return Layer2CoverageMatrixRow(
+            id=row["id"],
+            project_id=row["project_id"],
+            pillar_id=row["pillar_id"],
+            family_name=row["family_name"],
+            status=row["status"],
+            evidence_feature_ids=self._load_json_list(row["evidence_feature_ids"]),
+            missing_examples=self._load_json_list(row["missing_examples"]),
+            last_lens_run=row["last_lens_run"],
+            drift_flags=bool(row["drift_flags"]),
+            ambiguity_flags=bool(row["ambiguity_flags"]),
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+            updated_at=datetime.fromisoformat(str(row["updated_at"])),
+        )
+
+    def _row_to_layer2_shared_concern(self, row: Any) -> Layer2SharedConcernCluster:
+        """Convert a raw database row into a shared concern cluster."""
+        return Layer2SharedConcernCluster(
+            id=row["id"],
+            project_id=row["project_id"],
+            name=row["name"],
+            concern_type=row["concern_type"],
+            connected_feature_ids=self._load_json_list(row["connected_feature_ids"]),
+            status=row["status"],
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+            updated_at=datetime.fromisoformat(str(row["updated_at"])),
         )
 

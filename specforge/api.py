@@ -255,12 +255,19 @@ def _apply_layer2_review_action(
         services.db.update_layer2_feature(feature.id, status="kept")
     elif request.action_type == "cut" and feature is not None:
         feature = services.db.update_layer2_feature(feature.id, status="cut")
+        embedding_model = services.generation_service._embedding_model_name(project_id, "layer1_similarity_embeddings")
+        embedding = services.generation_service._layer2_embedding(
+            f"{feature.canonical_name} {feature.description} {' '.join(feature.aliases)}",
+            embedding_model,
+        )
         services.db.create_layer2_negative_cache_entry(
             project_id=project_id,
             rejected_name=feature.canonical_name,
             semantic_cluster=payload.get("semantic_cluster") or feature.canonical_name.lower(),
             rejected_aliases=feature.aliases,
             rejected_from_pillar_id=feature.owner_pillar_id,
+            embedding_model=embedding_model,
+            embedding=embedding,
         )
     elif request.action_type == "rename" and feature is not None:
         if not request.title:
@@ -360,6 +367,32 @@ def _remove_layer2_relationship(
     )
     if removed == 0:
         raise ValueError("No matching Layer 2 relationship was found to remove.")
+
+
+def _validate_layer3_layer2_gate(services: AppServices, project_id: str, target_ids: list[str]) -> None:
+    """Reject Layer 3 generation when graph-native Layer 2 features are not approved."""
+    unapproved: list[str] = []
+    checked_count = 0
+    for target_id in target_ids:
+        try:
+            feature = services.db.get_layer2_feature(target_id)
+        except ValueError:
+            continue
+        if feature.project_id != project_id:
+            continue
+        checked_count += 1
+        if feature.status != "approved":
+            unapproved.append(feature.id)
+    if unapproved:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Layer 3 generation requires approved Layer 2 features.",
+                "unapproved_feature_count": len(unapproved),
+                "unapproved_feature_ids": unapproved,
+                "checked_layer2_feature_count": checked_count,
+            },
+        )
 
 
 def create_app() -> FastAPI:
@@ -659,6 +692,7 @@ def create_app() -> FastAPI:
     def generate_layer3(project_id: str, request: Layer3GenerateRequest) -> dict[str, object]:
         """Generate implementation-ready spec nodes for selected subfeatures."""
         try:
+            _validate_layer3_layer2_gate(services, project_id, request.subfeature_ids)
             created = services.generation_service.generate_specs(
                 project_id,
                 request.subfeature_ids,
