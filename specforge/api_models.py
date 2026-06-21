@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ProjectCreateRequest(BaseModel):
@@ -110,6 +110,88 @@ class Layer2ReviewActionRequest(BaseModel):
         "conflicts_with",
     ] | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class Layer2FeatureCreateRequest(BaseModel):
+    canonical_name: str
+    description: str
+    owner_pillar_id: str
+    feature_type: str = "capability"
+    granularity_class: str = "feature"
+    coverage_family: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    status: str = "candidate"
+    priority: str = ""
+    notes: str = ""
+
+    @field_validator("canonical_name", "description", "owner_pillar_id")
+    @classmethod
+    def required_text(cls, value: str) -> str:
+        """Reject blank identifiers/text before the database layer sees them."""
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Required Layer 2 feature fields cannot be blank.")
+        return cleaned
+
+    @field_validator("aliases")
+    @classmethod
+    def clean_aliases(cls, value: list[str]) -> list[str]:
+        """Normalize alias payloads from the workbench textarea."""
+        return [item.strip() for item in value if item.strip()]
+
+
+class Layer2FeatureUpdateRequest(BaseModel):
+    canonical_name: str | None = None
+    description: str | None = None
+    feature_type: str | None = None
+    granularity_class: str | None = None
+    owner_pillar_id: str | None = None
+    status: str | None = None
+    coverage_family: str | None = None
+    priority: str | None = None
+    notes: str | None = None
+
+    @field_validator("canonical_name", "description", "feature_type", "granularity_class", "owner_pillar_id", "status")
+    @classmethod
+    def clean_optional_text(cls, value: str | None) -> str | None:
+        """Trim optional text fields while preserving omitted values."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Provided Layer 2 update fields cannot be blank.")
+        return cleaned
+
+
+class Layer2BulkActionRequest(BaseModel):
+    feature_ids: list[str] = Field(default_factory=list)
+    action_type: Literal["approve_for_layer3", "cut", "keep", "needs_review"] = "keep"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class Layer2FeatureEvidenceRequest(BaseModel):
+    feature_id: str
+    competitor_name: str
+    coverage_status: Literal["has_feature", "partial", "not_found", "unclear"] = "unclear"
+    confidence: int = Field(ge=0, le=100, default=50)
+    source_url: str = ""
+    evidence_snippet: str = ""
+    notes: str = ""
+    source_type: Literal["manual", "discovered"] = "manual"
+
+    @field_validator("feature_id", "competitor_name")
+    @classmethod
+    def required_evidence_text(cls, value: str) -> str:
+        """Keep evidence rows tied to an actual feature and named competitor."""
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Feature evidence requires a feature and competitor.")
+        return cleaned
+
+
+class Layer2CompetitiveSettingsRequest(BaseModel):
+    known_competitors: list[str] = Field(default_factory=list)
+    research_mode: Literal["known_only", "expand_from_known"] = "known_only"
 
 
 class ExportResponse(BaseModel):

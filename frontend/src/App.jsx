@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import TreeDashboard from "./treeDashboard";
-import Layer2GraphPanel from "./Layer2GraphPanel";
+import Layer2GraphPanel, { CompetitiveIntelligencePanel } from "./Layer2GraphPanel";
 import PromptCatalogEditor from "./PromptCatalogEditor";
 import BriefWorkspace from "./BriefWorkspace";
 import { AppSettingsModal, ProjectSettingsTab } from "./ModelSettingsPanel";
@@ -8,7 +8,7 @@ import { CreateProjectModal, GuideModal, ModalFrame, ProjectHub } from "./Projec
 import { CheckboxList, GenerationSummary, MarketPanel, NodeEditor, ResearchStatus } from "./ReviewPanels";
 
 const API_BASE = "http://127.0.0.1:8000/api";
-const TABS = ["Layer 0", "Generate", "Review", "Tree", "Specs", "Settings", "Export"];
+const TABS = ["Layer 0", "Generate", "Review", "Competitive Intelligence", "Tree", "Specs", "Settings", "Export"];
 
 
 // Fetch JSON from the local API and surface readable errors to the UI.
@@ -366,6 +366,86 @@ export default function App() {
     }
   }
 
+  async function handleLayer2FeatureCreate(payload) {
+    // Adds a human-authored feature directly into the Layer 2 review queue.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer2/features`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage("Layer 2 feature added.");
+    } catch (createError) {
+      setError(createError.message);
+      throw createError;
+    }
+  }
+
+  async function handleLayer2FeatureUpdate(featureId, payload) {
+    // Saves inline workbench edits without forcing a full generation pass.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer2/features/${featureId}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage("Layer 2 feature updated.");
+    } catch (updateError) {
+      setError(updateError.message);
+      throw updateError;
+    }
+  }
+
+  async function handleLayer2BulkAction(payload) {
+    // Applies the same review action to a selected feature set.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer2/bulk`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage(`Bulk Layer 2 action recorded: ${payload.action_type}.`);
+    } catch (bulkError) {
+      setError(bulkError.message);
+      throw bulkError;
+    }
+  }
+
+  async function handleLayer2Evidence(payload) {
+    // Stores manual competitor evidence for feature-level research views.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer2/evidence`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage("Feature evidence added.");
+    } catch (evidenceError) {
+      setError(evidenceError.message);
+      throw evidenceError;
+    }
+  }
+
+  async function handleCompetitiveSettings(payload) {
+    // Saves the competitor set used by the Layer 2 matrix.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/competitive/layer2/settings`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage("Competitive settings updated.");
+    } catch (settingsError) {
+      setError(settingsError.message);
+      throw settingsError;
+    }
+  }
+
   // Run Layer 3 spec generation for the selected subfeatures.
   async function handleGenerateLayer3() {
     setError("");
@@ -412,7 +492,7 @@ export default function App() {
       const payload = await apiFetch(`/projects/${activeProjectId}/export/layer2`, {
         method: "POST",
       });
-      setStatusMessage(`Layer 2 graph exported to ${payload.json_path}`);
+      setStatusMessage(`Layer 2 exported to ${payload.markdown_path} and ${payload.json_path}`);
     } catch (exportError) {
       setError(exportError.message);
     }
@@ -614,6 +694,10 @@ export default function App() {
                   graph={layer2Graph}
                   pillars={approvedNodes(nodes, "pillar")}
                   onReview={handleLayer2Review}
+                  onCreateFeature={handleLayer2FeatureCreate}
+                  onUpdateFeature={handleLayer2FeatureUpdate}
+                  onBulkAction={handleLayer2BulkAction}
+                  onAddEvidence={handleLayer2Evidence}
                 />
 
                 <CheckboxList
@@ -661,6 +745,10 @@ export default function App() {
                   graph={layer2Graph}
                   pillars={approvedNodes(nodes, "pillar")}
                   onReview={handleLayer2Review}
+                  onCreateFeature={handleLayer2FeatureCreate}
+                  onUpdateFeature={handleLayer2FeatureUpdate}
+                  onBulkAction={handleLayer2BulkAction}
+                  onAddEvidence={handleLayer2Evidence}
                 />
                 {nodes.length ? nodes.map((node) => (
                   <NodeEditor
@@ -672,6 +760,14 @@ export default function App() {
                   />
                 )) : <p className="muted">Nothing to review yet.</p>}
               </section>
+            ) : null}
+
+            {activeTab === "Competitive Intelligence" ? (
+              <CompetitiveIntelligencePanel
+                graph={layer2Graph}
+                pillars={approvedNodes(nodes, "pillar")}
+                onCompetitiveSettings={handleCompetitiveSettings}
+              />
             ) : null}
 
             {activeTab === "Specs" ? (
@@ -719,11 +815,11 @@ export default function App() {
                       Export Markdown and JSON
                     </button>
                     <button type="button" onClick={handleLayer2Export}>
-                      Export Layer 2 Graph JSON
+                      Export Layer 2 Markdown and JSON
                     </button>
                   </div>
                   {layer2Graph.review_open ? (
-                    <p className="warning">Layer 2 graph export waits until candidate and needs_review features are resolved.</p>
+                    <p className="warning">Layer 2 export includes unresolved review state. Layer 3 still requires approved features.</p>
                   ) : null}
                 </div>
                 <div className="panel">

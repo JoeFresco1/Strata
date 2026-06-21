@@ -7,6 +7,7 @@ from typing import Any
 from pgvector import Vector
 from rapidfuzz import fuzz
 
+from specforge.layer2_workbench_db import Layer2WorkbenchDatabaseMixin
 from specforge.models import (
     Layer2CoverageMatrixRow,
     Layer2Feature,
@@ -25,7 +26,7 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class Layer2DatabaseMixin:
+class Layer2DatabaseMixin(Layer2WorkbenchDatabaseMixin):
     """Layer 2 graph storage methods mixed into the main database adapter."""
 
     def create_layer2_generation_run(
@@ -213,11 +214,17 @@ class Layer2DatabaseMixin:
         *,
         canonical_name: str | None = None,
         description: str | None = None,
+        feature_type: str | None = None,
+        granularity_class: str | None = None,
         owner_pillar_id: str | None = None,
         status: str | None = None,
+        coverage_family: str | None = None,
+        priority: str | None = None,
+        notes: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Layer2Feature:
         """Update review-owned fields on a Layer 2 feature."""
+        current = self.get_layer2_feature(feature_id)
         updates: list[str] = []
         params: list[Any] = []
         if canonical_name is not None:
@@ -226,15 +233,30 @@ class Layer2DatabaseMixin:
         if description is not None:
             updates.append(f"description = {self.param}")
             params.append(description)
+        if feature_type is not None:
+            updates.append(f"feature_type = {self.param}")
+            params.append(feature_type)
+        if granularity_class is not None:
+            updates.append(f"granularity_class = {self.param}")
+            params.append(granularity_class)
         if owner_pillar_id is not None:
             updates.append(f"owner_pillar_id = {self.param}")
             params.append(owner_pillar_id)
         if status is not None:
             updates.append(f"status = {self.param}")
             params.append(status)
+        merged_metadata = dict(current.metadata or {})
+        if coverage_family is not None:
+            merged_metadata["coverage_family"] = coverage_family
+        if priority is not None:
+            merged_metadata["priority"] = priority
+        if notes is not None:
+            merged_metadata["notes"] = notes
         if metadata is not None:
+            merged_metadata.update(metadata)
+        if metadata is not None or coverage_family is not None or priority is not None or notes is not None:
             updates.append(f"metadata = {self.param}")
-            params.append(self._dump_json(metadata))
+            params.append(self._dump_json(merged_metadata))
         if not updates:
             return self.get_layer2_feature(feature_id)
         updates.append(f"updated_at = {self.param}")
@@ -653,12 +675,18 @@ class Layer2DatabaseMixin:
         negative_cache = self.list_layer2_negative_cache(project_id)
         coverage_matrix = self.list_layer2_coverage_matrix(project_id)
         shared_concerns = self.list_layer2_shared_concern_clusters(project_id)
+        evidence = self.list_layer2_feature_evidence(project_id)
+        competitive_settings = self.get_layer2_competitive_settings(project_id)
         coverage_memory = [
             item
             for item in self.list_project_memory(project_id)
             if item.scope == "layer2" and item.memory_type == "scoped_coverage"
         ]
         return {
+            "pillars": [
+                node.model_dump(mode="json")
+                for node in self.list_nodes(project_id, parent_id=None, layer=1, node_type="pillar")
+            ],
             "features": [feature.model_dump(mode="json") for feature in features],
             "affinity": [
                 {
@@ -675,6 +703,16 @@ class Layer2DatabaseMixin:
             "coverage": [item.model_dump(mode="json") for item in coverage_memory],
             "coverage_matrix": [item.model_dump(mode="json") for item in coverage_matrix],
             "shared_concerns": [item.model_dump(mode="json") for item in shared_concerns],
+            "feature_evidence": [item.model_dump(mode="json") for item in evidence],
+            "competitive_settings": competitive_settings.model_dump(mode="json"),
+            "workbench": self.layer2_workbench_snapshot(
+                project_id,
+                features=features,
+                relationships=relationships,
+                shared_concerns=shared_concerns,
+                evidence=evidence,
+                competitive_settings=competitive_settings,
+            ),
             "review_open": any(feature.status in {"candidate", "needs_review"} for feature in features),
         }
 
@@ -817,4 +855,3 @@ class Layer2DatabaseMixin:
             created_at=datetime.fromisoformat(str(row["created_at"])),
             updated_at=datetime.fromisoformat(str(row["updated_at"])),
         )
-

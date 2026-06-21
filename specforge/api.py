@@ -13,6 +13,11 @@ from specforge.api_models import (
     ExportResponse,
     Layer0ChatRequest,
     Layer0ChatResponse,
+    Layer2BulkActionRequest,
+    Layer2CompetitiveSettingsRequest,
+    Layer2FeatureCreateRequest,
+    Layer2FeatureEvidenceRequest,
+    Layer2FeatureUpdateRequest,
     Layer1GenerateRequest,
     Layer2GenerateRequest,
     Layer2ReviewActionRequest,
@@ -37,7 +42,7 @@ from specforge.config import (
 )
 from specforge.db import Database
 from specforge.embeddings import EmbeddingService
-from specforge.export import export_project
+from specforge.export import export_layer2_markdown, export_project
 from specforge.generation import GenerationService
 from specforge.llm import LLMError, LlamaCppClient
 from specforge.research import ResearchService
@@ -240,6 +245,19 @@ def _validate_layer2_owner_pillar(services: AppServices, project_id: str, pillar
     pillar = services.db.get_node(pillar_id)
     if pillar.project_id != project_id or pillar.layer != 1 or pillar.node_type != "pillar":
         raise ValueError("Layer 2 owner must be a Layer 1 pillar in the active project.")
+
+
+def _valid_layer2_status(status: str) -> str:
+    """Normalize UI-provided Layer 2 status values."""
+    allowed = {"candidate", "kept", "cut", "merged", "renamed", "needs_review", "approved"}
+    cleaned = status.strip().lower()
+    if cleaned == "approve_for_layer3":
+        return "approved"
+    if cleaned == "keep":
+        return "kept"
+    if cleaned not in allowed:
+        raise ValueError(f"Unsupported Layer 2 status: {status}")
+    return cleaned
 
 
 def _apply_layer2_review_action(
@@ -688,6 +706,116 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
 
+    @app.post("/api/projects/{project_id}/layer2/features")
+    def create_layer2_feature(project_id: str, request: Layer2FeatureCreateRequest) -> dict[str, object]:
+        """Manually add one Layer 2 feature into the review workbench."""
+        try:
+            services.db.get_project(project_id)
+            _validate_layer2_owner_pillar(services, project_id, request.owner_pillar_id)
+            feature = services.db.create_layer2_feature(
+                project_id=project_id,
+                canonical_name=request.canonical_name.strip(),
+                description=request.description.strip(),
+                feature_type=request.feature_type.strip() or "capability",
+                granularity_class=request.granularity_class.strip() or "feature",
+                owner_pillar_id=request.owner_pillar_id,
+                candidate_source_ids=[],
+                aliases=request.aliases,
+                status=_valid_layer2_status(request.status),
+                metadata={
+                    "source": "manual",
+                    "coverage_family": request.coverage_family,
+                    "priority": request.priority,
+                    "notes": request.notes,
+                },
+            )
+            services.db.record_layer2_review_action(
+                project_id=project_id,
+                feature_id=feature.id,
+                action_type="manual_add",
+                payload={"source": "manual_feature_add"},
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
+    @app.patch("/api/projects/{project_id}/layer2/features/{feature_id}")
+    def update_layer2_feature(project_id: str, feature_id: str, request: Layer2FeatureUpdateRequest) -> dict[str, object]:
+        """Inline-edit one Layer 2 feature from the workbench drawer/table."""
+        try:
+            feature = _get_project_layer2_feature(services, project_id, feature_id)
+            if request.owner_pillar_id:
+                _validate_layer2_owner_pillar(services, project_id, request.owner_pillar_id)
+            services.db.update_layer2_feature(
+                feature.id,
+                canonical_name=request.canonical_name.strip() if request.canonical_name is not None else None,
+                description=request.description.strip() if request.description is not None else None,
+                feature_type=request.feature_type.strip() if request.feature_type is not None else None,
+                granularity_class=request.granularity_class.strip() if request.granularity_class is not None else None,
+                owner_pillar_id=request.owner_pillar_id,
+                status=_valid_layer2_status(request.status) if request.status is not None else None,
+                coverage_family=request.coverage_family,
+                priority=request.priority,
+                notes=request.notes,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
+    @app.post("/api/projects/{project_id}/layer2/bulk")
+    def bulk_layer2_action(project_id: str, request: Layer2BulkActionRequest) -> dict[str, object]:
+        """Apply one review action to many Layer 2 features."""
+        try:
+            if not request.feature_ids:
+                raise ValueError("Select at least one feature for a bulk action.")
+            status = "approved" if request.action_type == "approve_for_layer3" else _valid_layer2_status(request.action_type)
+            for feature_id in request.feature_ids:
+                feature = _get_project_layer2_feature(services, project_id, feature_id)
+                services.db.update_layer2_feature(feature.id, status=status)
+                services.db.record_layer2_review_action(
+                    project_id=project_id,
+                    feature_id=feature.id,
+                    action_type=request.action_type,
+                    payload={**request.payload, "source": "bulk_action"},
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
+    @app.post("/api/projects/{project_id}/layer2/evidence")
+    def create_layer2_feature_evidence(project_id: str, request: Layer2FeatureEvidenceRequest) -> dict[str, object]:
+        """Save manual competitor evidence for one Layer 2 feature."""
+        try:
+            _get_project_layer2_feature(services, project_id, request.feature_id)
+            services.db.create_layer2_feature_evidence(
+                project_id=project_id,
+                feature_id=request.feature_id,
+                competitor_name=request.competitor_name.strip(),
+                coverage_status=request.coverage_status,
+                confidence=request.confidence,
+                source_url=request.source_url.strip(),
+                evidence_snippet=request.evidence_snippet.strip(),
+                notes=request.notes.strip(),
+                source_type=request.source_type,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
+    @app.patch("/api/projects/{project_id}/competitive/layer2/settings")
+    def update_layer2_competitive_settings(project_id: str, request: Layer2CompetitiveSettingsRequest) -> dict[str, object]:
+        """Save known competitors and feature research mode for competitive intelligence views."""
+        try:
+            services.db.get_project(project_id)
+            services.db.upsert_layer2_competitive_settings(
+                project_id=project_id,
+                known_competitors=request.known_competitors,
+                research_mode=request.research_mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
     @app.post("/api/projects/{project_id}/generate/layer3")
     def generate_layer3(project_id: str, request: Layer3GenerateRequest) -> dict[str, object]:
         """Generate implementation-ready spec nodes for selected subfeatures."""
@@ -723,25 +851,21 @@ def create_app() -> FastAPI:
 
     @app.post("/api/projects/{project_id}/export/layer2")
     def export_layer2_graph(project_id: str) -> dict[str, object]:
-        """Export structured Layer 2 graph JSON only after human review clears the queue."""
+        """Export Layer 2 Markdown and JSON with current review state included."""
         try:
             project = services.db.get_project(project_id)
             graph = services.db.layer2_graph_snapshot(project_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        if graph.get("review_open"):
-            raise HTTPException(
-                status_code=409,
-                detail="Layer 2 still has candidate or needs_review features. Review them before structured export.",
-            )
         slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in project.name).strip("-")
+        markdown_path = export_layer2_markdown(project, graph, Path(services.config.exports_dir))
         output_path = Path(services.config.exports_dir) / f"{slug or project.id}-layer2-graph.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
             json.dumps({"project": project.model_dump(mode="json"), "layer2_graph": graph}, indent=2),
             encoding="utf-8",
         )
-        return {"json_path": str(output_path), "layer2_graph": graph}
+        return {"markdown_path": str(markdown_path), "json_path": str(output_path), "layer2_graph": graph}
 
     return app
 

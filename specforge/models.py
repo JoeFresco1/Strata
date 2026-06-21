@@ -29,10 +29,12 @@ Layer2ReviewActionType = Literal[
     "remove_relationship",
     "prioritize",
     "approve_for_layer3",
+    "needs_review",
+    "manual_add",
 ]
 ResearchJobStatus = Literal["queued", "running", "completed", "failed"]
-ResearchJobType = Literal["layer0_competitors", "layer1_pillar_competitors"]
-ResearchScope = Literal["layer0", "layer1"]
+ResearchJobType = Literal["layer0_competitors", "layer1_pillar_competitors", "layer2_feature_competitors"]
+ResearchScope = Literal["layer0", "layer1", "layer2"]
 CoverageStatus = Literal["supported", "partially_supported", "unclear", "not_evident"]
 AdoptionLevel = Literal["common", "emerging", "rare", "unclear"]
 CoverageMatrixStatus = Literal["missing", "partial", "covered", "excluded"]
@@ -47,6 +49,9 @@ SharedConcernType = Literal[
     "reporting",
 ]
 SharedConcernStatus = Literal["flagged", "acknowledged", "promoted_to_l1", "dismissed"]
+FeatureEvidenceCoverageStatus = Literal["has_feature", "partial", "not_found", "unclear"]
+FeatureEvidenceSourceType = Literal["manual", "discovered"]
+CompetitiveResearchMode = Literal["known_only", "expand_from_known"]
 
 
 class FeatureGranularity(str, Enum):
@@ -263,6 +268,33 @@ class Layer2SharedConcernCluster(BaseModel):
     concern_type: SharedConcernType
     connected_feature_ids: list[str] = Field(default_factory=list)
     status: SharedConcernStatus = "flagged"
+    created_at: datetime
+    updated_at: datetime
+
+
+class Layer2FeatureEvidence(BaseModel):
+    """Manual or discovered competitor evidence attached to one Layer 2 feature."""
+
+    id: str
+    project_id: str
+    feature_id: str
+    competitor_name: str
+    coverage_status: FeatureEvidenceCoverageStatus = "unclear"
+    confidence: int = Field(ge=0, le=100, default=50)
+    source_url: str = ""
+    evidence_snippet: str = ""
+    notes: str = ""
+    source_type: FeatureEvidenceSourceType = "manual"
+    created_at: datetime
+    updated_at: datetime
+
+
+class Layer2CompetitiveSettings(BaseModel):
+    """Project-level settings for feature-level competitive intelligence."""
+
+    project_id: str
+    known_competitors: list[str] = Field(default_factory=list)
+    research_mode: CompetitiveResearchMode = "known_only"
     created_at: datetime
     updated_at: datetime
 

@@ -310,6 +310,32 @@ class DatabaseSchemaMixin:
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS layer2_feature_evidence (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    feature_id TEXT NOT NULL,
+                    competitor_name TEXT NOT NULL,
+                    coverage_status TEXT NOT NULL,
+                    confidence INTEGER NOT NULL,
+                    source_url TEXT NOT NULL DEFAULT '',
+                    evidence_snippet TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL DEFAULT 'manual',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id),
+                    FOREIGN KEY(feature_id) REFERENCES layer2_features(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS layer2_competitive_settings (
+                    project_id TEXT PRIMARY KEY,
+                    known_competitors TEXT NOT NULL,
+                    research_mode TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS layer2_review_actions (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
@@ -367,6 +393,9 @@ class DatabaseSchemaMixin:
 
                 CREATE INDEX IF NOT EXISTS idx_layer2_shared_concern_project
                 ON layer2_shared_concern_clusters(project_id, concern_type, status);
+
+                CREATE INDEX IF NOT EXISTS idx_layer2_feature_evidence_feature
+                ON layer2_feature_evidence(project_id, feature_id, competitor_name);
                 """
             )
         try:
@@ -761,6 +790,35 @@ class DatabaseSchemaMixin:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS layer2_feature_evidence (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        feature_id TEXT NOT NULL REFERENCES layer2_features(id) ON DELETE CASCADE,
+                        competitor_name TEXT NOT NULL,
+                        coverage_status TEXT NOT NULL,
+                        confidence INTEGER NOT NULL,
+                        source_url TEXT NOT NULL DEFAULT '',
+                        evidence_snippet TEXT NOT NULL DEFAULT '',
+                        notes TEXT NOT NULL DEFAULT '',
+                        source_type TEXT NOT NULL DEFAULT 'manual',
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS layer2_competitive_settings (
+                        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                        known_competitors JSONB NOT NULL,
+                        research_mode TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS layer2_review_actions (
                         id TEXT PRIMARY KEY,
                         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -883,6 +941,12 @@ class DatabaseSchemaMixin:
                     """
                     CREATE INDEX IF NOT EXISTS idx_layer2_shared_concern_project
                     ON layer2_shared_concern_clusters(project_id, concern_type, status)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_layer2_feature_evidence_feature
+                    ON layer2_feature_evidence(project_id, feature_id, competitor_name)
                     """
                 )
                 cursor.execute(

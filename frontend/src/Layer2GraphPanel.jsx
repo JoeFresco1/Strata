@@ -1,26 +1,53 @@
+import { useMemo, useState } from "react";
+import CompetitiveIntelligencePanel from "./Layer2CompetitiveIntelligencePanel";
+import { FeatureDetail, Layer2FeatureForm } from "./Layer2FeatureWorkbenchParts";
+import { FEATURE_STATUSES, featureMatchesFilters, sortFeatureRows } from "./layer2WorkbenchUtils";
 import "./Layer2GraphPanel.css";
 
-// Presents the graph-native Layer 2 review queue as a pillar-grouped hierarchy.
-function Layer2GraphPanel({ graph, pillars, onReview }) {
-  const features = graph?.features || [];
+function Layer2GraphPanel({
+  graph,
+  pillars,
+  onReview,
+  onCreateFeature,
+  onUpdateFeature,
+  onBulkAction,
+  onAddEvidence,
+}) {
+  const rows = graph?.workbench?.rows || graph?.features || [];
   const relationships = graph?.relationships || [];
-  const affinity = graph?.affinity || [];
-  const reviewActions = graph?.review_actions || [];
-  const negativeCache = graph?.negative_cache || [];
-  const coverage = graph?.coverage || [];
+  const coverageMatrix = graph?.coverage_matrix || [];
+  const sharedConcerns = graph?.shared_concerns || [];
   const pillarById = Object.fromEntries(pillars.map((pillar) => [pillar.id, pillar]));
-  const featuresByOwner = features.reduce((groups, feature) => {
-    const key = feature.owner_pillar_id || "unassigned";
-    groups[key] = groups[key] || [];
-    groups[key].push(feature);
-    return groups;
-  }, {});
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [sortKey, setSortKey] = useState("pillar_fit");
+  const [filters, setFilters] = useState({ query: "", pillar: "all", status: "all", research: "all", readyOnly: false });
 
-  if (!features.length) {
+  const visibleRows = useMemo(
+    () => sortFeatureRows(rows.filter((row) => featureMatchesFilters(row, filters)), sortKey),
+    [rows, filters, sortKey],
+  );
+  const selectedFeature = rows.find((row) => row.id === selectedId) || visibleRows[0] || null;
+  const openReviews = rows.filter((row) => ["candidate", "needs_review"].includes(row.status)).length;
+
+  function toggleSelected(featureId) {
+    setSelectedIds((current) => current.includes(featureId) ? current.filter((item) => item !== featureId) : [...current, featureId]);
+  }
+
+  async function bulk(actionType) {
+    if (!selectedIds.length || !onBulkAction) return;
+    await onBulkAction({ feature_ids: selectedIds, action_type: actionType });
+    setSelectedIds([]);
+  }
+
+  if (!rows.length) {
     return (
       <div className="panel">
-        <h3>Layer 2 Feature Graph</h3>
-        <p className="muted">Generate Layer 2 from kept pillars to populate the review queue.</p>
+        <div className="panel-header">
+          <h3>Layer 2 Feature Workbench</h3>
+          {onCreateFeature ? <Layer2FeatureForm pillars={pillars} onCreate={onCreateFeature} /> : null}
+        </div>
+        <p className="muted">Generate Layer 2 from kept pillars or add a feature manually.</p>
       </div>
     );
   }
@@ -28,116 +55,103 @@ function Layer2GraphPanel({ graph, pillars, onReview }) {
   return (
     <div className="panel layer2-graph-panel">
       <div className="panel-header">
-        <h3>Layer 2 Feature Graph</h3>
-        <span>{features.filter((feature) => ["candidate", "needs_review"].includes(feature.status)).length} open reviews</span>
+        <div>
+          <h3>Layer 2 Feature Workbench</h3>
+          <p className="muted">{rows.length} features | {openReviews} open reviews | {relationships.length} relationships</p>
+        </div>
+        {onCreateFeature ? <Layer2FeatureForm pillars={pillars} onCreate={onCreateFeature} /> : null}
       </div>
       <div className="info-grid">
-        <div>
-          <strong>Features</strong>
-          <p>{features.length}</p>
-        </div>
-        <div>
-          <strong>Relationships</strong>
-          <p>{relationships.length}</p>
-        </div>
-        <div>
-          <strong>Coverage Reviews</strong>
-          <p>{coverage.length}</p>
-        </div>
+        <div><strong>Ready For Layer 3</strong><p>{rows.filter((row) => row.layer3_ready).length}</p></div>
+        <div><strong>Manual Evidence</strong><p>{rows.reduce((total, row) => total + Number(row.evidence_count || 0), 0)}</p></div>
+        <div><strong>Coverage Rows</strong><p>{coverageMatrix.length}</p></div>
+        <div><strong>Shared Concerns</strong><p>{sharedConcerns.length}</p></div>
       </div>
-      {coverage.length ? (
-        <div className="layer2-coverage-strip">
-          {coverage.map((item) => {
-            const openFamilies = (item.content?.family_assessments || []).filter((family) =>
-              ["missing", "partial"].includes(family.status),
-            );
-            return (
-              <div key={item.id} className="layer2-coverage-card">
-                <strong>{item.content?.scope_contract?.pillar_name || "Layer 2 Scope"}</strong>
-                <p>{item.content?.coverage_summary || "No summary."}</p>
-                <p>
-                  {item.content?.saturation_signal || "unknown"} saturation | novelty {item.content?.novelty_score ?? 0}/100
-                </p>
-                {openFamilies.length ? (
-                  <p className="warning">Open families: {openFamilies.map((family) => `${family.family} (${family.status})`).join(", ")}</p>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-      <div className="info-grid">
-        <div>
-          <strong>Negative Cache</strong>
-          <p>{negativeCache.length}</p>
-        </div>
-        <div>
-          <strong>Review Actions</strong>
-          <p>{reviewActions.length}</p>
-        </div>
+      <div className="layer2-toolbar">
+        <input value={filters.query} onChange={(event) => setFilters({ ...filters, query: event.target.value })} placeholder="Search features" />
+        <select value={filters.pillar} onChange={(event) => setFilters({ ...filters, pillar: event.target.value })}>
+          <option value="all">All pillars</option>
+          {pillars.map((pillar) => <option key={pillar.id} value={pillar.id}>{pillar.title}</option>)}
+        </select>
+        <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}>
+          <option value="all">All statuses</option>
+          {FEATURE_STATUSES.map((item) => <option key={item} value={item}>{item}</option>)}
+        </select>
+        <select value={filters.research} onChange={(event) => setFilters({ ...filters, research: event.target.value })}>
+          <option value="all">All research</option>
+          <option value="not_started">No evidence</option>
+          <option value="manual_evidence">Manual evidence</option>
+        </select>
+        <select value={sortKey} onChange={(event) => setSortKey(event.target.value)}>
+          <option value="pillar_fit">Sort: fit</option>
+          <option value="strategic">Sort: strategic</option>
+          <option value="research">Sort: research</option>
+          <option value="status">Sort: status</option>
+          <option value="name">Sort: name</option>
+        </select>
+        <label className="checkbox-item">
+          <input type="checkbox" checked={filters.readyOnly} onChange={(event) => setFilters({ ...filters, readyOnly: event.target.checked })} />
+          <span>Layer 3 ready</span>
+        </label>
       </div>
-      {Object.entries(featuresByOwner).map(([pillarId, ownerFeatures]) => (
-        <div key={pillarId} className="layer2-owner-group">
-          <h4>{pillarById[pillarId]?.title || "Unassigned"}</h4>
-          <div className="layer2-feature-grid">
-            {ownerFeatures.map((feature) => {
-              const duplicateEdges = relationships.filter(
-                (edge) => edge.source_feature_id === feature.id || edge.target_feature_id === feature.id,
-              );
-              const featureAffinity = affinity.filter((item) => item.feature_id === feature.id);
-              return (
-                <div key={feature.id} className={`layer2-feature-card ${feature.status}`}>
-                  <div className="panel-header">
-                    <strong>{feature.canonical_name}</strong>
-                    <span className="status-pill">{feature.status}</span>
-                  </div>
-                  <p>{feature.description}</p>
-                  <div className="meta-block">
-                    <p>
-                      {feature.feature_type} | fit {feature.pillar_fit_score}/100 | distinct {feature.distinctiveness_score}/100 | leakage{" "}
-                      {feature.implementation_leakage_score}/100
-                    </p>
-                    {feature.metadata?.coverage_family ? <p>Family: {feature.metadata.coverage_family}</p> : null}
-                    {feature.metadata?.scope_classification ? <p>Scope: {feature.metadata.scope_classification}</p> : null}
-                    {feature.metadata?.pillar_fit_rationale ? <p>{feature.metadata.pillar_fit_rationale}</p> : null}
-                    {feature.metadata?.scope_drift_flag ? <p className="warning">Scope drift flagged for review.</p> : null}
-                    {feature.aliases?.length ? <p>Aliases: {feature.aliases.join(", ")}</p> : null}
-                    {feature.metadata?.negative_cache_match ? <p className="warning">Negative cache: {feature.metadata.negative_cache_reason}</p> : null}
-                  </div>
-                  {duplicateEdges.length ? (
-                    <ul className="summary-list">
-                      {duplicateEdges.map((edge) => (
-                        <li key={edge.id}>
-                          {edge.relationship_type} | strength {edge.strength} | {edge.rationale}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                  {featureAffinity.length ? (
-                    <p className="muted">
-                      Owner recommendation: {pillarById[featureAffinity[0].recommended_owner_pillar_id]?.title || featureAffinity[0].recommended_owner_pillar_id}
-                    </p>
-                  ) : null}
-                  <div className="button-row">
-                    <button type="button" onClick={() => onReview({ action_type: "keep", feature_id: feature.id })}>
-                      Keep
-                    </button>
-                    <button type="button" onClick={() => onReview({ action_type: "cut", feature_id: feature.id })}>
-                      Cut
-                    </button>
-                    <button type="button" onClick={() => onReview({ action_type: "approve_for_layer3", feature_id: feature.id })}>
-                      Approve
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+      <div className="button-row">
+        <button type="button" className="secondary-button" onClick={() => bulk("approve_for_layer3")} disabled={!selectedIds.length || !onBulkAction}>Bulk Approve</button>
+        <button type="button" className="secondary-button" onClick={() => bulk("keep")} disabled={!selectedIds.length || !onBulkAction}>Bulk Keep</button>
+        <button type="button" className="secondary-button" onClick={() => bulk("needs_review")} disabled={!selectedIds.length || !onBulkAction}>Bulk Needs Review</button>
+        <button type="button" className="secondary-button" onClick={() => bulk("cut")} disabled={!selectedIds.length || !onBulkAction}>Bulk Cut</button>
+      </div>
+      <div className="layer2-workbench-layout">
+        <div className="layer2-table-wrap">
+          <table className="layer2-feature-table">
+            <thead>
+              <tr>
+                <th />
+                <th>Feature</th>
+                <th>Pillar</th>
+                <th>Status</th>
+                <th>Fit</th>
+                <th>Strategic</th>
+                <th>Research</th>
+                <th>Ready</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((row) => (
+                <tr key={row.id} className={selectedId === row.id ? "selected" : ""} onClick={() => setSelectedId(row.id)}>
+                  <td><input type="checkbox" checked={selectedIds.includes(row.id)} onChange={() => toggleSelected(row.id)} onClick={(event) => event.stopPropagation()} /></td>
+                  <td><strong>{row.canonical_name}</strong><span>{row.granularity_class}</span></td>
+                  <td>{pillarById[row.owner_pillar_id]?.title || "Unassigned"}</td>
+                  <td><span className={`status-pill ${row.status}`}>{row.status}</span></td>
+                  <td>{row.pillar_fit_score}</td>
+                  <td>{row.strategic_value_score}</td>
+                  <td>{row.competitor_coverage_score || 0}%</td>
+                  <td>{row.layer3_ready ? "yes" : "no"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <FeatureDetail
+          feature={selectedFeature}
+          pillars={pillars}
+          onUpdate={onUpdateFeature}
+          onReview={onReview}
+          onAddEvidence={onAddEvidence}
+        />
+      </div>
+      {sharedConcerns.length ? (
+        <div className="layer2-owner-group">
+          <h4>Shared Concerns</h4>
+          <div className="layer2-chip-grid">
+            {sharedConcerns.map((concern) => (
+              <span key={concern.id} className="status-pill">{concern.concern_type}: {concern.name}</span>
+            ))}
           </div>
         </div>
-      ))}
+      ) : null}
     </div>
   );
 }
 
-
+export { CompetitiveIntelligencePanel };
 export default Layer2GraphPanel;

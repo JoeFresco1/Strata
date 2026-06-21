@@ -7,9 +7,14 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 from specforge.config import AppConfig, ModelProfile, build_model_profiles, resolve_default_model_profile, resolve_reasoning_settings
+from specforge.api import _valid_layer2_status
+from specforge.api_models import Layer2FeatureCreateRequest, Layer2FeatureEvidenceRequest
 from specforge.db import Database
 from specforge.embeddings import EmbeddingService
+from specforge.export import export_layer2_markdown
 from specforge.generation import LAYER2_EXHAUSTION_FAMILIES, LAYER2_LENSES, LAYER2_SURVEY_BUILDER_FAMILIES, GenerationService
 from specforge.llm import LlamaCppClient
 from specforge.models import (
@@ -39,6 +44,25 @@ from requests.exceptions import SSLError
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_layer2_status_normalization_maps_review_actions_to_feature_statuses(self) -> None:
+        self.assertEqual(_valid_layer2_status("approve_for_layer3"), "approved")
+        self.assertEqual(_valid_layer2_status("keep"), "kept")
+
+    def test_layer2_manual_feature_request_rejects_blank_required_fields(self) -> None:
+        with self.assertRaises(ValidationError):
+            Layer2FeatureCreateRequest(
+                canonical_name=" ",
+                description="Useful feature",
+                owner_pillar_id="pillar_1",
+            )
+
+    def test_layer2_feature_evidence_request_rejects_blank_competitor(self) -> None:
+        with self.assertRaises(ValidationError):
+            Layer2FeatureEvidenceRequest(
+                feature_id="feat_1",
+                competitor_name=" ",
+            )
+
     def test_update_node_preserves_priority_when_omitted(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "specforge.db")
@@ -261,6 +285,93 @@ class DatabaseTests(unittest.TestCase):
 
             self.assertEqual(removed, 1)
             self.assertEqual(db.list_layer2_relationships(project.id), [])
+
+    def test_layer2_workbench_snapshot_includes_evidence_settings_and_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            pillar = db.create_node(
+                project_id=project.id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title="Survey Builder",
+                description="Build and distribute structured surveys.",
+                status="kept",
+            )
+            db.upsert_layer1_pillar(pillar)
+            feature = db.create_layer2_feature(
+                project_id=project.id,
+                canonical_name="Question branching logic",
+                description="Route respondents through different paths based on prior answers.",
+                feature_type="workflow",
+                owner_pillar_id=pillar.id,
+                candidate_source_ids=[],
+                status="approved",
+                metadata={"coverage_family": "Logic"},
+            )
+            db.upsert_layer2_competitive_settings(
+                project_id=project.id,
+                known_competitors=["Typeform", "SurveyMonkey"],
+                research_mode="known_only",
+            )
+            db.create_layer2_feature_evidence(
+                project_id=project.id,
+                feature_id=feature.id,
+                competitor_name="Typeform",
+                coverage_status="has_feature",
+                confidence=90,
+                source_url="https://example.com",
+                evidence_snippet="Branching logic is documented.",
+            )
+
+            graph = db.layer2_graph_snapshot(project.id)
+            row = graph["workbench"]["rows"][0]
+
+            self.assertEqual(graph["competitive_settings"]["known_competitors"], ["Typeform", "SurveyMonkey"])
+            self.assertEqual(graph["feature_evidence"][0]["competitor_name"], "Typeform")
+            self.assertTrue(row["layer3_ready"])
+            self.assertEqual(row["research_status"], "manual_evidence")
+            self.assertEqual(row["competitor_coverage_score"], 100)
+            self.assertEqual(row["coverage_family"], "Logic")
+
+    def test_layer2_markdown_export_writes_workbench_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            pillar = db.create_node(
+                project_id=project.id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title="Survey Builder",
+                description="Build surveys.",
+                status="kept",
+            )
+            db.upsert_layer1_pillar(pillar)
+            feature = db.create_layer2_feature(
+                project_id=project.id,
+                canonical_name="Question type library",
+                description="Offer structured question formats for survey authors.",
+                feature_type="feature",
+                owner_pillar_id=pillar.id,
+                candidate_source_ids=[],
+            )
+            db.create_layer2_feature_evidence(
+                project_id=project.id,
+                feature_id=feature.id,
+                competitor_name="Typeform",
+                coverage_status="partial",
+                confidence=70,
+            )
+
+            output_path = export_layer2_markdown(project, db.layer2_graph_snapshot(project.id), Path(tmpdir))
+            markdown = output_path.read_text(encoding="utf-8")
+
+            self.assertIn("# Test Layer 2", markdown)
+            self.assertIn("Question type library", markdown)
+            self.assertIn("## Competitive Evidence", markdown)
+            self.assertIn("Typeform", markdown)
 
 
 class ProjectSettingsTests(unittest.TestCase):
