@@ -5,9 +5,8 @@ $runtimeDir = Join-Path $root ".runtime"
 $serverPidFile = Join-Path $runtimeDir "llama-server.pid"
 $apiPidFile = Join-Path $runtimeDir "api.pid"
 $frontendPidFile = Join-Path $runtimeDir "frontend.pid"
-$streamlitPidFile = Join-Path $runtimeDir "streamlit.pid"
 
-foreach ($pidFile in @($frontendPidFile, $apiPidFile, $streamlitPidFile, $serverPidFile)) {
+foreach ($pidFile in @($frontendPidFile, $apiPidFile, $serverPidFile)) {
     if (Test-Path $pidFile) {
         $pidValue = Get-Content $pidFile | Select-Object -First 1
         if ($pidValue) {

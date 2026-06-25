@@ -12,6 +12,8 @@ function Layer2GraphPanel({
   onUpdateFeature,
   onBulkAction,
   onAddEvidence,
+  onResearch,
+  researchJobs = [],
 }) {
   const rows = graph?.workbench?.rows || graph?.features || [];
   const relationships = graph?.relationships || [];
@@ -29,6 +31,7 @@ function Layer2GraphPanel({
   );
   const selectedFeature = rows.find((row) => row.id === selectedId) || visibleRows[0] || null;
   const openReviews = rows.filter((row) => ["candidate", "needs_review"].includes(row.status)).length;
+  const layer2Jobs = researchJobs.filter((job) => job.scope === "layer2").slice(0, 4);
 
   function toggleSelected(featureId) {
     setSelectedIds((current) => current.includes(featureId) ? current.filter((item) => item !== featureId) : [...current, featureId]);
@@ -81,6 +84,7 @@ function Layer2GraphPanel({
           <option value="all">All research</option>
           <option value="not_started">No evidence</option>
           <option value="manual_evidence">Manual evidence</option>
+          <option value="researched">Automated research</option>
         </select>
         <select value={sortKey} onChange={(event) => setSortKey(event.target.value)}>
           <option value="pillar_fit">Sort: fit</option>
@@ -95,11 +99,28 @@ function Layer2GraphPanel({
         </label>
       </div>
       <div className="button-row">
+        <button type="button" onClick={() => onResearch?.(selectedIds)} disabled={!selectedIds.length || !onResearch}>Research Selected</button>
+        <button type="button" className="secondary-button" onClick={() => onResearch?.([])} disabled={!onResearch}>Research All</button>
         <button type="button" className="secondary-button" onClick={() => bulk("approve_for_layer3")} disabled={!selectedIds.length || !onBulkAction}>Bulk Approve</button>
         <button type="button" className="secondary-button" onClick={() => bulk("keep")} disabled={!selectedIds.length || !onBulkAction}>Bulk Keep</button>
         <button type="button" className="secondary-button" onClick={() => bulk("needs_review")} disabled={!selectedIds.length || !onBulkAction}>Bulk Needs Review</button>
         <button type="button" className="secondary-button" onClick={() => bulk("cut")} disabled={!selectedIds.length || !onBulkAction}>Bulk Cut</button>
       </div>
+      {layer2Jobs.length ? (
+        <div className="layer2-research-jobs">
+          {layer2Jobs.map((job) => (
+            <div key={job.id} className={`status-card ${job.status}`}>
+              <strong>{job.status} | {job.progress}%</strong>
+              <span>{job.details?.feature_count || 0} features | {job.details?.pages || 0} pages</span>
+              {(job.details?.warnings || []).slice(0, 2).map((warning) => <span key={warning} className="warning-text">{warning}</span>)}
+              {job.error ? <span className="warning-text">{job.error}</span> : null}
+              {["failed", "completed"].includes(job.status) ? (
+                <button type="button" className="secondary-button" onClick={() => onResearch?.(job.details?.feature_ids || [])} disabled={!onResearch}>Retry</button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="layer2-workbench-layout">
         <div className="layer2-table-wrap">
           <table className="layer2-feature-table">

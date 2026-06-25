@@ -162,6 +162,40 @@
   gap: 0.5rem;
 }
 
+.layer2-research-jobs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.layer2-research-jobs .status-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.matrix-cell-button {
+  min-width: 92px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.layer2-evidence-history {
+  margin-top: 14px;
+  border-top: 1px solid var(--border-color, #d8dde5);
+  padding-top: 12px;
+}
+
+.evidence-history-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-color, #d8dde5);
+}
+
 .layer2-score-grid span {
   padding: 0.55rem 0.65rem;
   border-radius: 8px;

@@ -1,57 +1,16 @@
-import { useEffect, useState } from "react";
-import TreeDashboard from "./treeDashboard";
-import Layer2GraphPanel, { CompetitiveIntelligencePanel } from "./Layer2GraphPanel";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { CompetitiveIntelligencePanel } from "./Layer2GraphPanel";
+import { API_BASE, apiFetch, subscribeApiActivity } from "./apiClient";
+import { TABS, applyAssistantNavigation, approvedNodes, assistantScopeFor, findWorkspaceEntity, sortProjects } from "./appUtils";
 import PromptCatalogEditor from "./PromptCatalogEditor";
 import BriefWorkspace from "./BriefWorkspace";
+import AssistantDrawer from "./AssistantDrawer";
+import LivingWorkspace from "./LivingWorkspace";
+import Layer3Workspace from "./Layer3Workspace";
+import { buildWorkspaceTree } from "./projectWorkspaceData";
 import { AppSettingsModal, ProjectSettingsTab } from "./ModelSettingsPanel";
 import { CreateProjectModal, GuideModal, ModalFrame, ProjectHub } from "./ProjectShell";
-import { CheckboxList, GenerationSummary, MarketPanel, NodeEditor, ResearchStatus } from "./ReviewPanels";
-
-const API_BASE = "http://127.0.0.1:8000/api";
-const TABS = ["Layer 0", "Generate", "Review", "Competitive Intelligence", "Tree", "Specs", "Settings", "Export"];
-
-
-// Fetch JSON from the local API and surface readable errors to the UI.
-async function apiFetch(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-    ...options,
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed: ${response.status}`);
-  }
-  if (response.status === 204) {
-    return null;
-  }
-  return response.json();
-}
-
-function sortProjects(projects, sortOrder) {
-  // Keeps the project library ordering deterministic after refreshes.
-  const copy = [...projects];
-  copy.sort((left, right) => {
-    const leftTime = new Date(left.created_at).getTime();
-    const rightTime = new Date(right.created_at).getTime();
-    return sortOrder === "oldest" ? leftTime - rightTime : rightTime - leftTime;
-  });
-  return copy;
-}
-
-// Keep only the items a human has approved for downward expansion.
-function approvedNodes(nodes, nodeType) {
-  return nodes.filter((node) => node.node_type === nodeType && ["kept", "prioritized"].includes(node.status));
-}
-
-// Build a label-to-id map for checkbox lists and selectors.
-function choiceMap(nodes) {
-  return Object.fromEntries(nodes.map((node) => [`${node.title} (${node.status})`, node.id]));
-}
-
-// Keep the localhost UI focused on fast end-to-end project work.
+import { GenerationSummary, MarketPanel, ResearchStatus } from "./ReviewPanels";
 export default function App() {
   const [config, setConfig] = useState(null);
   const [projects, setProjects] = useState([]);
@@ -59,7 +18,8 @@ export default function App() {
   const [snapshot, setSnapshot] = useState(null);
   const [appSettings, setAppSettings] = useState(null);
   const [projectModelSettings, setProjectModelSettings] = useState(null);
-  const [activeTab, setActiveTab] = useState("Layer 0");
+  const [activeTab, setActiveTab] = useState("Workspace");
+  const [workspaceState, setWorkspaceState] = useState(null);
   const [statusMessage, setStatusMessage] = useState("Loading Strata...");
   const [error, setError] = useState("");
   const [lastSummary, setLastSummary] = useState(null);
@@ -77,24 +37,33 @@ export default function App() {
   const [layer1MaxRounds, setLayer1MaxRounds] = useState(6);
   const [layer1TargetPerRound, setLayer1TargetPerRound] = useState(12);
   const [layer1MinNew, setLayer1MinNew] = useState(2);
-  const [layer2Selected, setLayer2Selected] = useState([]);
   const [layer2Thinking, setLayer2Thinking] = useState(false);
   const [layer2MaxRounds, setLayer2MaxRounds] = useState(5);
   const [layer2TargetPerRound, setLayer2TargetPerRound] = useState(10);
   const [layer2MinNew, setLayer2MinNew] = useState(2);
-  const [layer3Selected, setLayer3Selected] = useState([]);
   const [layer3Thinking, setLayer3Thinking] = useState(false);
-  const [selectedSpecId, setSelectedSpecId] = useState("");
+  const [lastExport, setLastExport] = useState(null);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [bootstrapLoading, setBootstrapLoading] = useState(true);
+  const [projectLoading, setProjectLoading] = useState(false);
+  const [pendingMutations, setPendingMutations] = useState(0);
+  const savedWorkspaceStates = useRef(new Map());
+  const workspaceSaveQueue = useRef(Promise.resolve());
+
+  useEffect(() => subscribeApiActivity(setPendingMutations), []);
 
   // Load config and project list on first render.
   useEffect(() => {
-  async function loadBootstrap() {
+    let active = true;
+    async function loadBootstrap() {
+      setBootstrapLoading(true);
       try {
         const [configPayload, projectsPayload, healthPayload] = await Promise.all([
           apiFetch("/config"),
           apiFetch("/projects"),
           apiFetch("/health"),
         ]);
+        if (!active) return;
         setConfig(configPayload);
         setAppSettings(configPayload);
         setProjects(projectsPayload);
@@ -105,10 +74,15 @@ export default function App() {
         );
         setActiveProjectId("");
       } catch (loadError) {
-        setError(loadError.message);
+        if (active) setError(loadError.message);
+      } finally {
+        if (active) setBootstrapLoading(false);
       }
     }
     loadBootstrap();
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Refresh the active project snapshot whenever the selected project changes.
@@ -116,20 +90,86 @@ export default function App() {
     if (!activeProjectId) {
       setSnapshot(null);
       setProjectModelSettings(null);
-      setActiveTab("Layer 0");
+      setWorkspaceState(null);
+      setLastExport(null);
+      setActiveTab("Workspace");
+      setProjectLoading(false);
       return;
     }
+    let active = true;
     async function loadSnapshot() {
+      setProjectLoading(true);
+      setSnapshot(null);
       try {
+        setLastExport(null);
         const payload = await apiFetch(`/projects/${activeProjectId}`);
+        if (!active) return;
         applySnapshot(payload);
-        setSelectedSpecId("");
+        setWorkspaceState(payload.workspace_state);
+        savedWorkspaceStates.current.set(activeProjectId, JSON.stringify(payload.workspace_state || {}));
+        setActiveTab("Workspace");
       } catch (loadError) {
-        setError(loadError.message);
+        if (active) setError(loadError.message);
+      } finally {
+        if (active) setProjectLoading(false);
       }
     }
     loadSnapshot();
+    return () => {
+      active = false;
+    };
   }, [activeProjectId]);
+
+  useEffect(() => {
+    if (!activeProjectId || !workspaceState) return undefined;
+    const serializedState = JSON.stringify(workspaceState);
+    if (serializedState === savedWorkspaceStates.current.get(activeProjectId)) return undefined;
+    const timer = window.setTimeout(async () => {
+      workspaceSaveQueue.current = workspaceSaveQueue.current.then(() => apiFetch(`/projects/${activeProjectId}/workspace-state`, {
+          method: "PATCH",
+          silent: true,
+          body: JSON.stringify({
+            view_mode: workspaceState.view_mode || "map",
+            selected_entity_type: workspaceState.selected_entity_type || "brief",
+            selected_entity_id: workspaceState.selected_entity_id || "layer0-root",
+            table_scope: workspaceState.table_scope || "focused",
+            map_state: workspaceState.map_state || {},
+            table_state: workspaceState.table_state || {},
+          }),
+        })).then(() => {
+        savedWorkspaceStates.current.set(activeProjectId, serializedState);
+      }).catch((stateError) => {
+        setError(stateError.message);
+      });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [activeProjectId, workspaceState]);
+
+  // Poll only while background research is active so progress and completed evidence appear automatically.
+  useEffect(() => {
+    const hasActiveResearch = (snapshot?.research_jobs || []).some((job) => ["queued", "running"].includes(job.status));
+    if (!activeProjectId || !hasActiveResearch) return undefined;
+    let cancelled = false;
+    let timer;
+    async function pollResearch() {
+      if (document.visibilityState === "hidden") {
+        timer = window.setTimeout(pollResearch, 3000);
+        return;
+      }
+      try {
+        const payload = await apiFetch(`/projects/${activeProjectId}`, { force: true });
+        if (!cancelled) applySnapshot(payload);
+      } catch (pollError) {
+        if (!cancelled) setError(pollError.message);
+      }
+      if (!cancelled) timer = window.setTimeout(pollResearch, 2000);
+    }
+    timer = window.setTimeout(pollResearch, 2000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeProjectId, snapshot?.research_jobs]);
 
   // Refresh the project list after create/generation flows that might change ordering.
   async function refreshProjects() {
@@ -158,7 +198,7 @@ export default function App() {
     setNewProjectName("");
     setNewProjectIdea("");
     setShowCreateProject(false);
-    setActiveTab("Layer 0");
+    setActiveTab("Workspace");
     setActiveProjectId(payload.id);
   }
 
@@ -236,13 +276,13 @@ export default function App() {
     }
   }
 
-  async function handlePlanChat(message) {
+  async function handlePlanChat(message, requestId) {
     // Sends conversational Layer 0 input and applies extracted brief updates.
     setError("");
     try {
       const payload = await apiFetch(`/projects/${activeProjectId}/brief/chat`, {
         method: "POST",
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, request_id: requestId }),
       });
       applySnapshot({
         ...snapshot,
@@ -321,13 +361,13 @@ export default function App() {
   }
 
   // Run graph-native Layer 2 generation for the selected kept pillars.
-  async function handleGenerateLayer2() {
+  async function handleGenerateLayer2(pillarIds = []) {
     setError("");
     try {
       const payload = await apiFetch(`/projects/${activeProjectId}/generate/layer2`, {
         method: "POST",
         body: JSON.stringify({
-          pillar_ids: layer2Selected,
+          pillar_ids: pillarIds,
           thinking_enabled: layer2Thinking,
           max_rounds: layer2MaxRounds,
           target_per_round: layer2TargetPerRound,
@@ -346,6 +386,7 @@ export default function App() {
         round_summaries: [],
       });
       applySnapshot(payload.snapshot);
+      setStatusMessage("Layer 2 generated. Full feature research queued automatically.");
     } catch (generationError) {
       setError(generationError.message);
     }
@@ -414,6 +455,27 @@ export default function App() {
     }
   }
 
+  async function handleBulkNodeStatus(nodeIds, status) {
+    await Promise.all(nodeIds.map((nodeId) => apiFetch(`/nodes/${nodeId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    })));
+    applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
+  }
+
+  async function handleBulkFeatureStatus(featureIds, status) {
+    const action_type = status === "prioritized" ? "prioritize" : status === "kept" ? "keep" : status;
+    await Promise.all(featureIds.map((featureId) => apiFetch(`/projects/${activeProjectId}/layer2/review`, {
+      method: "POST",
+      body: JSON.stringify({
+        action_type,
+        feature_id: featureId,
+        payload: action_type === "prioritize" ? { priority: "high" } : {},
+      }),
+    })));
+    applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
+  }
+
   async function handleLayer2Evidence(payload) {
     // Stores manual competitor evidence for feature-level research views.
     setError("");
@@ -427,6 +489,25 @@ export default function App() {
     } catch (evidenceError) {
       setError(evidenceError.message);
       throw evidenceError;
+    }
+  }
+
+  async function handleLayer2Research(featureIds = []) {
+    // Queues selected features or the complete active Layer 2 review set for local research.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/research/layer2`, {
+        method: "POST",
+        body: JSON.stringify({ feature_ids: featureIds }),
+      });
+      applySnapshot({
+        ...snapshot,
+        research_jobs: [response.job, ...(snapshot?.research_jobs || [])],
+      });
+      setStatusMessage(featureIds.length ? `Research queued for ${featureIds.length} selected features.` : "Full Layer 2 research queued.");
+    } catch (researchError) {
+      setError(researchError.message);
+      throw researchError;
     }
   }
 
@@ -446,30 +527,92 @@ export default function App() {
     }
   }
 
-  // Run Layer 3 spec generation for the selected subfeatures.
-  async function handleGenerateLayer3() {
+  // Generate complete or selectively refreshed Capability Design Cards.
+  async function handleGenerateLayer3(featureIds, selectedSections = []) {
     setError("");
     try {
       const payload = await apiFetch(`/projects/${activeProjectId}/generate/layer3`, {
         method: "POST",
         body: JSON.stringify({
-          subfeature_ids: layer3Selected,
+          feature_ids: featureIds,
           thinking_enabled: layer3Thinking,
+          selected_sections: selectedSections,
         }),
       });
-      setLastSummary({
-        stop_reason: "completed",
-        total_rounds: 1,
-        created_nodes: payload.created,
-        duplicate_candidates: 0,
-        filtered_candidates: 0,
-        thinking_enabled: layer3Thinking,
-        round_summaries: [],
-      });
       applySnapshot(payload.snapshot);
+      setStatusMessage(`Layer 3 updated ${payload.created.length} Capability Design Card${payload.created.length === 1 ? "" : "s"}.`);
     } catch (generationError) {
       setError(generationError.message);
+      throw generationError;
     }
+  }
+
+  async function runLayer3Mutation(request, successMessage) {
+    // Route Layer 3 mutations through the shared app error banner and snapshot refresh.
+    setError("");
+    try {
+      const response = await request();
+      if (response.snapshot) applySnapshot(response.snapshot);
+      setStatusMessage(successMessage);
+      return response;
+    } catch (mutationError) {
+      setError(mutationError.message);
+      throw mutationError;
+    }
+  }
+
+  async function handleLayer3Save(cardId, payload) {
+    // Persist human edits without replacing untouched card sections.
+    return runLayer3Mutation(
+      () => apiFetch(`/projects/${activeProjectId}/layer3/cards/${cardId}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      }),
+      "Capability Design Card saved.",
+    );
+  }
+
+  async function handleLayer3Review(cardId, action) {
+    // Apply the explicit Layer 3 human review gate.
+    return runLayer3Mutation(
+      () => apiFetch(`/projects/${activeProjectId}/layer3/cards/${cardId}/review`, {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      }),
+      `Capability Design Card marked ${action}.`,
+    );
+  }
+
+  async function handleLayer3PressureTest(cardId) {
+    // Refresh readiness after human edits without regenerating card content.
+    return runLayer3Mutation(
+      () => apiFetch(`/projects/${activeProjectId}/layer3/cards/${cardId}/pressure-test`, {
+        method: "POST",
+        body: JSON.stringify({ thinking_enabled: layer3Thinking }),
+      }),
+      "Capability Design pressure test updated.",
+    );
+  }
+
+  async function handleLayer3Decision(decisionId, status, resolution) {
+    // Resolve or reopen one downstream product decision.
+    return runLayer3Mutation(
+      () => apiFetch(`/projects/${activeProjectId}/layer3/decisions/${decisionId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status, resolution }),
+      }),
+      `Layer 3 decision marked ${status}.`,
+    );
+  }
+
+  async function handleLayer3Export() {
+    // Write approved cards as a structured downstream agent manifest.
+    const payload = await runLayer3Mutation(
+      () => apiFetch(`/projects/${activeProjectId}/export/layer3`, { method: "POST" }),
+      "Layer 3 manifest exported.",
+    );
+    setLastExport({ kind: "Layer 3", markdown_path: "", ...payload });
+    setStatusMessage(`Layer 3 manifest exported to ${payload.json_path}`);
   }
 
   // Trigger a project export and show the saved file paths.
@@ -479,6 +622,7 @@ export default function App() {
       const payload = await apiFetch(`/projects/${activeProjectId}/export`, {
         method: "POST",
       });
+      setLastExport({ kind: "Full project", ...payload });
       setStatusMessage(`Exported to ${payload.markdown_path} and ${payload.json_path}`);
     } catch (exportError) {
       setError(exportError.message);
@@ -492,14 +636,11 @@ export default function App() {
       const payload = await apiFetch(`/projects/${activeProjectId}/export/layer2`, {
         method: "POST",
       });
+      setLastExport({ kind: "Layer 2", ...payload });
       setStatusMessage(`Layer 2 exported to ${payload.markdown_path} and ${payload.json_path}`);
     } catch (exportError) {
       setError(exportError.message);
     }
-  }
-
-  if (!config) {
-    return <div className="app-shell">Loading configuration...</div>;
   }
 
   const nodes = snapshot?.nodes || [];
@@ -510,17 +651,41 @@ export default function App() {
   const researchJobs = snapshot?.research_jobs || [];
   const researchFindings = snapshot?.research_findings || [];
   const layer2Graph = snapshot?.layer2_graph || {};
+  const layer3 = snapshot?.layer3 || {};
   const project = snapshot?.project || null;
-  const pillarChoices = choiceMap(approvedNodes(nodes, "pillar"));
-  const subfeatureChoices = choiceMap(approvedNodes(nodes, "subfeature"));
-  const specs = nodes.filter((node) => node.node_type === "spec");
-  const selectedSpec = specs.find((item) => item.id === selectedSpecId) || specs[0] || null;
   const quarantine = memories.find((item) => item.scope === "layer1" && item.memory_type === "quarantine");
   const layer1Enabled = brief?.status === "published";
   const sortedProjects = sortProjects(projects, sortOrder);
+  const workspaceTree = useMemo(
+    () => buildWorkspaceTree(project, brief, nodes, layer2Graph),
+    [project, brief, nodes, layer2Graph],
+  );
+  const selectedWorkspaceEntity = useMemo(
+    () => findWorkspaceEntity(workspaceTree, workspaceState?.selected_entity_id),
+    [workspaceTree, workspaceState?.selected_entity_id],
+  );
+  const assistantScope = assistantScopeFor(activeTab, selectedWorkspaceEntity);
+
+  if (bootstrapLoading && !config) {
+    return <div className="app-loading-screen"><div className="loading-spinner" /><strong>Loading Strata</strong><span>Connecting to the local workspace...</span></div>;
+  }
+
+  if (!config) {
+    return <div className="app-loading-screen"><strong>Strata could not load.</strong><span>{error || "The local API is unavailable."}</span><button type="button" onClick={() => window.location.reload()}>Retry</button></div>;
+  }
+
+  function navigateFromAssistant(layer, citation = {}) {
+    applyAssistantNavigation({ layer, citation, setActiveTab, setWorkspaceState });
+  }
 
   return (
     <div className={navOpen ? "app-shell nav-open" : "app-shell"}>
+      {pendingMutations > 0 ? (
+        <div className="network-activity" role="status">
+          <span className="loading-spinner" />
+          <span>{pendingMutations === 1 ? "Saving or running work..." : `${pendingMutations} operations in progress...`}</span>
+        </div>
+      ) : null}
       <aside className={navOpen ? "nav-rail open" : "nav-rail closed"}>
         <div className="nav-rail-top">
           <button
@@ -573,31 +738,43 @@ export default function App() {
               <h2>{project.name}</h2>
               <p>{project.idea}</p>
             </div>
+            <button type="button" className="assistant-open-button" onClick={() => setAssistantOpen(true)}>
+              Assistant
+            </button>
             {error ? <div className="error-banner">{error}</div> : null}
           </div>
         ) : error ? <div className="error-banner">{error}</div> : null}
-        {!project ? (
+        {!activeProjectId ? (
           <ProjectHub
             projects={sortedProjects}
+            loading={bootstrapLoading}
             sortOrder={sortOrder}
             onSortOrderChange={setSortOrder}
             onCreateProject={() => setShowCreateProject(true)}
             onOpenProject={(projectId) => {
-              setActiveTab("Layer 0");
+              setActiveTab("Workspace");
               setActiveProjectId(projectId);
             }}
           />
-        ) : (
+        ) : projectLoading ? (
+          <div className="project-loading-state" aria-live="polite">
+            <div className="loading-spinner" />
+            <div>
+              <strong>Opening project</strong>
+              <p className="muted">Loading the brief, workspace, research, and model settings.</p>
+            </div>
+          </div>
+        ) : project && snapshot ? (
           <>
             <div className="tabs">
               {TABS.map((tab) => (
                 <button
-                  key={tab}
+                  key={tab.id}
                   type="button"
-                  className={tab === activeTab ? "tab active" : "tab"}
-                  onClick={() => setActiveTab(tab)}
+                  className={tab.id === activeTab ? "tab active" : "tab"}
+                  onClick={() => setActiveTab(tab.id)}
                 >
-                  {tab}
+                  {tab.label}
                 </button>
               ))}
             </div>
@@ -611,232 +788,163 @@ export default function App() {
                   onChat={handlePlanChat}
                   onPublish={handlePublishBrief}
                 />
-                <ResearchStatus
-                  jobs={researchJobs}
-                  onRerunLayer0={handleRerunLayer0Research}
-                  onRerunLayer1={handleRerunLayer1Research}
-                />
-                <MarketPanel findings={researchFindings} />
+                <details className="panel quiet-details">
+                  <summary>Research and market evidence</summary>
+                  <ResearchStatus
+                    jobs={researchJobs}
+                    onRerunLayer0={handleRerunLayer0Research}
+                    onRerunLayer1={handleRerunLayer1Research}
+                  />
+                  <MarketPanel findings={researchFindings} />
+                </details>
               </section>
             ) : null}
 
-            {activeTab === "Generate" ? (
+            {activeTab === "Workspace" ? (
               <section className="tab-content">
-                <div className="panel">
-                  <h3>Layer 1 Broadening</h3>
-                  <p className="muted">
-                    {layer1Enabled
-                      ? "Uses the Layer 1 assignment from this project's Settings tab."
-                      : "Publish the Layer 0 brief before broadening Layer 1."}
-                  </p>
-                  <div className="field-row">
-                    <label>
-                      Thinking
-                      <input type="checkbox" checked={layer1Thinking} onChange={(event) => setLayer1Thinking(event.target.checked)} />
-                    </label>
-                    <label>
-                      Max Rounds
-                      <input type="number" value={layer1MaxRounds} onChange={(event) => setLayer1MaxRounds(Number(event.target.value))} />
-                    </label>
-                    <label>
-                      Target per Round
-                      <input
-                        type="number"
-                        value={layer1TargetPerRound}
-                        onChange={(event) => setLayer1TargetPerRound(Number(event.target.value))}
-                      />
-                    </label>
-                    <label>
-                      Min New
-                      <input type="number" value={layer1MinNew} onChange={(event) => setLayer1MinNew(Number(event.target.value))} />
-                    </label>
-                  </div>
-                  <button type="button" onClick={handleGenerateLayer1} disabled={!layer1Enabled}>
-                    Broaden Layer 1
-                  </button>
-                </div>
-
-                <CheckboxList
-                  title="Layer 2 Eligible Pillars"
-                  options={pillarChoices}
-                  selectedValues={layer2Selected}
-                  onChange={setLayer2Selected}
-                />
-                <div className="panel">
-                  <h3>Layer 2 Broadening</h3>
-                  <div className="field-row">
-                    <label>
-                      Thinking
-                      <input type="checkbox" checked={layer2Thinking} onChange={(event) => setLayer2Thinking(event.target.checked)} />
-                    </label>
-                    <label>
-                      Max Rounds
-                      <input type="number" value={layer2MaxRounds} onChange={(event) => setLayer2MaxRounds(Number(event.target.value))} />
-                    </label>
-                    <label>
-                      Target per Round
-                      <input
-                        type="number"
-                        value={layer2TargetPerRound}
-                        onChange={(event) => setLayer2TargetPerRound(Number(event.target.value))}
-                      />
-                    </label>
-                    <label>
-                      Min New
-                      <input type="number" value={layer2MinNew} onChange={(event) => setLayer2MinNew(Number(event.target.value))} />
-                    </label>
-                  </div>
-                  <button type="button" onClick={handleGenerateLayer2} disabled={!layer2Selected.length}>
-                    Broaden Layer 2
-                  </button>
-                </div>
-                <Layer2GraphPanel
-                  graph={layer2Graph}
-                  pillars={approvedNodes(nodes, "pillar")}
-                  onReview={handleLayer2Review}
-                  onCreateFeature={handleLayer2FeatureCreate}
+                <LivingWorkspace
+                  project={project}
+                  brief={brief}
+                  tree={workspaceTree}
+                  layer2Graph={layer2Graph}
+                  findings={researchFindings}
+                  researchJobs={researchJobs}
+                  workspaceState={workspaceState}
+                  onWorkspaceStateChange={setWorkspaceState}
+                  onSaveBrief={handleBriefSave}
+                  onPublishBrief={handlePublishBrief}
+                  onSaveNode={handleNodeSave}
                   onUpdateFeature={handleLayer2FeatureUpdate}
-                  onBulkAction={handleLayer2BulkAction}
+                  onCreateFeature={handleLayer2FeatureCreate}
+                  onReviewFeature={handleLayer2Review}
                   onAddEvidence={handleLayer2Evidence}
+                  onResearchLayer1={handleRerunLayer1Research}
+                  onResearchLayer2={handleLayer2Research}
+                  onGenerateLayer1={handleGenerateLayer1}
+                  onGenerateLayer2={handleGenerateLayer2}
+                  onBulkFeatureStatus={handleBulkFeatureStatus}
+                  onBulkNodeStatus={handleBulkNodeStatus}
+                  generationControls={{
+                    layer1Thinking, setLayer1Thinking,
+                    layer1MaxRounds, setLayer1MaxRounds,
+                    layer1TargetPerRound, setLayer1TargetPerRound,
+                    layer1MinNew, setLayer1MinNew,
+                    layer2Thinking, setLayer2Thinking,
+                    layer2MaxRounds, setLayer2MaxRounds,
+                    layer2TargetPerRound, setLayer2TargetPerRound,
+                    layer2MinNew, setLayer2MinNew,
+                  }}
                 />
-
-                <CheckboxList
-                  title="Layer 3 Eligible Subfeatures"
-                  options={subfeatureChoices}
-                  selectedValues={layer3Selected}
-                  onChange={setLayer3Selected}
-                />
-                <div className="panel">
-                  <h3>Layer 3 Specs</h3>
-                  <label>
-                    Thinking
-                    <input type="checkbox" checked={layer3Thinking} onChange={(event) => setLayer3Thinking(event.target.checked)} />
-                  </label>
-                  <button type="button" onClick={handleGenerateLayer3} disabled={!layer3Selected.length}>
-                    Generate Layer 3 Specs
-                  </button>
-                </div>
                 <GenerationSummary summary={lastSummary} />
               </section>
             ) : null}
 
-            {activeTab === "Tree" ? (
-              <section className="tab-content">
-                {tree.length || brief ? (
-                  <TreeDashboard
-                    project={project}
-                    brief={brief}
-                    tree={tree}
-                    findings={researchFindings}
-                    onSaveNode={handleNodeSave}
-                  />
-                ) : (
-                  <div className="panel">
-                    <h3>Product Map</h3>
-                    <p className="muted">No generated nodes yet.</p>
-                  </div>
-                )}
-              </section>
-            ) : null}
-
-            {activeTab === "Review" ? (
-              <section className="tab-content">
-                <Layer2GraphPanel
-                  graph={layer2Graph}
-                  pillars={approvedNodes(nodes, "pillar")}
-                  onReview={handleLayer2Review}
-                  onCreateFeature={handleLayer2FeatureCreate}
-                  onUpdateFeature={handleLayer2FeatureUpdate}
-                  onBulkAction={handleLayer2BulkAction}
-                  onAddEvidence={handleLayer2Evidence}
-                />
-                {nodes.length ? nodes.map((node) => (
-                  <NodeEditor
-                    key={node.id}
-                    node={node}
-                    onSave={handleNodeSave}
-                    findings={researchFindings}
-                    onRerunResearch={handleRerunLayer1Research}
-                  />
-                )) : <p className="muted">Nothing to review yet.</p>}
-              </section>
-            ) : null}
-
-            {activeTab === "Competitive Intelligence" ? (
-              <CompetitiveIntelligencePanel
-                graph={layer2Graph}
-                pillars={approvedNodes(nodes, "pillar")}
-                onCompetitiveSettings={handleCompetitiveSettings}
-              />
-            ) : null}
-
             {activeTab === "Specs" ? (
               <section className="tab-content">
-                <div className="panel">
-                  <h3>Spec Viewer</h3>
-                  {selectedSpec ? (
-                    <>
-                      <label>
-                        Spec
-                        <select value={selectedSpec.id} onChange={(event) => setSelectedSpecId(event.target.value)}>
-                          {specs.map((spec) => (
-                            <option key={spec.id} value={spec.id}>
-                              {spec.title}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <p>{selectedSpec.description}</p>
-                      <pre>{JSON.stringify(selectedSpec.json_payload, null, 2)}</pre>
-                    </>
-                  ) : (
-                    <p className="muted">No specs generated yet.</p>
-                  )}
-                </div>
+                <Layer3Workspace
+                  layer3={layer3}
+                  thinkingEnabled={layer3Thinking}
+                  onThinkingChange={setLayer3Thinking}
+                  onGenerate={handleGenerateLayer3}
+                  onSave={handleLayer3Save}
+                  onReview={handleLayer3Review}
+                  onPressureTest={handleLayer3PressureTest}
+                  onDecision={handleLayer3Decision}
+                  onExport={handleLayer3Export}
+                />
               </section>
             ) : null}
 
-            {activeTab === "Settings" ? (
-              <ProjectSettingsTab
-                settings={projectModelSettings}
-                config={config}
-                saveState={projectSettingsSaveState}
-                onChange={setProjectModelSettings}
-                onSave={handleSaveProjectModelSettings}
-              />
-            ) : null}
-
-            {activeTab === "Export" ? (
+            {activeTab === "Project" ? (
               <section className="tab-content">
-                <div className="panel">
-                  <h3>Export</h3>
+                <details className="panel project-tool-section" open>
+                  <summary>Project settings</summary>
+                  <ProjectSettingsTab
+                    settings={projectModelSettings}
+                    config={config}
+                    saveState={projectSettingsSaveState}
+                    onChange={setProjectModelSettings}
+                    onSave={handleSaveProjectModelSettings}
+                  />
+                </details>
+                <details className="panel project-tool-section">
+                  <summary>Export</summary>
                   <div className="button-row">
                     <button type="button" onClick={handleExport}>
-                      Export Markdown and JSON
+                      Create Full Project Export
                     </button>
                     <button type="button" onClick={handleLayer2Export}>
-                      Export Layer 2 Markdown and JSON
+                      Create Layer 2 Export
                     </button>
                   </div>
+                  <p className="muted">Exports are written to the configured local exports folder.</p>
+                  {lastExport ? (
+                    <div className="export-result" role="status">
+                      <strong>{lastExport.kind} export created</strong>
+                      {lastExport.markdown_path ? <span>Markdown: {lastExport.markdown_path}</span> : null}
+                      <span>JSON: {lastExport.json_path}</span>
+                    </div>
+                  ) : null}
                   {layer2Graph.review_open ? (
                     <p className="warning">Layer 2 export includes unresolved review state. Layer 3 still requires approved features.</p>
                   ) : null}
-                </div>
-                <div className="panel">
-                  <h3>Generation Memory</h3>
-                  <pre>{JSON.stringify(memories, null, 2)}</pre>
-                </div>
-                {quarantine ? (
-                  <div className="panel">
-                    <h3>Layer 1 Quarantine</h3>
-                    <pre>{JSON.stringify(quarantine.content, null, 2)}</pre>
-                  </div>
-                ) : null}
+                </details>
+                <details className="panel project-tool-section">
+                  <summary>Competitive intelligence</summary>
+                  <CompetitiveIntelligencePanel
+                    graph={layer2Graph}
+                    pillars={approvedNodes(nodes, "pillar")}
+                    onCompetitiveSettings={handleCompetitiveSettings}
+                    onResearch={handleLayer2Research}
+                    researchJobs={researchJobs}
+                  />
+                </details>
+                <details className="panel export-diagnostics">
+                  <summary>Advanced diagnostics and generation memory</summary>
+                  <p className="muted">{memories.length} memory records{quarantine ? " including Layer 1 quarantine data" : ""}.</p>
+                  <details>
+                    <summary>Generation memory</summary>
+                    <pre>{JSON.stringify(memories, null, 2)}</pre>
+                  </details>
+                  {quarantine ? (
+                    <details>
+                      <summary>Layer 1 quarantine</summary>
+                      <pre>{JSON.stringify(quarantine.content, null, 2)}</pre>
+                    </details>
+                  ) : null}
+                </details>
               </section>
             ) : null}
           </>
+        ) : (
+          <div className="project-loading-state">
+            <strong>Project could not be opened.</strong>
+            <p className="muted">{error || "The project snapshot is unavailable."}</p>
+            <button type="button" onClick={() => setActiveProjectId("")}>Back To Library</button>
+          </div>
         )}
       </main>
+
+      {project ? (
+        <AssistantDrawer
+          open={assistantOpen}
+          projectId={project.id}
+          activeScope={assistantScope}
+          focus={{
+            active_view: activeTab,
+            view_mode: workspaceState?.view_mode || "map",
+            table_scope: workspaceState?.table_scope || "focused",
+            entity_type: selectedWorkspaceEntity?.entity_type || "brief",
+            entity_id: selectedWorkspaceEntity?.id || "layer0-root",
+            label: selectedWorkspaceEntity?.title || project.name,
+            layer: selectedWorkspaceEntity?.layer ?? 0,
+            parent_id: selectedWorkspaceEntity?.parent_id || null,
+          }}
+          apiFetch={apiFetch}
+          onClose={() => setAssistantOpen(false)}
+          onNavigate={navigateFromAssistant}
+        />
+      ) : null}
       {showCreateProject ? (
         <CreateProjectModal
           name={newProjectName}

@@ -1,2 +1,2 @@
-from specforge.api import app
+from strata.api import app
 

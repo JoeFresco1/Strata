@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 
 // Renders a reusable checkbox group for selecting nodes before generation.
-export function CheckboxList({ title, options, selectedValues, onChange }) {
+export function CheckboxList({ title, options, selectedValues, onChange, emptyMessage = "No eligible items yet." }) {
   const entries = Object.entries(options);
   if (!entries.length) {
-    return <p className="muted">No eligible items yet.</p>;
+    return <div className="panel"><h3>{title}</h3><p className="muted">{emptyMessage}</p></div>;
   }
   return (
     <div className="panel">
@@ -73,12 +73,10 @@ export function NodeEditor({ node, onSave, findings, onRerunResearch }) {
         </div>
       ) : null}
       {assessment ? (
-        <div className="meta-block">
-          <p>Canonical: {assessment.canonical_title || node.title}</p>
-          <p>
-            Quality {assessment.pillar_quality_score}/100 | Distinctiveness {assessment.distinctiveness_score}/100 | Strategic value{" "}
-            {assessment.strategic_value_score}/100
-          </p>
+        <div className="review-score-strip">
+          <span>Quality {assessment.pillar_quality_score}/100</span>
+          <span>Distinctiveness {assessment.distinctiveness_score}/100</span>
+          <span>Strategic value {assessment.strategic_value_score}/100</span>
         </div>
       ) : null}
       <label>
@@ -124,7 +122,11 @@ export function NodeEditor({ node, onSave, findings, onRerunResearch }) {
       >
         Save
       </button>
-      <CoverageMatrix node={node} findings={findings} onRerun={onRerunResearch} />
+      <details className="review-details">
+        <summary>Evidence and implementation details</summary>
+        {assessment ? <p className="muted">Canonical: {assessment.canonical_title || node.title}</p> : null}
+        <CoverageMatrix node={node} findings={findings} onRerun={onRerunResearch} />
+      </details>
     </div>
   );
 }
@@ -174,6 +176,9 @@ export function ResearchStatus({ jobs, onRerunLayer0, onRerunLayer1 }) {
               <strong>{job.job_type}</strong>
               <span>{job.scope}{job.scope_id ? ` | ${job.scope_id.slice(0, 8)}` : ""}</span>
               <span>{job.status} | {job.progress}%</span>
+              {(job.details?.warnings || []).slice(0, 2).map((warning) => (
+                <span key={warning} className="warning-text">{warning}</span>
+              ))}
               {job.error ? <span className="warning-text">{job.error}</span> : null}
             </div>
           ))}
@@ -241,30 +246,32 @@ function CoverageMatrix({ node, findings, onRerun }) {
         <button type="button" onClick={() => onRerun([node.id])}>Rerun</button>
       </div>
       {profile ? (
-        <div className="research-scorecard">
-          <div className="research-scorecard-head">
-            <strong>Implementation profile</strong>
-            <div className="research-scorecard-head-meta">
+        <details className="research-scorecard">
+          <summary>
+            <span>Implementation profile</span>
+            <span className="research-scorecard-head-meta">
               <span className="status-pill">confidence {profile.confidence}/100</span>
               <span className="research-index-pill">indexed score {profile.indexed_score ?? 0}/100</span>
+            </span>
+          </summary>
+          <div className="research-scorecard-body">
+            <p className="research-scorecard-summary">{profile.summary}</p>
+            <div className="research-rating-grid">
+              {(profile.ratings || []).map((rating) => (
+                <div key={rating.name} className="research-rating-card">
+                  <span>{rating.label}</span>
+                  <strong>{rating.rating}/10</strong>
+                  <p>{rating.rationale}</p>
+                </div>
+              ))}
             </div>
+            {profile.implications?.length ? (
+              <ul className="summary-list">
+                {profile.implications.map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            ) : null}
           </div>
-          <p className="research-scorecard-summary">{profile.summary}</p>
-          <div className="research-rating-grid">
-            {(profile.ratings || []).map((rating) => (
-              <div key={rating.name} className="research-rating-card">
-                <span>{rating.label}</span>
-                <strong>{rating.rating}/10</strong>
-                <p>{rating.rationale}</p>
-              </div>
-            ))}
-          </div>
-          {profile.implications?.length ? (
-            <ul className="summary-list">
-              {profile.implications.map((item) => <li key={item}>{item}</li>)}
-            </ul>
-          ) : null}
-        </div>
+        </details>
       ) : null}
       {node.json_payload?.research_stale ? <p className="warning">Research is stale for this edited pillar.</p> : null}
       {matrix.length ? (
@@ -285,8 +292,10 @@ function CoverageMatrix({ node, findings, onRerun }) {
             </div>
           ))}
         </div>
+      ) : finding ? (
+        <p className="warning">Research completed, but no usable competitor evidence was found. Review the research warnings or rerun this pillar.</p>
       ) : (
-        <p className="muted">No pillar research finding yet.</p>
+        <p className="muted">Research has not completed for this pillar yet.</p>
       )}
     </div>
   );

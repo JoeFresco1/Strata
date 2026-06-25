@@ -1,28 +1,35 @@
 # Storage And Memory
 
-Strata should keep the database as the source of truth and use compressed memory for prompting.
+Strata keeps PostgreSQL as the production source of truth and uses bounded memory packets for model context.
 
-## SQLite tables
+## Production persistence
 
-- `projects`: project identity and product idea
-- `nodes`: the tree of generated ideas
-- `generations`: raw prompts and model responses
-- `project_memory`: compressed coverage summaries and critic output
+- PostgreSQL runs in the repo-local cluster on port `55433`.
+- `pgvector` stores semantic representations used by overlap checks and retrieval.
+- Core project records include projects, briefs, conversations, Layer 1 nodes, generations, research, and project memory.
+- Layer 2 uses dedicated graph, provenance, coverage, review, rejection-memory, and competitor-evidence tables.
+- Layer 3 uses dedicated card, relationship, open-decision, and review-action tables; readiness and provenance live on the card rather than in raw chat history.
+- The project assistant persists conversations, messages, runs, specialist runs, documents, and action proposals.
+
+SQLite is not a production runtime. It remains available for isolated tests and one-time import of older local data.
 
 ## Memory behavior
 
 - Do not feed the entire generation history back into the model.
-- Keep compressed coverage summaries, overlap clusters, uncovered areas, and rejected ideas.
-- Let the database store the detailed history while the prompt receives only the compact state needed for the next round.
+- Keep compressed coverage summaries, overlap clusters, uncovered areas, rejected ideas, and durable assistant summaries.
+- Let the database store detailed history while prompts receive only the bounded state required for the current operation.
+- Bound Layer 3 prompts to the current approved feature, parent pillar, approved siblings, relevant graph edges, compact brief context, and the current card during section reruns.
 
 ## Deduplication
 
-- Use fuzzy matching to catch near-duplicate titles and descriptions.
+- Use canonical families, semantic embeddings, aliases, and graph relationships to identify overlap.
+- Use lexical matching as supporting evidence rather than the primary Layer 1 or Layer 2 decision.
 - Mark possible duplicates rather than deleting them automatically.
-- Allow the user to decide what should be kept, merged, or cut.
+- Allow the user to decide what should be kept, merged, linked, or cut.
 
 ## Performance behavior
 
-- Prefer indexed, repeated reads over scanning the entire table each time.
-- Keep layer-specific memory scoped to the relevant parent item.
-- Preserve priority when editing nodes unless the user explicitly clears it.
+- Prefer indexed and bounded reads over scanning full project history.
+- Keep layer-specific memory scoped to the relevant entity or parent.
+- Preserve user-owned status and priority unless the user explicitly changes them.
+- Reuse stored research pages, chunks, findings, embeddings, and assistant documents where their source state is unchanged.

@@ -269,6 +269,7 @@ export function buildVisibleGraph(root, collapsedIds) {
     nodes,
     edges,
     byId,
+    baseLayer: Number(root.layer || 0),
     maxDepth,
     width: CANVAS_PADDING * 2 + (maxDepth + 1) * NODE_WIDTH + maxDepth * HORIZONTAL_GAP,
     height: Math.max(520, nextLeafY + CANVAS_PADDING),
@@ -294,6 +295,9 @@ export function nodeTone(node) {
   }
   if (node.node_type === "spec") {
     return "spec";
+  }
+  if (node.node_type === "feature") {
+    return "subfeature";
   }
   if (node.node_type === "subfeature") {
     return "subfeature";

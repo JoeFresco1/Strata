@@ -58,7 +58,7 @@ if (-not (Test-Path $serverExe)) {
     throw "llama-server executable not found at $serverExe"
 }
 if (-not (Test-Path $modelPath)) {
-    $modelPath = & $venvPython -c "from specforge.config import AppConfig, resolve_model_path; print(resolve_model_path(AppConfig()) or '')"
+    $modelPath = & $venvPython -c "from strata.config import AppConfig, resolve_model_path; print(resolve_model_path(AppConfig()) or '')"
 }
 if (-not $modelPath -or -not (Test-Path $modelPath)) {
     throw "GGUF model not found. Set SPECFORGE_MODEL_PATH or ensure auto-discovery can find a GGUF under the configured model root."

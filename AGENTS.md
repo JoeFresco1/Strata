@@ -1,4 +1,4 @@
-# SpecForge Agent Rules
+# Strata Agent Rules
 
 ## Mission
 - Move the project forward with the least wasted work possible.
@@ -6,7 +6,7 @@
 - Treat caches, persisted state, prompt memory, and derived artifacts as accelerators for future work, not disposable clutter.
 
 ## Execution Defaults
-- Reuse the existing `specforge/` service layer before introducing new parallel logic.
+- Reuse the existing `strata/` service layer before introducing new parallel logic.
 - Favor incremental forward-compatible migrations over big rewrites that strand working code.
 - Keep local-first behavior intact. The app should continue to work without cloud dependencies.
 - Optimize for fast iteration on localhost. Choose workflows that reduce full-page reruns, repeated model setup, repeated prompt reconstruction, and repeated data fetching.

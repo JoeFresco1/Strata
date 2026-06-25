@@ -1,0 +1,1 @@
+"""Strata automated test package."""

@@ -92,17 +92,46 @@ function latestPlanGuidance(conversation) {
   return latest?.extracted_updates?.plan_guidance || null;
 }
 
+function collapseLegacyDuplicatePairs(conversation) {
+  // Suppress already-persisted adjacent duplicate exchanges while new requests use durable IDs.
+  const visible = [];
+  for (let index = 0; index < conversation.length; index += 1) {
+    const current = conversation[index];
+    const next = conversation[index + 1];
+    const priorUser = visible[visible.length - 2];
+    const priorAssistant = visible[visible.length - 1];
+    const repeatsPair = current?.role === "user"
+      && next?.role === "assistant"
+      && priorUser?.role === "user"
+      && priorAssistant?.role === "assistant"
+      && current.content === priorUser.content
+      && next.content === priorAssistant.content;
+    if (repeatsPair) {
+      index += 1;
+      continue;
+    }
+    visible.push(current);
+  }
+  return visible;
+}
+
 function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
   const [mode, setMode] = useState("Plan");
   const [form, setForm] = useState(brief);
   const [message, setMessage] = useState("");
   const [planState, setPlanState] = useState("idle");
   const [snapshotOpen, setSnapshotOpen] = useState(true);
+  const [revisionOpen, setRevisionOpen] = useState(brief.status !== "published");
   const chatLogRef = useRef(null);
+  const sendingRef = useRef(false);
 
   useEffect(() => {
     setForm(brief);
   }, [brief]);
+
+  useEffect(() => {
+    setRevisionOpen(brief.status !== "published");
+  }, [brief.id, brief.status]);
 
   useEffect(() => {
     if (!chatLogRef.current) {
@@ -128,21 +157,27 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
   };
   const progressItems = briefProgressItems(payload);
   const guidance = latestPlanGuidance(conversation);
+  const visibleConversation = collapseLegacyDuplicatePairs(conversation);
   const suggestions = guidance?.next_questions?.length ? guidance.next_questions : planSuggestionsFromBrief(payload);
+  const isPublished = brief.status === "published";
 
   // Sends a Plan-mode message and lets the backend extract structured brief fields.
   async function sendPlanMessage(nextMessage) {
     const clean = nextMessage.trim();
-    if (!clean) {
+    if (!clean || sendingRef.current) {
       return;
     }
+    sendingRef.current = true;
     setPlanState("sending");
     try {
-      await onChat(clean);
+      const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+      await onChat(clean, requestId);
       setMessage("");
       setPlanState("idle");
     } catch {
       setPlanState("error");
+    } finally {
+      sendingRef.current = false;
     }
   }
 
@@ -162,15 +197,27 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
         </div>
       </div>
 
-      {mode === "Plan" ? (
+      {mode === "Plan" && isPublished && !revisionOpen ? (
+        <div className="published-brief-summary">
+          <div>
+            <span className="status-pill published">Published to Layer 1</span>
+            <h4>{payload.product_idea || "Published project brief"}</h4>
+            <p className="muted">This version is active in downstream layers. Open a revision only when the product direction needs to change.</p>
+          </div>
+          <button type="button" onClick={() => setRevisionOpen(true)}>Start Revised Draft</button>
+        </div>
+      ) : null}
+
+      {mode === "Plan" && (!isPublished || revisionOpen) ? (
         <div className="plan-workspace">
           <div className="plan-chat-panel">
             <div className="plan-mode-header">
               <div>
                 <h4>Plan Conversation</h4>
                 <p className="muted">
-                  Use this like a working session with an intake agent. The assistant should help discover the brief,
-                  ask follow-up questions, and keep the draft moving toward publish.
+                  {isPublished
+                    ? "This brief is published. Continue planning to create a revised draft when the direction changes."
+                    : "Use this like a working session with an intake agent. The assistant should help discover the brief, ask follow-up questions, and keep the draft moving toward publish."}
                 </p>
               </div>
               <div className="plan-chip-row">
@@ -190,7 +237,7 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
             </div>
 
             <div ref={chatLogRef} className="chat-log plan-chat-log">
-              {!conversation.length ? (
+              {!visibleConversation.length ? (
                 <div className="chat-turn assistant starter">
                   <strong>Strata</strong>
                   <p>
@@ -200,7 +247,7 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
                   <p className="muted">A good first turn is usually the product idea, target user, or what feels most uncertain.</p>
                 </div>
               ) : null}
-              {conversation.map((turn) => {
+              {visibleConversation.map((turn) => {
                 const updates = extractedUpdateBadges(turn);
                 return (
                   <div key={turn.id} className={`chat-turn ${turn.role}`}>
@@ -237,7 +284,11 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
                 />
               </label>
               <div className="panel-header">
-                <p className="muted plan-composer-note">The draft brief updates continuously, but Layer 1 stays locked until you publish.</p>
+                <p className="muted plan-composer-note">
+                  {isPublished
+                    ? "This version is active in downstream layers. Sending a new message reopens the brief as a draft for republishing."
+                    : "The draft updates continuously. Layer 1 stays locked until this version is published."}
+                </p>
                 <button type="submit" disabled={planState === "sending" || !message.trim()}>
                   {planState === "sending" ? "Thinking..." : "Send"}
                 </button>
@@ -276,7 +327,7 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
               <>
                 <div className="plan-sidebar-section">
                   <div className="panel-header">
-                    <h4>Draft Brief Snapshot</h4>
+                    <h4>{isPublished ? "Published Brief Snapshot" : "Draft Brief Snapshot"}</h4>
                     <div className="button-row">
                       <button type="button" className="secondary-button" onClick={() => setMode("Form")}>Open Form</button>
                       <button type="button" className="secondary-button" onClick={() => setSnapshotOpen(false)}>Hide</button>
@@ -347,13 +398,20 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
             Notes
             <textarea value={payload.notes} onChange={(event) => updateField("notes", event.target.value)} rows={4} />
           </label>
-          <button type="button" onClick={() => onSave(payload)}>Save Brief</button>
+          <button type="button" onClick={() => onSave(payload)}>{isPublished ? "Save as Revised Draft" : "Save Brief"}</button>
         </div>
       ) : null}
 
-      <div className="publish-row">
-        <button type="button" onClick={onPublish}>Publish to Layer 1</button>
-      </div>
+      {isPublished && !revisionOpen ? (
+        <div className="publish-row published-state">
+          <span className="status-pill published">Published to Layer 1</span>
+          <p className="muted">Downstream generation uses this published version until you start and publish a revision.</p>
+        </div>
+      ) : !isPublished ? (
+        <div className="publish-row">
+          <button type="button" onClick={onPublish}>Publish to Layer 1</button>
+        </div>
+      ) : null}
     </div>
   );
 }

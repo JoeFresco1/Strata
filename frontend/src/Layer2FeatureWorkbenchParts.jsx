@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { COVERAGE_STATUSES, FEATURE_STATUSES, GRANULARITY_CLASSES, splitLines } from "./layer2WorkbenchUtils";
 
-export function Layer2FeatureForm({ pillars, onCreate }) {
+export function Layer2FeatureForm({ pillars, onCreate, defaultOwnerId = "" }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
     canonical_name: "",
     description: "",
-    owner_pillar_id: pillars[0]?.id || "",
+    owner_pillar_id: defaultOwnerId || pillars[0]?.id || "",
     feature_type: "capability",
     granularity_class: "feature",
     coverage_family: "",
@@ -18,12 +18,15 @@ export function Layer2FeatureForm({ pillars, onCreate }) {
 
   useEffect(() => {
     setForm((current) => {
+      if (defaultOwnerId && current.owner_pillar_id !== defaultOwnerId) {
+        return { ...current, owner_pillar_id: defaultOwnerId };
+      }
       if (current.owner_pillar_id || !pillars[0]?.id) {
         return current;
       }
       return { ...current, owner_pillar_id: pillars[0].id };
     });
-  }, [pillars]);
+  }, [pillars, defaultOwnerId]);
 
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -234,8 +237,10 @@ export function FeatureDetail({ feature, pillars, onUpdate, onReview, onAddEvide
         <ul className="summary-list">
           {feature.evidence.map((item) => (
             <li key={item.id}>
-              {item.competitor_name}: {item.coverage_status} | confidence {item.confidence}/100
+              <strong>{item.competitor_name}: {item.coverage_status}</strong> | confidence {item.confidence}/100 | {item.source_type}
               {item.source_url ? <> | <a href={item.source_url} target="_blank" rel="noreferrer">source</a></> : null}
+              {item.rationale ? <p>{item.rationale}</p> : null}
+              {item.evidence_snippet ? <p className="muted">{item.evidence_snippet}</p> : null}
             </li>
           ))}
         </ul>

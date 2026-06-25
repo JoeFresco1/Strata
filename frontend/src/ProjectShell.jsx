@@ -6,11 +6,11 @@ const GUIDE_SECTIONS = [
   },
   {
     title: "What app defaults do",
-    body: "App Settings define the reusable model profiles and default assignments that seed new projects. Existing projects keep their own overrides unless you edit them directly.",
+    body: "App Settings define the reusable execution strategy, model profiles, and default assignments that seed new projects. Existing projects keep their own overrides unless you edit them directly.",
   },
   {
     title: "What project overrides do",
-    body: "Each project can override the global defaults for planning, generation, research, and embeddings without changing the rest of the library.",
+    body: "Each project can override the global execution strategy for planning, generation, research, assistant work, and embeddings without changing the rest of the library.",
   },
 ];
 
@@ -21,6 +21,7 @@ function formatProjectCardDate(value) {
 
 export function ProjectHub({
   projects,
+  loading = false,
   sortOrder,
   onSortOrderChange,
   onOpenProject,
@@ -45,7 +46,11 @@ export function ProjectHub({
           </label>
         </div>
       </div>
-      {projects.length ? (
+      {loading ? (
+        <div className="project-grid" aria-label="Loading projects">
+          {[0, 1, 2].map((item) => <div key={item} className="project-card project-card-skeleton" />)}
+        </div>
+      ) : projects.length ? (
         <div className="project-grid">
           {projects.map((project) => (
             <button key={project.id} type="button" className="project-card" onClick={() => onOpenProject(project.id)}>
@@ -55,9 +60,10 @@ export function ProjectHub({
               </div>
               <p>{project.idea}</p>
               <div className="project-card-meta">
-                <span>Created {formatProjectCardDate(project.created_at)}</span>
+                <span>Updated {formatProjectCardDate(project.brief_updated_at || project.created_at)}</span>
                 <span>{project.node_count || 0} nodes</span>
                 <span>{project.pillar_count || 0} pillars</span>
+                <span>Project {project.id.slice(0, 8)}</span>
               </div>
             </button>
           ))}

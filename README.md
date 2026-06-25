@@ -1,37 +1,49 @@
 # Strata
 
-Strata is a local recursive product-spec generator built around GGUF models served through `llama.cpp`.
-The default UX runs as a localhost app with `FastAPI + React`, and the default database now runs on a repo-local `PostgreSQL + pgvector` cluster.
+Strata is a local-first product discovery and feature-architecture platform.
+The production application is a localhost `FastAPI + React` system backed by a repo-local `PostgreSQL + pgvector` cluster and OpenAI-compatible model runtimes.
+
+The current production scope is Layer 0 through Layer 3:
+
+- Layer 0 establishes one canonical product brief.
+- Layer 1 discovers, evaluates, and reviews major product pillars.
+- Layer 2 builds a provenance-aware feature graph under approved pillars.
+- Layer 3 turns approved features into reviewable Capability Design Cards that define product behavior without crossing into implementation specs.
 
 ## MVP capabilities
 
 - Create a project from a product idea
 - Work Layer 0 as a draft brief with switchable Plan mode chat and Form mode structured editing
 - Configure project-scoped LLM and embedding profiles, including OpenAI-compatible API endpoints and local GGUF/model paths
+- Use one layer-aware project assistant with durable conversations, optional cross-thread references, compaction, cited retrieval, bounded specialists, and confirmed actions
 - Publish the Layer 0 brief as the only source of truth before unlocking Layer 1
 - Run fully local/free competitor research from user seeds, local model suggestions, free search-result scraping, focused crawling, local extraction, local embeddings, and llama.cpp-compatible synthesis
-- Review Layer 0 market findings and Layer 1 pillar coverage matrices with URLs, snippets, adoption status, coverage status, and confidence
-- Visualize each project as a product map rooted in Layer 0 with branch detail and overlap signals
+- Review Layer 0 market findings plus Layer 1 and Layer 2 competitor coverage matrices with cited URLs, snippets, coverage status, and confidence
+- Work from one durable living workspace with synchronized Map and Table modes, branch focus, inline editing, and contextual generation
+- Visualize each project as a product map rooted in Layer 0 with graph-native Layer 2 branches and relationship overlays
 - Generate Layer 1 feature pillars
 - Broaden Layer 1 and Layer 2 until saturation using multi-pass generation
 - Run Layer 1 across a sequence of local models for explorer/challenger coverage
 - Cluster Layer 1 pillars into canonical families and score pillar quality before review
 - Keep Layer 1 prompt memory source-typed so user-confirmed, persisted-system, and critic-inferred signals stay separate
 - Review nodes with keep, cut, rename, and priority controls
-- Generate Layer 2 subfeatures for selected pillars
-- Generate Layer 3 implementation specs for selected subfeatures
+- Generate graph-native Layer 2 features for selected pillars
+- Automatically research active Layer 2 features after generation, or rerun selected/all feature batches from the workbench
+- Review Layer 2 scope, ownership, granularity, duplicates, relationships, shared concerns, and competitor evidence
+- Generate, edit, pressure-test, approve, and export Layer 3 Capability Design Cards with explicit relationships, risks, decisions, readiness scores, and Layer 0/1/2 lineage
 - Use canonical families as a hard duplicate stop and semantic similarity in `pgvector` as the primary overlap signal
 - Keep fuzzy lexical matching as supporting metadata instead of the main Layer 1 duplicate veto
 - Maintain compressed generation memory and coverage summaries in PostgreSQL
 - Store projects, nodes, generation logs, and future retrieval memory in PostgreSQL
 - Enable `pgvector` now so retrieval and semantic dedupe can grow in-place later
 - Export the project tree to Markdown and JSON
+- Export approved Layer 3 cards as a structured downstream manifest for later specification and coding agents
 - Run the UI locally through a React app backed by a FastAPI API
 
 ## Project structure
 
 ```text
-specforge/
+strata/
   AGENTS.md
   prompts.json
   requirements.txt
@@ -42,10 +54,13 @@ specforge/
   frontend/
     package.json
     src/
-  specforge/
+  strata/
     __init__.py
     api.py
     api_models.py
+    assistant_db.py
+    assistant_index.py
+    assistant_service.py
     brief.py
     config.py
     db.py
@@ -56,6 +71,7 @@ specforge/
     models.py
     prompts.py
     research.py
+    layer2_research.py
     tree.py
   data/
   .local/
@@ -176,7 +192,7 @@ Each project also has a `Settings` tab where you can:
 
 - define multiple LLM profiles with an API base URL, model name, and optional local GGUF path
 - define multiple embedding profiles with a Hugging Face model id or local model path
-- assign specific models to Layer 0 chat, Layer 0 extraction, Layer 1 generation, Layer 2 generation, Layer 3 generation, Layer 0 research, Layer 1 research, Layer 1 similarity embeddings, and research embeddings
+- assign specific models to Layer 0, Layer 1, Layer 2, research, embeddings, and assistant responsibilities
 
 Research stays local/free:
 
@@ -212,9 +228,17 @@ To stop both background processes:
 powershell -ExecutionPolicy Bypass -File .\stop_specforge.ps1
 ```
 
-## Legacy Streamlit shell
+## Production architecture
 
-The old Streamlit UI code still exists in [specforge/app_ui.py](C:/Users/Fresc/Feature_gen/specforge/app_ui.py) as a fallback reference, but the active UX direction is the localhost `FastAPI + React` app.
+The supported runtime and component boundaries are documented in [docs/PRODUCTION_ARCHITECTURE.md](C:/Users/Fresc/Feature_gen/docs/PRODUCTION_ARCHITECTURE.md).
+
+The supported application entrypoints are:
+
+- `start_specforge.ps1` for the complete localhost stack
+- `serve_api.py` for the FastAPI backend
+- `frontend/` for the React client
+
+The retired Streamlit shell and tree-mode Layer 2 generator are no longer part of the repository.
 
 ## Agent workflow
 
@@ -224,7 +248,7 @@ The old Streamlit UI code still exists in [specforge/app_ui.py](C:/Users/Fresc/F
 ## Notes
 
 - The app calls the `llama.cpp` server over HTTP at `http://127.0.0.1:8080/v1/chat/completions` by default.
-- The primary database now runs on the repo-local PostgreSQL cluster instead of SQLite.
+- PostgreSQL is the production source of truth. SQLite remains only for isolated tests and one-time legacy import compatibility.
 - `pgvector` is enabled at bootstrap time and now stores Layer 1 pillar embeddings for semantic-overlap checks.
 - Rejected directions are derived from nodes you mark as `cut` and are fed back into future prompts.
 - Canonical family duplicates are blocked before insert, while fuzzy lexical similarity is kept as supporting review metadata.

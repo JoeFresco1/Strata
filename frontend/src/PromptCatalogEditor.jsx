@@ -6,7 +6,6 @@ const PROMPT_FIELD_HELP = {
   layer1_pillar_normalization: "Cleans raw Layer 1 ideas into stable pillar concepts.",
   layer1_pillar_assessment: "Scores and clusters candidate Layer 1 pillars.",
   layer1_pillar_research_assessment: "Rates how hard a pillar looks to build, run, and maintain after competitor research.",
-  layer2_subfeature_generation: "Expands a pillar into Layer 2 subfeatures.",
   layer2_feature_graph_generation: "Runs scoped Layer 2 graph lens passes for concrete feature candidates.",
   layer2_scope_coverage_critic: "Assesses Layer 2 scope coverage, drift, and exhaustion.",
   layer2_integrity_critic: "Batched critic for granularity, out-of-bounds checks, and ambiguity scoring.",
@@ -17,9 +16,14 @@ const PROMPT_FIELD_HELP = {
   layer2_shared_concern_critic: "Detects shared build concerns such as ingestion, notifications, permissions, or reporting.",
   layer2_ambiguity_critic: "Flags owner ambiguity, adjacent-pillar fit, and unclear scope placement.",
   layer2_negative_cache_critic: "Checks whether candidates resemble previously rejected Layer 2 concepts.",
-  layer3_spec_generation: "Drafts the final Layer 3 implementation spec.",
+  layer3_capability_design_generation: "Drafts product-level Capability Design Card sections from bounded project context.",
+  layer3_capability_pressure_test: "Pressure-tests ambiguity, risk, unresolved decisions, leakage, and downstream readiness.",
   coverage_critic: "Summarizes overlap and saturation across generation loops.",
   json_schema_repair: "Repairs near-miss model output into valid JSON.",
+  assistant_query_planner: "Plans allowlisted retrieval and specialist work for a project question.",
+  assistant_specialist: "Runs bounded evidence analysis for Deep mode and complex questions.",
+  assistant_synthesis: "Synthesizes the grounded answer, citations, and action previews.",
+  assistant_compaction: "Compresses older turns while preserving decisions and unresolved work.",
 };
 const PROMPT_GROUPS = [
   {
@@ -44,8 +48,8 @@ const PROMPT_GROUPS = [
   },
   {
     title: "Layer 2",
-    description: "Subfeature expansion prompts used after a pillar is selected.",
-    fields: ["layer2_subfeature_generation", "layer2_feature_graph_generation"],
+    description: "Graph-native feature generation used after a pillar is approved.",
+    fields: ["layer2_feature_graph_generation"],
   },
   {
     title: "Layer 2 Sub-Agents",
@@ -64,8 +68,13 @@ const PROMPT_GROUPS = [
   },
   {
     title: "Layer 3",
-    description: "Final implementation-spec drafting prompts.",
-    fields: ["layer3_spec_generation"],
+    description: "Product-level capability design and downstream-readiness review.",
+    fields: ["layer3_capability_design_generation", "layer3_capability_pressure_test"],
+  },
+  {
+    title: "Project Assistant",
+    description: "Prompts for retrieval planning, specialists, response synthesis, and durable compaction.",
+    fields: ["assistant_query_planner", "assistant_specialist", "assistant_synthesis", "assistant_compaction"],
   },
   {
     title: "Review",
