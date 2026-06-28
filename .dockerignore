@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+.runtime
+.local
+.codex
+.tmp-playwright
+.pytest_cache
+__pycache__
+*.pyc
+*.log
+.env
+data
+exports
+frontend/node_modules
+frontend/dist

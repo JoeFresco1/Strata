@@ -42,6 +42,7 @@ export default function TreeDashboard({
   onSaveBrief,
   onPublishBrief,
   onSaveNode,
+  onCreatePillar,
   onUpdateFeature,
   onCreateFeature,
   onReviewFeature,
@@ -331,6 +332,7 @@ export default function TreeDashboard({
             pillars={fullIndex.order.map((id) => fullIndex.byId[id]).filter((item) => item.entity_type === "pillar")}
             onSaveBrief={onSaveBrief}
             onPublishBrief={onPublishBrief}
+            onCreatePillar={onCreatePillar}
             onUpdateFeature={onUpdateFeature}
             onCreateFeature={onCreateFeature}
             onReviewFeature={onReviewFeature}

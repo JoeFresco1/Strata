@@ -9,6 +9,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env(name: str, default: str | None = None) -> str | None:
+    """Read the public STRATA name while preserving legacy SPECFORGE compatibility."""
+    value = os.getenv(f"STRATA_{name}")
+    if value is not None:
+        return value
+    return os.getenv(f"SPECFORGE_{name}", default)
+
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 EXPORTS_DIR = ROOT_DIR / "exports"
@@ -16,19 +24,8 @@ DEFAULT_DB_PATH = DATA_DIR / "specforge.db"
 DEFAULT_PROMPTS_PATH = ROOT_DIR / "prompts.json"
 DEFAULT_POSTGRES_URL = "postgresql://postgres@127.0.0.1:55433/specforge"
 DEFAULT_POSTGRES_ADMIN_URL = "postgresql://postgres@127.0.0.1:55433/postgres"
-DEFAULT_MODEL_ROOT = Path(
-    os.getenv("SPECFORGE_MODEL_ROOT", r"C:\Users\Fresc\.cache\lm-studio\models")
-)
-DEFAULT_LLAMA_SERVER_CANDIDATES = [
-    Path(
-        r"C:\Users\Fresc\.cache\lm-studio\extensions\backends\llama.cpp-win-x86_64-nvidia-cuda12-avx2-2.21.0\llama-server.exe"
-    ),
-    Path(
-        r"C:\Users\Fresc\.cache\lm-studio\extensions\backends\llama.cpp-win-x86_64-nvidia-cuda12-avx2-2.16.0\llama-server.exe"
-    ),
-    Path(r"C:\Users\Fresc\.unsloth\llama.cpp\build\bin\Release\llama-server.exe"),
-    Path(r"C:\Users\Fresc\Downloads\llama-server.exe"),
-]
+DEFAULT_MODEL_ROOT = Path(_env("MODEL_ROOT", str(Path.home() / ".cache" / "strata" / "models")) or "")
+DEFAULT_LLAMA_SERVER_CANDIDATES = [Path("llama-server"), Path("llama-server.exe")]
 
 EMBEDDING_MODEL_PRESETS = [
     "sentence-transformers/all-MiniLM-L6-v2",
@@ -42,16 +39,17 @@ EMBEDDING_MODEL_PRESETS = [
 
 @dataclass(slots=True)
 class AppConfig:
-    database_backend: str = os.getenv("SPECFORGE_DB_BACKEND", "postgres")
-    database_url: str = os.getenv("SPECFORGE_DATABASE_URL", DEFAULT_POSTGRES_URL)
-    postgres_admin_url: str = os.getenv("SPECFORGE_POSTGRES_ADMIN_URL", DEFAULT_POSTGRES_ADMIN_URL)
-    db_path: Path = Path(os.getenv("SPECFORGE_DB_PATH", DEFAULT_DB_PATH))
-    exports_dir: Path = Path(os.getenv("SPECFORGE_EXPORTS_DIR", EXPORTS_DIR))
+    database_backend: str = _env("DB_BACKEND", "postgres") or "postgres"
+    database_url: str = _env("DATABASE_URL", DEFAULT_POSTGRES_URL) or DEFAULT_POSTGRES_URL
+    postgres_admin_url: str = _env("POSTGRES_ADMIN_URL", DEFAULT_POSTGRES_ADMIN_URL) or DEFAULT_POSTGRES_ADMIN_URL
+    db_path: Path = Path(_env("DB_PATH", str(DEFAULT_DB_PATH)) or DEFAULT_DB_PATH)
+    exports_dir: Path = Path(_env("EXPORTS_DIR", str(EXPORTS_DIR)) or EXPORTS_DIR)
     llama_base_url: str = os.getenv("LLAMA_BASE_URL", "http://127.0.0.1:8080")
     llama_timeout_seconds: int = int(os.getenv("LLAMA_TIMEOUT_SECONDS", "180"))
     model_root: Path = DEFAULT_MODEL_ROOT
-    model_name: str = os.getenv("SPECFORGE_MODEL_NAME", "qwen-27b-q3")
-    preferred_model_path: str | None = os.getenv("SPECFORGE_MODEL_PATH")
+    model_name: str = _env("MODEL_NAME", "local-model") or "local-model"
+    model_api_key: str = _env("MODEL_API_KEY", "") or ""
+    preferred_model_path: str | None = _env("MODEL_PATH")
     llama_server_exe: str = os.getenv("LLAMA_SERVER_EXE", "")
     context_size: int = int(os.getenv("LLAMA_CONTEXT_SIZE", "32768"))
     gpu_layers: int = int(os.getenv("LLAMA_GPU_LAYERS", "35"))
@@ -64,15 +62,17 @@ class AppConfig:
     reasoning_enabled_format: str = os.getenv("LLAMA_REASONING_ENABLED_FORMAT", "deepseek")
     llama_host: str = os.getenv("LLAMA_HOST", "127.0.0.1")
     llama_port: int = int(os.getenv("LLAMA_PORT", "8080"))
-    prompts_path: Path = Path(os.getenv("SPECFORGE_PROMPTS_PATH", DEFAULT_PROMPTS_PATH))
-    embeddings_enabled: bool = os.getenv("SPECFORGE_EMBEDDINGS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-    embeddings_model_name: str = os.getenv("SPECFORGE_EMBEDDINGS_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-    embeddings_insecure_download_fallback: bool = os.getenv(
-        "SPECFORGE_EMBEDDINGS_INSECURE_DOWNLOAD_FALLBACK", "true"
-    ).strip().lower() in {"1", "true", "yes", "on"}
-    pillar_similarity_threshold: float = float(os.getenv("SPECFORGE_PILLAR_SIMILARITY_THRESHOLD", "0.78"))
-    pillar_similarity_block_threshold: float = float(os.getenv("SPECFORGE_PILLAR_SIMILARITY_BLOCK_THRESHOLD", "0.9"))
-    pillar_similarity_top_k: int = int(os.getenv("SPECFORGE_PILLAR_SIMILARITY_TOP_K", "3"))
+    prompts_path: Path = Path(_env("PROMPTS_PATH", str(DEFAULT_PROMPTS_PATH)) or DEFAULT_PROMPTS_PATH)
+    embeddings_enabled: bool = (_env("EMBEDDINGS_ENABLED", "true") or "true").strip().lower() in {"1", "true", "yes", "on"}
+    embeddings_model_name: str = _env("EMBEDDINGS_MODEL", "sentence-transformers/all-MiniLM-L6-v2") or "sentence-transformers/all-MiniLM-L6-v2"
+    embeddings_insecure_download_fallback: bool = (_env("EMBEDDINGS_INSECURE_DOWNLOAD_FALLBACK", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
+    pillar_similarity_threshold: float = float(_env("PILLAR_SIMILARITY_THRESHOLD", "0.78") or "0.78")
+    pillar_similarity_block_threshold: float = float(_env("PILLAR_SIMILARITY_BLOCK_THRESHOLD", "0.9") or "0.9")
+    pillar_similarity_top_k: int = int(_env("PILLAR_SIMILARITY_TOP_K", "3") or "3")
+    allowed_origins: tuple[str, ...] = tuple(
+        item.strip() for item in (os.getenv("STRATA_ALLOWED_ORIGINS") or "http://127.0.0.1:8000,http://localhost:8000,http://127.0.0.1:5173,http://localhost:5173").split(",")
+        if item.strip()
+    )
 
 
 @dataclass(slots=True)

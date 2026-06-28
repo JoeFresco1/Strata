@@ -90,6 +90,8 @@ def _base_model_settings(config: AppConfig) -> dict[str, Any]:
                 "max_parallel_requests": 1,
                 "max_specialists": 2,
                 "max_output_tokens": 1800,
+                "input_cost_per_million": 0.0,
+                "output_cost_per_million": 0.0,
             }
         ],
         "embedding_profiles": [
@@ -120,6 +122,7 @@ def _base_model_settings(config: AppConfig) -> dict[str, Any]:
             "assistant_embeddings": DEFAULT_EMBEDDING_PROFILE_ID,
         },
         "prompt_catalog": load_prompt_catalog(),
+        "competitive_intelligence_enabled": True,
     }
 
 
@@ -171,6 +174,8 @@ def _normalize_llm_profile(raw_profile: dict[str, Any]) -> dict[str, Any] | None
         "max_parallel_requests": max(1, min(32, int(raw_profile.get("max_parallel_requests", 1)))),
         "max_specialists": max(0, min(16, int(raw_profile.get("max_specialists", 2)))),
         "max_output_tokens": max(256, min(16000, int(raw_profile.get("max_output_tokens", 1800)))),
+        "input_cost_per_million": max(0.0, float(raw_profile.get("input_cost_per_million", 0))),
+        "output_cost_per_million": max(0.0, float(raw_profile.get("output_cost_per_million", 0))),
     }
 
 
@@ -342,6 +347,7 @@ def normalize_model_settings(payload: dict[str, Any], config: AppConfig) -> dict
         normalized["embedding_profiles"],
     )
     normalized["prompt_catalog"] = _normalize_prompt_catalog(payload.get("prompt_catalog"), normalized["prompt_catalog"])
+    normalized["competitive_intelligence_enabled"] = bool(payload.get("competitive_intelligence_enabled", True))
     return normalized
 
 

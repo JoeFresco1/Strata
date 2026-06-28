@@ -6,12 +6,15 @@ from strata.config import AppConfig, resolve_database_target, using_postgres
 from strata.db import Database
 
 
-def build_database(config: AppConfig) -> Database:
+def build_database(config: AppConfig, *, run_migrations: bool = True) -> Database:
     """Build the active database and seed Postgres from the legacy SQLite file when needed."""
     database = Database(
         resolve_database_target(config),
         postgres_admin_url=config.postgres_admin_url,
     )
+    if run_migrations:
+        from strata.migrations import apply_migrations
+        apply_migrations(database)
     _seed_postgres_from_legacy_sqlite(config, database)
     return database
 

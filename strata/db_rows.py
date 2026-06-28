@@ -74,6 +74,7 @@ class DatabaseRowMixin:
             concurrency_policy=self._load_json(row["concurrency_policy"]),
             assignments=self._load_json(row["assignments"]),
             prompt_catalog=self._load_json(row["prompt_catalog"]),
+            competitive_intelligence_enabled=bool(row["competitive_intelligence_enabled"]),
             created_at=datetime.fromisoformat(str(row["created_at"])),
             updated_at=datetime.fromisoformat(str(row["updated_at"])),
         )

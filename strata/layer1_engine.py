@@ -144,6 +144,7 @@ class Layer1EngineMixin(Layer1OverlapMixin):
         thinking_enabled: bool = False,
         max_rounds: int = 6,
         target_per_round: int = 12,
+        total_cap: int | None = None,
         min_new_items_per_round: int = 2,
         stale_rounds_to_stop: int = 2,
     ) -> IterativeGenerationSummary:
@@ -174,6 +175,11 @@ class Layer1EngineMixin(Layer1OverlapMixin):
             self._ensure_profile_loaded(profile, thinking_enabled=thinking_enabled)
             stale_rounds = 0
             for _ in range(max_rounds):
+                remaining_budget = None if total_cap is None else max(0, total_cap - len(created_nodes))
+                if remaining_budget == 0:
+                    stop_reason = "total_cap_reached"
+                    stop_all_models = True
+                    break
                 # Layer 1 deliberately runs as a multi-pass agentic loop:
                 # 1) generate broadly, 2) normalize to stable pillar concepts,
                 # 3) assess and prune before anything reaches the tree.
@@ -199,7 +205,7 @@ class Layer1EngineMixin(Layer1OverlapMixin):
                     context.lens_instruction,
                     context.model_role,
                     context.role_instruction,
-                    target_count=target_per_round,
+                    target_count=min(target_per_round, remaining_budget) if remaining_budget is not None else target_per_round,
                     prompt_catalog=prompt_catalog,
                 )
                 _, raw_parsed = self._call_structured_json_pass(
@@ -235,6 +241,7 @@ class Layer1EngineMixin(Layer1OverlapMixin):
                     assessments=assessments.assessments,
                     source_model=str(profile["label"]),
                     source_lens=context.lens_name,
+                    max_new_items=remaining_budget,
                 )
 
                 created_nodes.extend(outcome.created_nodes)
@@ -244,6 +251,10 @@ class Layer1EngineMixin(Layer1OverlapMixin):
                 filtered_candidates += outcome.filtered_count
                 per_round_new_counts.append(len(outcome.created_nodes))
                 per_round_new_family_counts.append(len(outcome.new_family_keys))
+                if total_cap is not None and len(created_nodes) >= total_cap:
+                    stop_reason = "total_cap_reached"
+                    stop_all_models = True
+                    break
 
                 critic = self._run_critic(
                     project_id=project_id,
@@ -359,6 +370,7 @@ class Layer1EngineMixin(Layer1OverlapMixin):
         assessments: list[PillarAssessment],
         source_model: str,
         source_lens: str,
+        max_new_items: int | None = None,
     ) -> Layer1RoundOutcome:
         """Filter, dedupe, score, and persist the normalized pillars from one round."""
         round_created: list[Node] = []
@@ -368,6 +380,8 @@ class Layer1EngineMixin(Layer1OverlapMixin):
         round_family_keys: set[str] = set()
 
         for pillar in normalized_pillars:
+            if max_new_items is not None and len(round_created) >= max_new_items:
+                break
             assessment = self._assessment_for_pillar(pillar.title, assessments)
             filter_reason = self._layer1_filter_reason(assessment)
             if filter_reason is not None:

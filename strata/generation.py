@@ -32,6 +32,7 @@ from strata.prompts import (
 )
 from strata.server_manager import LlamaServerManager, ServerManagerError
 from strata.tree import collect_approved_directions
+from strata.telemetry import model_call_context
 
 
 CRITIC_SCHEMA = """{
@@ -117,6 +118,8 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin, Layer3ServiceMixin
             validator=self._validate_critic,
             schema_label="critic_response",
             schema_instructions=CRITIC_SCHEMA,
+            telemetry_layer=layer_name.casefold().replace(" ", ""),
+            telemetry_workflow=f"{scope}_coverage_critic",
         )
         self.db.upsert_project_memory(
             project_id=project_id,
@@ -165,11 +168,26 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin, Layer3ServiceMixin
         return result
 
     def _published_product_idea(self, project_id: str) -> str:
-        """Return the published Layer 0 idea, blocking Layer 1 while the brief is draft."""
+        """Return compact published Layer 0 context, blocking Layer 1 while the brief is draft."""
         brief = self.db.get_project_brief(project_id)
         if brief is None or brief.status != "published":
             raise ValueError("Publish the Layer 0 brief before generating Layer 1.")
-        return brief.product_idea
+        return self._published_brief_context(brief)
+
+    @staticmethod
+    def _published_brief_context(brief: Any) -> str:
+        """Format the published Layer 0 brief as the bounded Layer 1 source context."""
+        lines = [
+            f"Product idea: {brief.product_idea or 'Unspecified'}",
+            f"Target users: {brief.target_users or 'Unspecified'}",
+            f"Constraints: {brief.constraints or 'Unspecified'}",
+            f"Goals: {', '.join(brief.goals) if brief.goals else 'Unspecified'}",
+            f"Known competitors: {', '.join(brief.known_competitors) if brief.known_competitors else 'Unspecified'}",
+            f"Preferred directions: {', '.join(brief.preferred_directions) if brief.preferred_directions else 'Unspecified'}",
+            f"Rejected directions: {', '.join(brief.rejected_directions) if brief.rejected_directions else 'Unspecified'}",
+            f"Notes: {brief.notes or 'Unspecified'}",
+        ]
+        return "\n".join(lines)
 
     def _ensure_profile_loaded(self, profile: dict[str, Any], *, thinking_enabled: bool = False) -> None:
         """Load a local GGUF profile before generation when the assignment points at a file."""
@@ -255,6 +273,9 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin, Layer3ServiceMixin
         schema_instructions: str,
         temperature: float | None = None,
         max_attempts: int = 2,
+        telemetry_layer: str | None = None,
+        telemetry_workflow: str | None = None,
+        run_id: str | None = None,
     ) -> tuple[Any, Any]:
         """Call the model, persist the raw generation, and repair near-valid JSON responses."""
         last_error: Exception | None = None
@@ -267,6 +288,16 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin, Layer3ServiceMixin
                     base_url=self._runtime_base_url(runtime_profile),
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    telemetry=model_call_context(
+                        project_id=project_id,
+                        layer=telemetry_layer or self._telemetry_layer(schema_label),
+                        workflow=telemetry_workflow or schema_label,
+                        runtime_profile=runtime_profile,
+                        run_id=run_id,
+                        prompt_key=schema_label,
+                        retry_count=attempt,
+                        metadata={"node_id": node_id, "schema_label": schema_label, "repair": False},
+                    ),
                 )
                 self.db.save_generation(
                     project_id=project_id,
@@ -294,6 +325,16 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin, Layer3ServiceMixin
                         base_url=self._runtime_base_url(runtime_profile),
                         max_tokens=max_tokens,
                         temperature=0.1,
+                        telemetry=model_call_context(
+                            project_id=project_id,
+                            layer=telemetry_layer or self._telemetry_layer(schema_label),
+                            workflow=f"{telemetry_workflow or schema_label}_repair",
+                            runtime_profile=runtime_profile,
+                            run_id=run_id,
+                            prompt_key="json_repair",
+                            retry_count=attempt,
+                            metadata={"node_id": node_id, "schema_label": schema_label, "repair": True},
+                        ),
                     )
                     self.db.save_generation(
                         project_id=project_id,
@@ -308,3 +349,14 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin, Layer3ServiceMixin
                 last_error = exc
                 continue
         raise LLMError(f"Structured pass failed after {max_attempts} attempts for {schema_label}: {last_error}")
+
+    @staticmethod
+    def _telemetry_layer(schema_label: str) -> str:
+        """Infer the product layer from the stable structured-response schema id."""
+        if schema_label.startswith("layer2"):
+            return "layer2"
+        if schema_label.startswith("capability"):
+            return "layer3"
+        if schema_label.startswith("pillar"):
+            return "layer1"
+        return "shared"

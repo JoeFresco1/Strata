@@ -36,6 +36,7 @@ class Layer2EngineMixin(
         thinking_enabled: bool = False,
         max_rounds: int = 1,
         target_per_lens: int = 4,
+        total_cap: int | None = None,
     ) -> dict[str, Any]:
         """Generate graph-native Layer 2 features from approved Layer 1 pillars."""
         if not pillar_ids:
@@ -55,6 +56,8 @@ class Layer2EngineMixin(
             "raw_candidate_count": 0,
             "negative_cache_matches": 0,
             "duplicate_recommendations": 0,
+            "stop_reason": "layer2_graph_review_queue",
+            "total_rounds": 0,
         }
         try:
             self._run_layer2_lens_passes(
@@ -65,6 +68,7 @@ class Layer2EngineMixin(
                 source_model=source_model,
                 max_rounds=max_rounds,
                 target_per_lens=target_per_lens,
+                total_cap=total_cap,
                 stats=stats,
             )
             summary = self._layer2_graph_summary(project_id, stats)
@@ -91,12 +95,16 @@ class Layer2EngineMixin(
         source_model: str,
         max_rounds: int,
         target_per_lens: int,
+        total_cap: int | None,
         stats: dict[str, Any],
     ) -> None:
         """Run the optimized Layer 2 intelligence pipeline for each selected pillar."""
         product_idea = self._published_product_idea(project_id)
         prompt_catalog = self._prompt_catalog(project_id)
         for pillar in selected_pillars:
+            if total_cap is not None and len(stats["created_feature_ids"]) >= total_cap:
+                stats["stop_reason"] = "total_cap_reached"
+                break
             self.db.upsert_layer1_pillar(pillar)
             scope_contract = self._discover_layer2_scope_contract(
                 project_id=project_id,
@@ -110,10 +118,18 @@ class Layer2EngineMixin(
             previous_assessment = self._layer2_coverage_memory(project_id, pillar.id)
             stale_rounds = 0
             for round_index in range(max(1, max_rounds)):
+                if total_cap is not None and len(stats["created_feature_ids"]) >= total_cap:
+                    stats["stop_reason"] = "total_cap_reached"
+                    break
+                stats["total_rounds"] += 1
                 active_lenses = self._layer2_active_lenses(round_index, previous_assessment, coverage_families)
                 round_raw_count = 0
                 round_feature_ids: list[str] = []
                 for lens_name, lens_instruction in active_lenses:
+                    remaining_budget = None if total_cap is None else max(0, total_cap - len(stats["created_feature_ids"]))
+                    if remaining_budget == 0:
+                        stats["stop_reason"] = "total_cap_reached"
+                        break
                     parsed = self._call_layer2_lens(
                         project_id=project_id,
                         pillar=pillar,
@@ -125,7 +141,7 @@ class Layer2EngineMixin(
                         coverage_summary=self._coverage_summary(previous_assessment),
                         lens_name=lens_name,
                         lens_instruction=lens_instruction,
-                        target_per_lens=target_per_lens,
+                        target_per_lens=min(target_per_lens, remaining_budget) if remaining_budget is not None else target_per_lens,
                     )
                     round_raw_count += len(parsed.features)
                     round_feature_ids.extend(
@@ -142,9 +158,15 @@ class Layer2EngineMixin(
                             prompt_catalog=prompt_catalog,
                             scope_contract=scope_contract,
                             candidates=parsed.features,
+                            max_new_features=remaining_budget,
                             stats=stats,
                         )
                     )
+                    if total_cap is not None and len(stats["created_feature_ids"]) >= total_cap:
+                        stats["stop_reason"] = "total_cap_reached"
+                        break
+                if stats["stop_reason"] == "total_cap_reached":
+                    break
                 novelty_score = (len(round_feature_ids) / round_raw_count) if round_raw_count else 0.0
                 previous_assessment = self._assess_layer2_coverage(
                     project_id=project_id,

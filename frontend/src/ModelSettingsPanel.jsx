@@ -87,6 +87,7 @@ function ModelSettingsEditor({
   description,
   saveLabel,
   showRuntimeFields = false,
+  showCompetitiveControl = false,
 }) {
   // Shared editor for app defaults and project-level model overrides.
   if (!settings) {
@@ -153,7 +154,7 @@ function ModelSettingsEditor({
       ...settings,
       llm_profiles: [
         ...llmProfiles,
-        { id: `llm-${Date.now()}`, label: "New LLM", base_url: "", model_name: "", local_path: "", runtime_kind: "auto", context_window: 32768, supports_reasoning: true, supports_parallel: false, max_parallel_requests: 1, max_specialists: 2, max_output_tokens: 1800 },
+        { id: `llm-${Date.now()}`, label: "New LLM", base_url: "", model_name: "", local_path: "", runtime_kind: "auto", context_window: 32768, supports_reasoning: true, supports_parallel: false, max_parallel_requests: 1, max_specialists: 2, max_output_tokens: 1800, input_cost_per_million: 0, output_cost_per_million: 0 },
       ],
     });
   }
@@ -208,6 +209,21 @@ function ModelSettingsEditor({
         </div>
         <p className="field-help">Assistant specialist fanout is capped at {concurrencyPolicy.managed_local_parallelism ?? 1} local request and {concurrencyPolicy.remote_parallelism ?? 4} API requests. Advanced controls below can override this routing.</p>
       </div>
+
+      {showCompetitiveControl ? (
+        <div className="panel">
+          <h3>Competitive intelligence</h3>
+          <label className="checkbox-item">
+            <input
+              type="checkbox"
+              checked={settings.competitive_intelligence_enabled ?? true}
+              onChange={(event) => onChange({ ...settings, competitive_intelligence_enabled: event.target.checked })}
+            />
+            Enable competitive intelligence for this project
+          </label>
+          <p className="muted">When disabled, Strata will not queue or run competitor research from Layer 0, Layer 1, Layer 2, or assistant actions.</p>
+        </div>
+      ) : null}
 
       <details className="panel advanced-settings">
         <summary>Advanced runtime and routing controls</summary>
@@ -343,6 +359,14 @@ function ModelSettingsEditor({
               <label>
                 Max Output Tokens
                 <input type="number" min="256" value={profile.max_output_tokens || 1800} onChange={(event) => updateLlmProfile(index, "max_output_tokens", Number(event.target.value))} />
+              </label>
+              <label>
+                Input Cost / 1M Tokens
+                <input type="number" min="0" step="0.000001" value={profile.input_cost_per_million || 0} onChange={(event) => updateLlmProfile(index, "input_cost_per_million", Number(event.target.value))} />
+              </label>
+              <label>
+                Output Cost / 1M Tokens
+                <input type="number" min="0" step="0.000001" value={profile.output_cost_per_million || 0} onChange={(event) => updateLlmProfile(index, "output_cost_per_million", Number(event.target.value))} />
               </label>
               <label>
                 Max Specialists
@@ -503,6 +527,7 @@ export function ProjectSettingsTab({ settings, config, saveState, onChange, onSa
         title="Project Model Overrides"
         description="These settings override the reusable app defaults only for this project."
         saveLabel="Save Project Overrides"
+        showCompetitiveControl
       />
     </section>
   );

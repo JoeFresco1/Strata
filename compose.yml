@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: strata
+      POSTGRES_USER: strata
+      POSTGRES_PASSWORD: strata
+    volumes:
+      - strata-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U strata -d strata"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  strata:
+    build: .
+    ports:
+      - "${STRATA_PORT:-8000}:8000"
+    environment:
+      STRATA_HOST: 0.0.0.0
+      STRATA_PORT: 8000
+      STRATA_DB_BACKEND: postgres
+      STRATA_DATABASE_URL: postgresql://strata:strata@postgres:5432/strata
+      STRATA_POSTGRES_ADMIN_URL: postgresql://strata:strata@postgres:5432/postgres
+      LLAMA_BASE_URL: ${LLAMA_BASE_URL:-http://host.docker.internal:8080}
+      STRATA_MODEL_NAME: ${STRATA_MODEL_NAME:-local-model}
+      STRATA_MODEL_API_KEY: ${STRATA_MODEL_API_KEY:-}
+      STRATA_EMBEDDINGS_ENABLED: ${STRATA_EMBEDDINGS_ENABLED:-true}
+      STRATA_EMBEDDINGS_MODEL: ${STRATA_EMBEDDINGS_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      STRATA_ALLOWED_ORIGINS: ${STRATA_ALLOWED_ORIGINS:-http://127.0.0.1:8000,http://localhost:8000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - strata-exports:/app/exports
+      - strata-model-cache:/root/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  strata-postgres:
+  strata-exports:
+  strata-model-cache:

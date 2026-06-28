@@ -26,7 +26,10 @@ if (-not (Test-Path $dataDir)) {
 
 & $pgIsReady -h 127.0.0.1 -p $port -d postgres | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    & $pgCtl -D $dataDir -l $logFile -o "-p $port" start | Out-Null
+    & $pgCtl -D $dataDir -l $logFile -o "-p $port" start
+    if ($LASTEXITCODE -ne 0) {
+        throw "Local PostgreSQL start command failed on port $port. Check $logFile"
+    }
     $deadline = (Get-Date).AddMinutes(2)
     $ready = $false
     while ((Get-Date) -lt $deadline) {

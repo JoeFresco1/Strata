@@ -18,9 +18,11 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from strata.db_embeddings import DatabaseEmbeddingMixin
+from strata.db_jobs import PlatformJobDatabaseMixin
 from strata.assistant_db import AssistantDatabaseMixin
 from strata.db_rows import DatabaseRowMixin
 from strata.db_research import ResearchDatabaseMixin
+from strata.db_telemetry import TelemetryDatabaseMixin
 from strata.db_schema import DatabaseSchemaMixin
 from strata.layer2_db import Layer2DatabaseMixin
 from strata.layer3_db import Layer3DatabaseMixin
@@ -48,7 +50,7 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class Database(AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin, ResearchDatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
+class Database(TelemetryDatabaseMixin, PlatformJobDatabaseMixin, AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin, ResearchDatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
     """Store SpecForge state in either PostgreSQL or SQLite through one stable API."""
 
     def __init__(self, target: str | Path, *, postgres_admin_url: str | None = None):
@@ -266,6 +268,7 @@ class Database(AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin,
         concurrency_policy: dict[str, Any],
         assignments: dict[str, Any],
         prompt_catalog: dict[str, Any],
+        competitive_intelligence_enabled: bool = True,
     ) -> ProjectModelSettings:
         """Create or update the per-project model profile and assignment map."""
         now = utc_now()
@@ -278,9 +281,9 @@ class Database(AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin,
                 f"""
                 INSERT INTO project_model_settings (
                     project_id, llm_profiles, embedding_profiles, execution_intent, routing_policy, concurrency_policy,
-                    assignments, prompt_catalog, created_at, updated_at
+                    assignments, prompt_catalog, competitive_intelligence_enabled, created_at, updated_at
                 )
-                VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
+                VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
                 """,
                 (
                     project_id,
@@ -291,6 +294,7 @@ class Database(AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin,
                     self._dump_json(concurrency_policy),
                     self._dump_json(assignments),
                     self._dump_json(prompt_catalog),
+                    competitive_intelligence_enabled,
                     now,
                     now,
                 ),
@@ -306,6 +310,7 @@ class Database(AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin,
                     concurrency_policy = {self.param},
                     assignments = {self.param},
                     prompt_catalog = {self.param},
+                    competitive_intelligence_enabled = {self.param},
                     updated_at = {self.param}
                 WHERE project_id = {self.param}
                 """,
@@ -317,6 +322,7 @@ class Database(AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin,
                     self._dump_json(concurrency_policy),
                     self._dump_json(assignments),
                     self._dump_json(prompt_catalog),
+                    competitive_intelligence_enabled,
                     now,
                     project_id,
                 ),

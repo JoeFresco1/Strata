@@ -1,13 +1,12 @@
 from __future__ import annotations
-
-import json
-from dataclasses import asdict, dataclass
+import threading
+from dataclasses import dataclass
+from contextlib import asynccontextmanager
 from pathlib import Path
-
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-
+from fastapi.staticfiles import StaticFiles
 from strata.api_models import (
     AssistantActionDecisionRequest,
     AssistantConversationCreateRequest,
@@ -15,7 +14,6 @@ from strata.api_models import (
     AssistantMessageCreateRequest,
     AppConfigResponse,
     AppSnapshotResponse,
-    ExportResponse,
     Layer0ChatRequest,
     Layer0ChatResponse,
     Layer2BulkActionRequest,
@@ -55,10 +53,9 @@ from strata.config import (
 )
 from strata.db import Database
 from strata.embeddings import EmbeddingService
-from strata.export import export_layer2_markdown, export_layer3_manifest, export_project
 from strata.generation import GenerationService
 from strata.layer3_service import validate_product_level_content
-from strata.llm import LLMError, LlamaCppClient
+from strata.llm import LlamaCppClient
 from strata.research import ResearchService
 from strata.project_settings import (
     DEFAULT_EMBEDDING_PROFILE_ID,
@@ -72,8 +69,12 @@ from strata.prompts import load_prompt_catalog
 from strata.server_manager import LlamaServerManager
 from strata.storage import build_database
 from strata.tree import build_tree
-
-
+from strata.api_delivery import register_delivery_routes
+from strata.api_export import register_export_routes
+from strata.api_jobs import register_job_routes
+from strata.api_layer1 import register_layer1_routes
+from strata.api_telemetry import register_telemetry_routes
+from strata.api_setup import register_setup_routes
 from strata.api_support import (
     AppServices,
     _apply_layer2_review_action,
@@ -93,32 +94,52 @@ from strata.api_support import (
     _validate_layer2_owner_pillar,
     _validate_layer3_layer2_gate,
 )
-
-
 def _build_services() -> AppServices:
     """Build services while preserving the public AppConfig patch seam used by isolated API tests."""
     return _build_services_support(AppConfig())
-
-
 def create_app() -> FastAPI:
     """Create the FastAPI localhost app and wire it to the existing Strata services."""
     services = _build_services()
-    app = FastAPI(title="Strata API", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        for job in services.db.list_queued_platform_jobs():
+            threading.Thread(
+                target=services.job_service.run_job,
+                args=(job.id,),
+                daemon=True,
+                name=f"strata-job-{job.id[:8]}",
+            ).start()
+        for job in services.db.list_queued_research_jobs():
+            platform_jobs = services.db.list_platform_jobs(job.project_id, limit=500)
+            if any(
+                item.workflow == "research"
+                and item.request_payload.get("research_job_id") == job.id
+                and item.status in {"queued", "running"}
+                for item in platform_jobs
+            ):
+                continue
+            threading.Thread(
+                target=services.research_service.run_job,
+                args=(job.id,),
+                daemon=True,
+                name=f"strata-research-{job.id[:8]}",
+            ).start()
+        yield
+    app = FastAPI(title="Strata API", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_origins=list(services.config.allowed_origins),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1000)
-
     @app.get("/api/health")
     def health() -> dict[str, object]:
         """Expose a lightweight health payload for frontend startup checks."""
         ok, message = services.generation_service.llm_client.healthcheck()
         return {"ok": ok, "llm_message": message}
-
+    register_setup_routes(app, services)
     @app.get("/api/config", response_model=AppConfigResponse)
     def get_config() -> AppConfigResponse:
         """Return frontend-visible runtime configuration and discovered model profiles."""
@@ -151,10 +172,8 @@ def create_app() -> FastAPI:
             assignments=app_model_settings["assignments"],
             prompt_catalog=app_model_settings["prompt_catalog"],
         )
-
     @app.get("/api/projects")
     def list_projects() -> list[dict[str, object]]:
-        """List projects so the frontend can populate the project switcher."""
         return [
             {
                 **project,
@@ -163,10 +182,13 @@ def create_app() -> FastAPI:
             }
             for project in services.db.list_projects()
         ]
-
+    register_telemetry_routes(app, services)
+    register_job_routes(app, services)
+    register_layer1_routes(app, services)
+    register_delivery_routes(app, services)
+    register_export_routes(app, services)
     @app.post("/api/projects")
     def create_project(request: ProjectCreateRequest) -> dict[str, object]:
-        """Create a new product-spec project from a high-level idea."""
         project = services.db.create_project(request.name.strip(), request.idea.strip())
         services.db.upsert_project_model_settings(
             project_id=project.id,
@@ -186,7 +208,6 @@ def create_app() -> FastAPI:
             },
         )
         return project.model_dump(mode="json")
-
     @app.get("/api/projects/{project_id}/assistant/conversations")
     def list_assistant_conversations(project_id: str) -> list[dict[str, object]]:
         """List the project's durable assistant conversations."""
@@ -196,7 +217,6 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return [conversation.model_dump(mode="json") for conversation in conversations]
-
     @app.post("/api/projects/{project_id}/assistant/conversations")
     def create_assistant_conversation(
         project_id: str,
@@ -212,7 +232,6 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return conversation.model_dump(mode="json")
-
     @app.patch("/api/projects/{project_id}/assistant/conversations/{conversation_id}")
     def update_assistant_conversation(
         project_id: str,
@@ -232,7 +251,6 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return updated.model_dump(mode="json")
-
     @app.get("/api/projects/{project_id}/assistant/conversations/{conversation_id}")
     def get_assistant_conversation(project_id: str, conversation_id: str) -> dict[str, object]:
         """Return a conversation with turn status, run traces, and action outcomes."""
@@ -255,7 +273,6 @@ def create_app() -> FastAPI:
             ],
             "actions": [action.model_dump(mode="json") for action in actions],
         }
-
     @app.post("/api/projects/{project_id}/assistant/conversations/{conversation_id}/messages")
     def create_assistant_message(
         project_id: str,
@@ -279,14 +296,22 @@ def create_app() -> FastAPI:
             )
             assistant_message = result["assistant_message"]
             if assistant_message.status == "queued":
-                background_tasks.add_task(services.assistant_service.run_message, assistant_message.id)
+                job = services.job_service.enqueue(
+                    project_id=project_id,
+                    kind="assistant",
+                    workflow="assistant_message",
+                    scope="assistant",
+                    scope_id=assistant_message.id,
+                    request_payload={"assistant_message_id": assistant_message.id},
+                    dedupe_key=f"assistant:{assistant_message.id}",
+                )
+                background_tasks.add_task(services.job_service.run_job, job.id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             key: value.model_dump(mode="json") if hasattr(value, "model_dump") else value
             for key, value in result.items()
         }
-
     @app.post("/api/projects/{project_id}/assistant/messages/{message_id}/retry")
     def retry_assistant_message(
         project_id: str,
@@ -299,14 +324,22 @@ def create_app() -> FastAPI:
             if message.project_id != project_id:
                 raise ValueError("Assistant message belongs to another project.")
             result = services.assistant_service.retry_message(message_id)
-            background_tasks.add_task(services.assistant_service.run_message, message_id)
+            job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="assistant",
+                workflow="assistant_message",
+                scope="assistant",
+                scope_id=message_id,
+                request_payload={"assistant_message_id": message_id},
+                dedupe_key=f"assistant:{message_id}",
+            )
+            background_tasks.add_task(services.job_service.run_job, job.id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             key: value.model_dump(mode="json") if hasattr(value, "model_dump") else value
             for key, value in result.items()
         }
-
     @app.post("/api/projects/{project_id}/assistant/actions/{proposal_id}")
     def decide_assistant_action(
         project_id: str,
@@ -342,7 +375,6 @@ def create_app() -> FastAPI:
                 )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return updated.model_dump(mode="json")
-
     @app.patch("/api/config/models", response_model=AppConfigResponse)
     def update_runtime_model_settings(request: RuntimeModelSettingsUpdateRequest) -> AppConfigResponse:
         """Persist runtime model settings for chat and embeddings and apply them immediately."""
@@ -376,7 +408,6 @@ def create_app() -> FastAPI:
         except (ValueError, AttributeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return get_config()
-
     @app.patch("/api/projects/{project_id}/settings/models")
     def update_project_model_settings(project_id: str, request: ProjectModelSettingsUpdateRequest) -> dict[str, object]:
         """Persist project-scoped LLM and embedding profiles plus assignment routing."""
@@ -388,10 +419,14 @@ def create_app() -> FastAPI:
                 payload_data["prompt_catalog"] = existing.prompt_catalog
             payload = normalize_project_model_settings(payload_data, services.config)
             settings = services.db.upsert_project_model_settings(project_id=project_id, **payload)
+            if not settings.competitive_intelligence_enabled:
+                services.db.cancel_active_research_jobs(
+                    project_id,
+                    "Competitive intelligence was disabled in project settings.",
+                )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return settings.model_dump(mode="json")
-
     @app.get("/api/projects/{project_id}", response_model=AppSnapshotResponse)
     def get_project(project_id: str) -> AppSnapshotResponse:
         """Return the current project snapshot for the main workspace view."""
@@ -448,8 +483,17 @@ def create_app() -> FastAPI:
         """Publish Layer 0 and start local competitor research."""
         try:
             brief = services.brief_service.publish(project_id)
-            job = services.research_service.enqueue_layer0(project_id, reason="publish")
-            background_tasks.add_task(services.research_service.run_job, job.id)
+            if services.research_service.competitive_intelligence_enabled(project_id):
+                research_job = services.research_service.enqueue_layer0(project_id, reason="publish")
+                job = services.job_service.enqueue(
+                    project_id=project_id,
+                    kind="research",
+                    workflow="research",
+                    scope="layer0",
+                    request_payload={"research_job_id": research_job.id, "research_job_type": research_job.job_type},
+                    dedupe_key=f"research:{research_job.id}",
+                )
+                background_tasks.add_task(services.job_service.run_job, job.id)
             snapshot = _project_snapshot(services, project_id).model_dump(mode="json")
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -460,10 +504,18 @@ def create_app() -> FastAPI:
         """Rerun the Layer 0 local competitor landscape job."""
         try:
             job = services.research_service.enqueue_layer0(project_id, reason="manual_rerun")
-            background_tasks.add_task(services.research_service.run_job, job.id)
+            platform_job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="research",
+                workflow="research",
+                scope="layer0",
+                request_payload={"research_job_id": job.id, "research_job_type": job.job_type},
+                dedupe_key=f"research:{job.id}",
+            )
+            background_tasks.add_task(services.job_service.run_job, platform_job.id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"job": job.model_dump(mode="json")}
+        return {"job": job.model_dump(mode="json"), "platform_job": platform_job.model_dump(mode="json")}
 
     @app.post("/api/projects/{project_id}/research/layer1")
     def rerun_layer1_research(
@@ -481,7 +533,16 @@ def create_app() -> FastAPI:
             for pillar_id in pillar_ids:
                 job = services.research_service.enqueue_layer1(project_id, pillar_id, reason="manual_rerun")
                 jobs.append(job)
-                background_tasks.add_task(services.research_service.run_job, job.id)
+                platform_job = services.job_service.enqueue(
+                    project_id=project_id,
+                    kind="research",
+                    workflow="research",
+                    scope="layer1",
+                    scope_id=pillar_id,
+                    request_payload={"research_job_id": job.id, "research_job_type": job.job_type},
+                    dedupe_key=f"research:{job.id}",
+                )
+                background_tasks.add_task(services.job_service.run_job, platform_job.id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"jobs": [job.model_dump(mode="json") for job in jobs]}
@@ -499,10 +560,18 @@ def create_app() -> FastAPI:
                 feature_ids=request.feature_ids or None,
                 reason="manual_rerun",
             )
-            background_tasks.add_task(services.research_service.run_job, job.id)
+            platform_job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="research",
+                workflow="research",
+                scope="layer2",
+                request_payload={"research_job_id": job.id, "research_job_type": job.job_type},
+                dedupe_key=f"research:{job.id}",
+            )
+            background_tasks.add_task(services.job_service.run_job, platform_job.id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"job": job.model_dump(mode="json")}
+        return {"job": job.model_dump(mode="json"), "platform_job": platform_job.model_dump(mode="json")}
 
     @app.patch("/api/nodes/{node_id}")
     def update_node(node_id: str, request: NodeUpdateRequest) -> dict[str, object]:
@@ -538,24 +607,20 @@ def create_app() -> FastAPI:
     ) -> dict[str, object]:
         """Run Layer 1 pillar broadening with the selected model sequence."""
         try:
-            summary = services.generation_service.generate_pillars_until_exhausted(
-                project_id,
-                model_profiles=_resolve_layer1_profiles(services.config, request.model_aliases),
-                thinking_enabled=request.thinking_enabled,
-                max_rounds=request.max_rounds,
-                target_per_round=request.target_per_round,
-                min_new_items_per_round=request.min_new_items_per_round,
-                stale_rounds_to_stop=request.stale_rounds_to_stop,
+            _resolve_layer1_profiles(services.config, request.model_aliases)
+            job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="generation",
+                workflow="layer1_generation",
+                scope="layer1",
+                request_payload=request.model_dump(mode="json"),
+                dedupe_key=f"generation:layer1:{project_id}:{request.model_dump_json()}",
             )
-            for node in summary.created_nodes:
-                job = services.research_service.enqueue_layer1(project_id, node.id, reason="layer1_generation")
-                background_tasks.add_task(services.research_service.run_job, job.id)
+            background_tasks.add_task(services.job_service.run_job, job.id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except LLMError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
-            "summary": asdict(summary),
+            "job": job.model_dump(mode="json"),
             "snapshot": _project_snapshot(services, project_id).model_dump(mode="json"),
         }
 
@@ -567,22 +632,19 @@ def create_app() -> FastAPI:
     ) -> dict[str, object]:
         """Run graph-native Layer 2 feature generation for selected kept pillars."""
         try:
-            summary = services.generation_service.generate_layer2_feature_graph(
-                project_id,
-                request.pillar_ids,
-                thinking_enabled=request.thinking_enabled,
-                max_rounds=request.max_rounds,
-                target_per_lens=max(1, min(request.target_per_round, 8)),
+            job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="generation",
+                workflow="layer2_generation",
+                scope="layer2",
+                request_payload=request.model_dump(mode="json"),
+                dedupe_key=f"generation:layer2:{project_id}:{request.model_dump_json()}",
             )
-            research_job = services.research_service.enqueue_layer2(project_id, reason="layer2_generation")
-            background_tasks.add_task(services.research_service.run_job, research_job.id)
+            background_tasks.add_task(services.job_service.run_job, job.id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except LLMError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
-            "summary": summary,
-            "research_job": research_job.model_dump(mode="json"),
+            "job": job.model_dump(mode="json"),
             "snapshot": _project_snapshot(services, project_id).model_dump(mode="json"),
         }
 
@@ -706,24 +768,25 @@ def create_app() -> FastAPI:
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
 
     @app.post("/api/projects/{project_id}/generate/layer3")
-    def generate_layer3(project_id: str, request: Layer3GenerateRequest) -> dict[str, object]:
+    def generate_layer3(project_id: str, request: Layer3GenerateRequest, background_tasks: BackgroundTasks) -> dict[str, object]:
         """Generate product-level Capability Design Cards for approved Layer 2 features."""
         try:
             if not request.feature_ids:
                 raise ValueError("Select at least one approved Layer 2 feature.")
             _validate_layer3_layer2_gate(services, project_id, request.feature_ids)
-            created = services.generation_service.generate_capability_cards(
-                project_id,
-                request.feature_ids,
-                thinking_enabled=request.thinking_enabled,
-                selected_sections=request.selected_sections or None,
+            job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="generation",
+                workflow="layer3_generation",
+                scope="layer3",
+                request_payload=request.model_dump(mode="json"),
+                dedupe_key=f"generation:layer3:{project_id}:{request.model_dump_json()}",
             )
+            background_tasks.add_task(services.job_service.run_job, job.id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except LLMError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
-            "created": [card.model_dump(mode="json") for card in created],
+            "job": job.model_dump(mode="json"),
             "snapshot": _project_snapshot(services, project_id).model_dump(mode="json"),
         }
 
@@ -768,8 +831,14 @@ def create_app() -> FastAPI:
                     card_id=card.id,
                     decisions=decisions,
                 )
+            pressure_test = {**card.pressure_test, "stale": True}
+            if card.pressure_test.get("coverage_gap_analysis"):
+                pressure_test["coverage_gap_analysis"] = {
+                    **card.pressure_test["coverage_gap_analysis"],
+                    "stale": True,
+                }
             updates.update({
-                "pressure_test": {**card.pressure_test, "stale": True},
+                "pressure_test": pressure_test,
                 "downstream_readiness_score": 0,
                 "readiness_rationale": "Card changed. Rerun the pressure test before approval.",
                 "review_state": "needs_review",
@@ -790,21 +859,55 @@ def create_app() -> FastAPI:
         project_id: str,
         card_id: str,
         request: Layer3PressureTestRequest,
+        background_tasks: BackgroundTasks,
     ) -> dict[str, object]:
         """Recalculate pressure findings and readiness after human edits."""
         try:
-            services.generation_service.pressure_test_capability_card(
-                project_id,
-                card_id,
-                thinking_enabled=request.thinking_enabled,
+            card = services.db.get_layer3_card(card_id)
+            if card.project_id != project_id:
+                raise ValueError("Layer 3 card belongs to another project.")
+            job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="audit",
+                workflow="layer3_pressure_test",
+                scope="layer3",
+                scope_id=card_id,
+                request_payload={"card_id": card_id, **request.model_dump(mode="json")},
+                dedupe_key=f"audit:layer3-pressure:{card_id}:{request.model_dump_json()}",
             )
-        except (ValueError, LLMError) as exc:
+            background_tasks.add_task(services.job_service.run_job, job.id)
+        except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+        return {"job": job.model_dump(mode="json"), "snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
+    @app.post("/api/projects/{project_id}/layer3/cards/{card_id}/coverage-gaps")
+    def check_layer3_card_coverage_gaps(
+        project_id: str,
+        card_id: str,
+        request: Layer3PressureTestRequest,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, object]:
+        """Check one card for missing product-definition coverage."""
+        try:
+            card = services.db.get_layer3_card(card_id)
+            if card.project_id != project_id:
+                raise ValueError("Layer 3 card belongs to another project.")
+            job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="audit",
+                workflow="layer3_coverage_gap_audit",
+                scope="layer3",
+                scope_id=card_id,
+                request_payload={"card_id": card_id, **request.model_dump(mode="json")},
+                dedupe_key=f"audit:layer3-coverage:{card_id}:{request.model_dump_json()}",
+            )
+            background_tasks.add_task(services.job_service.run_job, job.id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"job": job.model_dump(mode="json"), "snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
 
     @app.post("/api/projects/{project_id}/layer3/cards/{card_id}/review")
     def review_layer3_card(project_id: str, card_id: str, request: Layer3ReviewRequest) -> dict[str, object]:
-        """Approve, reject, or return a Capability Design Card to review."""
         try:
             card = services.db.get_layer3_card(card_id)
             if card.project_id != project_id:
@@ -878,89 +981,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
 
-    @app.post("/api/projects/{project_id}/export", response_model=ExportResponse)
-    def export_current_project(project_id: str) -> ExportResponse:
-        """Export the full product tree to Markdown and JSON and return the saved paths."""
-        try:
-            project = services.db.get_project(project_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        markdown_path, json_path = export_project(
-            project,
-            services.db.list_all_nodes(project_id),
-            Path(services.config.exports_dir),
-        )
-        return ExportResponse(markdown_path=str(markdown_path), json_path=str(json_path))
-
-    @app.post("/api/projects/{project_id}/export/layer2")
-    def export_layer2_graph(project_id: str) -> dict[str, object]:
-        """Export Layer 2 Markdown and JSON with current review state included."""
-        try:
-            project = services.db.get_project(project_id)
-            graph = services.db.layer2_graph_snapshot(project_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in project.name).strip("-")
-        markdown_path = export_layer2_markdown(project, graph, Path(services.config.exports_dir))
-        output_path = Path(services.config.exports_dir) / f"{slug or project.id}-layer2-graph.json"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps({"project": project.model_dump(mode="json"), "layer2_graph": graph}, indent=2),
-            encoding="utf-8",
-        )
-        return {"markdown_path": str(markdown_path), "json_path": str(output_path), "layer2_graph": graph}
-
-    @app.post("/api/projects/{project_id}/export/layer3")
-    def export_layer3_cards(project_id: str) -> dict[str, object]:
-        """Export approved Capability Design Cards as a downstream agent manifest."""
-        try:
-            project = services.db.get_project(project_id)
-            brief = services.brief_service.ensure_brief(project_id).model_dump(mode="json")
-            layer2_graph = services.db.layer2_graph_snapshot(project_id)
-            layer3 = services.db.layer3_snapshot(project_id)
-            approved_cards = [
-                card for card in layer3.get("cards", [])
-                if card.get("review_state") == "approved"
-            ]
-            if not approved_cards:
-                raise ValueError("Approve at least one Capability Design Card before export.")
-            feature_statuses = {
-                feature.id: feature.status
-                for feature in services.db.list_layer2_features(project_id)
-            }
-            stale_card_ids = [
-                card["id"]
-                for card in approved_cards
-                if feature_statuses.get(card.get("feature_id")) != "approved"
-            ]
-            if stale_card_ids:
-                raise ValueError("Approved Layer 3 cards have Layer 2 sources that are no longer approved.")
-            allowed_relationship_targets = {
-                feature_id
-                for feature_id, status in feature_statuses.items()
-                if status in {"kept", "approved"}
-            }
-            if any(
-                edge.get("target_feature_id") not in allowed_relationship_targets
-                for card in approved_cards
-                for edge in card.get("relationships", [])
-            ):
-                raise ValueError("Approved Layer 3 cards contain relationships to inactive Layer 2 features.")
-            for card in approved_cards:
-                validate_product_level_content(card)
-            output_path = export_layer3_manifest(
-                project,
-                brief,
-                layer2_graph,
-                layer3,
-                Path(services.config.exports_dir),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"json_path": str(output_path), "approved_card_count": sum(
-            1 for card in layer3.get("cards", []) if card.get("review_state") == "approved"
-        )}
-
+    frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    if frontend_dist.exists():
+        app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
     return app
 
 

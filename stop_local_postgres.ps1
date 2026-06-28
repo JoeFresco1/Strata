@@ -7,7 +7,7 @@ $pgBin = if ($env:SPECFORGE_PG_BIN) { $env:SPECFORGE_PG_BIN } else { "C:\Program
 $pgCtl = Join-Path $pgBin "pg_ctl.exe"
 
 if ((Test-Path $pgCtl) -and (Test-Path $dataDir)) {
-    & $pgCtl -D $dataDir -m fast stop | Out-Null
+    & $pgCtl -D $dataDir -m fast stop
 }
 
 Write-Host "Strata local PostgreSQL stop command sent."

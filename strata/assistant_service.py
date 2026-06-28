@@ -18,6 +18,7 @@ from strata.llm import LLMError, LlamaCppClient
 from strata.models import AssistantActionProposal, AssistantConversation, AssistantMessage
 from strata.prompts import build_system_prompt, render_prompt
 from strata.server_manager import LlamaServerManager
+from strata.telemetry import model_call_context
 
 
 ALLOWED_TOOLS = {
@@ -241,6 +242,13 @@ class AssistantService:
                 model_name=self._model_name(profile),
                 temperature=0.1,
                 max_tokens=min(1200, int(profile.get("max_output_tokens", 1800))),
+                telemetry=model_call_context(
+                    project_id=message.project_id,
+                    layer="assistant",
+                    workflow="assistant_plan",
+                    runtime_profile=profile,
+                    prompt_key="assistant_query_planner",
+                ),
             )
             return response.parsed_json
         except LLMError:
@@ -281,6 +289,13 @@ class AssistantService:
             model_name=self._model_name(profile),
             temperature=0.2,
             max_tokens=int(profile.get("max_output_tokens", 1800)),
+            telemetry=model_call_context(
+                project_id=message.project_id,
+                layer="assistant",
+                workflow="assistant_synthesis",
+                runtime_profile=profile,
+                prompt_key="assistant_synthesis",
+            ),
         )
         return response.parsed_json
 
@@ -323,6 +338,15 @@ class AssistantService:
                     model_name=self._model_name(profile),
                     temperature=0.15,
                     max_tokens=min(1400, int(profile.get("max_output_tokens", 1800))),
+                    telemetry=model_call_context(
+                        project_id=message.project_id,
+                        layer="assistant",
+                        workflow="assistant_specialist",
+                        runtime_profile=profile,
+                        run_id=run_id,
+                        prompt_key="assistant_specialist",
+                        metadata={"specialist_type": specialist_type},
+                    ),
                 )
                 output = {"specialist_type": specialist_type, **response.parsed_json}
                 self.db.update_assistant_specialist_run(specialist_id, status="completed", output_payload=output)
@@ -393,6 +417,13 @@ class AssistantService:
                 model_name=self._model_name(profile),
                 temperature=0.1,
                 max_tokens=min(1400, int(profile.get("max_output_tokens", 1800))),
+                telemetry=model_call_context(
+                    project_id=project_id,
+                    layer="assistant",
+                    workflow="assistant_compaction",
+                    runtime_profile=profile,
+                    prompt_key="assistant_compaction",
+                ),
             ).parsed_json
         except LLMError:
             return {"summary": (previous_summary + "\n" + transcript[-8000:]).strip(), "state": {}}

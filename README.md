@@ -1,96 +1,165 @@
 # Strata
 
-Strata is a local-first product discovery and feature-architecture platform.
-The production application is a localhost `FastAPI + React` system backed by a repo-local `PostgreSQL + pgvector` cluster and OpenAI-compatible model runtimes.
+Strata is an AGPL-licensed, local-first product discovery and feature
+architecture platform you can self-host.
 
-The current production scope is Layer 0 through Layer 3:
+It helps a team turn an idea into a reviewable product structure:
 
-- Layer 0 establishes one canonical product brief.
-- Layer 1 discovers, evaluates, and reviews major product pillars.
+- Layer 0 builds one canonical product brief.
+- Layer 1 discovers and reviews major product pillars.
 - Layer 2 builds a provenance-aware feature graph under approved pillars.
-- Layer 3 turns approved features into reviewable Capability Design Cards that define product behavior without crossing into implementation specs.
+- Layer 3 turns approved features into Capability Design Cards for downstream
+  planning without jumping straight into implementation code.
 
-## MVP capabilities
+Strata runs as a `FastAPI + React` application with `PostgreSQL + pgvector` and
+OpenAI-compatible model endpoints, including local runtimes such as
+`llama.cpp`.
 
-- Create a project from a product idea
-- Work Layer 0 as a draft brief with switchable Plan mode chat and Form mode structured editing
-- Configure project-scoped LLM and embedding profiles, including OpenAI-compatible API endpoints and local GGUF/model paths
-- Use one layer-aware project assistant with durable conversations, optional cross-thread references, compaction, cited retrieval, bounded specialists, and confirmed actions
-- Publish the Layer 0 brief as the only source of truth before unlocking Layer 1
-- Run fully local/free competitor research from user seeds, local model suggestions, free search-result scraping, focused crawling, local extraction, local embeddings, and llama.cpp-compatible synthesis
-- Review Layer 0 market findings plus Layer 1 and Layer 2 competitor coverage matrices with cited URLs, snippets, coverage status, and confidence
-- Work from one durable living workspace with synchronized Map and Table modes, branch focus, inline editing, and contextual generation
-- Visualize each project as a product map rooted in Layer 0 with graph-native Layer 2 branches and relationship overlays
-- Generate Layer 1 feature pillars
-- Broaden Layer 1 and Layer 2 until saturation using multi-pass generation
-- Run Layer 1 across a sequence of local models for explorer/challenger coverage
-- Cluster Layer 1 pillars into canonical families and score pillar quality before review
-- Keep Layer 1 prompt memory source-typed so user-confirmed, persisted-system, and critic-inferred signals stay separate
-- Review nodes with keep, cut, rename, and priority controls
-- Generate graph-native Layer 2 features for selected pillars
-- Automatically research active Layer 2 features after generation, or rerun selected/all feature batches from the workbench
-- Review Layer 2 scope, ownership, granularity, duplicates, relationships, shared concerns, and competitor evidence
-- Generate, edit, pressure-test, approve, and export Layer 3 Capability Design Cards with explicit relationships, risks, decisions, readiness scores, and Layer 0/1/2 lineage
-- Use canonical families as a hard duplicate stop and semantic similarity in `pgvector` as the primary overlap signal
-- Keep fuzzy lexical matching as supporting metadata instead of the main Layer 1 duplicate veto
-- Maintain compressed generation memory and coverage summaries in PostgreSQL
-- Store projects, nodes, generation logs, and future retrieval memory in PostgreSQL
-- Enable `pgvector` now so retrieval and semantic dedupe can grow in-place later
-- Export the project tree to Markdown and JSON
-- Export approved Layer 3 cards as a structured downstream manifest for later specification and coding agents
-- Run the UI locally through a React app backed by a FastAPI API
+Current status: **pre-release**. The platform is substantial and usable, but it
+is not being presented as finished. The current public release gate lives in
+[`docs/PLATFORM_COMPLETION_AUDIT.md`](docs/PLATFORM_COMPLETION_AUDIT.md).
 
-## Project structure
+## Why Strata exists
 
-```text
-strata/
-  AGENTS.md
-  prompts.json
-  requirements.txt
-  README.md
-  serve_api.py
-  start_local_postgres.ps1
-  stop_local_postgres.ps1
-  frontend/
-    package.json
-    src/
-  strata/
-    __init__.py
-    api.py
-    api_models.py
-    assistant_db.py
-    assistant_index.py
-    assistant_service.py
-    brief.py
-    config.py
-    db.py
-    dedupe.py
-    export.py
-    generation.py
-    llm.py
-    models.py
-    prompts.py
-    research.py
-    layer2_research.py
-    tree.py
-  data/
-  .local/
-  docs/
-  exports/
+Most AI product-planning tools either stop at vague brainstorming or jump too
+early into implementation artifacts. Strata is built to hold the middle ground:
+
+- one durable source of truth instead of scattered notes and chat threads;
+- explicit review checkpoints between idea, pillars, features, and capability
+  design;
+- grounded research and provenance instead of opaque generation;
+- self-hosted operation with local-model support, telemetry, and export paths.
+
+## What it does
+
+Core workflows:
+
+- Create a project from an idea and shape it into one canonical Layer 0 brief.
+- Run local-first competitor and market research with cited findings.
+- Generate and review Layer 1 pillars with duplicate detection and memory-aware
+  broadening.
+- Build and maintain a graph-native Layer 2 feature map with review controls,
+  relationships, and competitive evidence.
+- Generate, edit, pressure-test, approve, and export Layer 3 Capability Design
+  Cards.
+- Use one project assistant with durable runs, citations, confirmed actions,
+  and project-aware retrieval.
+- Inspect analytics for token usage, configured remote cost, request health,
+  latency, workflow totals, and dependency status.
+- Export project artifacts, diagnostics, and delivery handoff bundles.
+
+## Quick start
+
+### Docker Compose
+
+Requirements:
+
+- Docker Engine with Compose
+- An OpenAI-compatible model endpoint
+
+Clone the repository, copy the environment file, and start the stack:
+
+```bash
+git clone <your-repo-url> strata
+cd strata
+cp .env.example .env
+docker compose up --build -d
 ```
 
-## Prompt editing
+Then open <http://127.0.0.1:8000>.
 
-All system prompts and prompt templates now live in one editable file:
+Set `LLAMA_BASE_URL` and `STRATA_MODEL_NAME` in `.env`. If your model runs on
+the Docker host, the default `http://host.docker.internal:8080` value works
+with the included Compose file.
 
-- [prompts.json](C:/Users/Fresc/Feature_gen/prompts.json)
+### Native launchers
 
-The Python code injects runtime context into those templates instead of hardcoding the prompt copy in the generation logic.
-
-## Setup
+Windows:
 
 ```powershell
-cd C:\Users\Fresc\Feature_gen
+.\start_strata.ps1
+```
+
+Linux or macOS:
+
+```bash
+chmod +x start_strata.sh
+./start_strata.sh
+```
+
+For deeper operator guidance, see
+[`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) and
+[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+
+## Runtime model support
+
+Strata talks to OpenAI-compatible `/v1/models` and `/v1/chat/completions`
+endpoints. That lets you use:
+
+- local `llama.cpp` servers;
+- hosted providers that expose OpenAI-compatible APIs;
+- mixed setups where some workflows stay local and others use remote models.
+
+Project settings support separate assignments for generation, research,
+assistant work, and embeddings.
+
+## Workflow at a glance
+
+### Layer 0
+
+Create and refine a brief in conversational Plan mode or direct Form mode.
+Publishing the brief promotes it to the canonical project source of truth and
+unlocks downstream work.
+
+### Layer 1
+
+Discover and review product pillars. Strata tracks overlap, supports
+multi-pass broadening, and separates user-confirmed, persisted-system, and
+critic-inferred memory signals.
+
+### Layer 2
+
+Generate and review a graph of features under approved pillars. Strata stores
+relationships, supporting evidence, competitive coverage, and review state in
+durable project data.
+
+### Layer 3
+
+Turn approved Layer 2 features into Capability Design Cards with decisions,
+risks, relationships, readiness, pressure testing, and coverage-gap checks.
+
+## Operating model
+
+Strata is designed first for:
+
+- a single user;
+- a trusted internal team;
+- a private workstation or home-lab deployment.
+
+It is not a multi-tenant SaaS application. It does not currently provide user
+accounts or tenant isolation, so it should stay behind localhost or a trusted
+private network unless you add your own access controls.
+
+## Repository guide
+
+Top-level paths:
+
+- [`strata/`](strata) for backend application code
+- [`frontend/`](frontend) for the React frontend
+- [`docs/`](docs) for release, architecture, self-hosting, and troubleshooting
+- [`tests/`](tests) for regression coverage
+- [`prompts.json`](prompts.json) for editable system prompts and templates
+- [`compose.yml`](compose.yml) for containerized self-hosting
+- [`start_strata.ps1`](start_strata.ps1) and [`start_strata.sh`](start_strata.sh)
+  for native combined startup
+- [`start_specforge.ps1`](start_specforge.ps1) for the legacy Windows
+  development launcher
+
+## Development
+
+Basic local setup:
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -99,165 +168,35 @@ npm install
 cd ..
 ```
 
-## Local PostgreSQL + pgvector
-
-Strata now defaults to a repo-local PostgreSQL cluster under `.local/postgres-data` on port `55433`.
-That avoids relying on a passworded machine-wide service and keeps the project self-contained.
-
-The default env values are:
+Useful validation commands:
 
 ```powershell
-SPECFORGE_DB_BACKEND=postgres
-SPECFORGE_DATABASE_URL=postgresql://postgres@127.0.0.1:55433/specforge
-SPECFORGE_POSTGRES_ADMIN_URL=postgresql://postgres@127.0.0.1:55433/postgres
-SPECFORGE_EMBEDDINGS_ENABLED=true
-SPECFORGE_EMBEDDINGS_MODEL=sentence-transformers/all-MiniLM-L6-v2
-SPECFORGE_EMBEDDINGS_INSECURE_DOWNLOAD_FALLBACK=true
-SPECFORGE_PILLAR_SIMILARITY_THRESHOLD=0.78
-SPECFORGE_PILLAR_SIMILARITY_BLOCK_THRESHOLD=0.9
-```
-
-You can start or stop the local database directly:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start_local_postgres.ps1
-powershell -ExecutionPolicy Bypass -File .\stop_local_postgres.ps1
-```
-
-On first boot, Strata will:
-
-- initialize the local PostgreSQL cluster if it does not exist
-- create the `specforge` database if it does not exist
-- enable the `vector` extension
-- import the legacy SQLite dataset from `data/specforge.db` if the new Postgres database is empty
-- keep Layer 1 embedding vectors in `node_embeddings` for cosine-similarity lookups
-
-## Start llama.cpp server
-
-Strata auto-discovers GGUF models under `C:\Users\Fresc\.cache\lm-studio\models` and prefers the Qwen 3.6 27B no-thinking model when available.
-It also prefers the CUDA-enabled `llama-server.exe` bundled by LM Studio when found on this machine.
-
-Example launch command:
-
-```powershell
-& "C:\Users\Fresc\.cache\lm-studio\extensions\backends\llama.cpp-win-x86_64-nvidia-cuda12-avx2-2.21.0\llama-server.exe" `
-  -m "C:\Users\Fresc\.cache\lm-studio\models\lmstudio-community\Qwen 3.6 27b q3_k_m_gguf-no-thinking\Qwen3.6-27B-Q3_K_M.gguf" `
-  -c 32768 `
-  -ngl 35 `
-  --host 127.0.0.1 `
-  --port 8080 `
-  --reasoning off `
-  --reasoning-format none `
-  --reasoning-budget 0 `
-  --alias "qwen-27b-q3-no-thinking" `
-  --jinja `
-  --no-ui
-```
-
-If your executable is not on `PATH`, set `LLAMA_SERVER_EXE` and use the command shown in the app sidebar.
-
-## Run the localhost app
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start_specforge.ps1
-```
-
-This starts:
-
-- the repo-local PostgreSQL cluster on `127.0.0.1:55433`
-- the CUDA `llama-server.exe` in the background
-- the FastAPI backend on `http://127.0.0.1:8000`
-- the React frontend on `http://127.0.0.1:5173`
-- your browser pointed at the React app
-
-The launcher reuses existing local state and installs frontend packages automatically if `frontend/node_modules` is missing.
-
-## Layer 0 brief and local research
-
-Layer 0 is now a draft brief workspace. Plan mode lets you chat with the local model while Strata extracts structured fields into the same canonical brief that Form mode edits directly. The v1 brief fields are:
-
-- `product_idea`
-- `known_competitors`
-- `constraints`
-- `target_users`
-- `goals`
-- `preferred_directions`
-- `rejected_directions`
-- `notes`
-- `status`
-
-Layer 1 generation is blocked until the brief is published. Publishing marks the brief `published`, queues Layer 0 competitor research, and makes the published brief the source of truth for Layer 1.
-
-Each project also has a `Settings` tab where you can:
-
-- define multiple LLM profiles with an API base URL, model name, and optional local GGUF path
-- define multiple embedding profiles with a Hugging Face model id or local model path
-- assign specific models to Layer 0, Layer 1, Layer 2, research, embeddings, and assistant responsibilities
-
-Research stays local/free:
-
-- user-provided competitor seeds are highest priority
-- the local llama.cpp model can suggest additional competitors
-- public search discovery scrapes free HTML result pages
-- focused crawling extracts a small set of public competitor pages
-- `trafilatura` is the primary extractor, with BeautifulSoup text fallback
-- extracted chunks are embedded locally and stored in PostgreSQL/pgvector
-- findings include URLs and snippets for human review
-
-Rerun controls are available for Layer 0, all Layer 1 pillars, or one pillar from the review coverage matrix. Editing a generated pillar marks that pillar's research stale until rerun.
-
-## Manual localhost commands
-
-Backend:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python -m uvicorn serve_api:app --host 127.0.0.1 --port 8000
-```
-
-Frontend:
-
-```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_core.py -q
+.\.venv\Scripts\python.exe -m compileall strata
 cd frontend
-npm run dev -- --host 127.0.0.1 --port 5173
+npm run test:cache
+npm run build
 ```
 
-To stop both background processes:
+Contribution guidance lives in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\stop_specforge.ps1
-```
+## Documentation
 
-## Production architecture
+- [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md): Docker and native deployment
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md): runtime and setup issues
+- [`docs/PRODUCTION_ARCHITECTURE.md`](docs/PRODUCTION_ARCHITECTURE.md): runtime
+  boundaries and production structure
+- [`docs/layer architecture.md`](<docs/layer architecture.md>): layer-by-layer
+  behavior and memory model
+- [`docs/PLATFORM_COMPLETION_AUDIT.md`](docs/PLATFORM_COMPLETION_AUDIT.md):
+  current release blockers
+- [`AGENTS.md`](AGENTS.md): repo operating rules
 
-The supported runtime and component boundaries are documented in [docs/PRODUCTION_ARCHITECTURE.md](C:/Users/Fresc/Feature_gen/docs/PRODUCTION_ARCHITECTURE.md).
+## License
 
-The supported application entrypoints are:
+Strata is licensed under the
+[GNU Affero General Public License v3.0](LICENSE).
 
-- `start_specforge.ps1` for the complete localhost stack
-- `serve_api.py` for the FastAPI backend
-- `frontend/` for the React client
+If you run a modified version for users over a network, AGPL requires you to
+make the corresponding source available to those users under the same license.
 
-The retired Streamlit shell and tree-mode Layer 2 generator are no longer part of the repository.
-
-## Agent workflow
-
-- Project operating rules live in [AGENTS.md](C:/Users/Fresc/Feature_gen/AGENTS.md).
-- Rolling work history lives in [docs/TODO_LOG.md](C:/Users/Fresc/Feature_gen/docs/TODO_LOG.md).
-
-## Notes
-
-- The app calls the `llama.cpp` server over HTTP at `http://127.0.0.1:8080/v1/chat/completions` by default.
-- PostgreSQL is the production source of truth. SQLite remains only for isolated tests and one-time legacy import compatibility.
-- `pgvector` is enabled at bootstrap time and now stores Layer 1 pillar embeddings for semantic-overlap checks.
-- Rejected directions are derived from nodes you mark as `cut` and are fed back into future prompts.
-- Canonical family duplicates are blocked before insert, while fuzzy lexical similarity is kept as supporting review metadata.
-- Broadening mode uses a generator plus critic/summarizer loop to keep expanding until novelty drops or coverage saturates.
-- Layer 1 can sequence multiple local GGUF models and tracks source model provenance on generated pillars.
-- Layer 1 now separates user-confirmed memory from persisted system state and critic-inferred guidance inside the generation prompt.
-- Critic-suggested lenses are now advisory rather than directive, and challenger rounds intentionally use a lighter state slice to reduce frame inheritance.
-- Layer 1 now adds canonical pillar clustering, pillar-quality scoring, and merge/rename suggestions into node metadata.
-- Layer 1 review now also shows embedding-based overlap warnings sourced from cosine similarity against existing pillars.
-- Layer 0 publish is the only transition into Layer 1, and competitor findings are advisory review evidence rather than automatic pruning rules.
-- The localhost API exposes project snapshots, node updates, generation actions, and export actions for the React client.
-- The working behavior spec lives in [docs/README.md](C:/Users/Fresc/Feature_gen/docs/README.md).

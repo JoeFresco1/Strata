@@ -5,6 +5,11 @@
 .layer3-feature-choice { display: flex; gap: .65rem; align-items: flex-start; border: 1px solid var(--border-color, #d8dde7); border-radius: 12px; padding: .8rem; }
 .layer3-feature-choice span { display: grid; gap: .2rem; }
 .layer3-feature-choice small { color: var(--muted-color, #667085); }
+.delivery-handoff { border-color: rgba(46, 125, 246, 0.22); }
+.delivery-card-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.delivery-card { align-items: flex-start; border: 1px solid var(--border-color, #d8dde7); border-radius: 14px; display: flex; gap: .65rem; padding: .85rem; }
+.delivery-card.blocked { background: rgba(255, 193, 7, 0.08); }
+.delivery-card span { display: grid; gap: .25rem; }
 .layer3-review-layout { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); gap: 1rem; align-items: start; }
 .layer3-card-list { display: grid; gap: .5rem; position: sticky; top: 1rem; }
 .layer3-card-link { display: grid; gap: .2rem; text-align: left; padding: .75rem; background: transparent; color: inherit; border: 1px solid transparent; }

@@ -57,6 +57,7 @@ class PostgresSchemaMixin:
                         concurrency_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
                         assignments JSONB NOT NULL,
                         prompt_catalog JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        competitive_intelligence_enabled BOOLEAN NOT NULL DEFAULT TRUE,
                         created_at TIMESTAMPTZ NOT NULL,
                         updated_at TIMESTAMPTZ NOT NULL
                     )
@@ -72,6 +73,7 @@ class PostgresSchemaMixin:
                 cursor.execute("ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS routing_policy JSONB NOT NULL DEFAULT '{}'::jsonb")
                 cursor.execute("ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS concurrency_policy JSONB NOT NULL DEFAULT '{}'::jsonb")
                 cursor.execute("ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS prompt_catalog JSONB NOT NULL DEFAULT '{}'::jsonb")
+                cursor.execute("ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS competitive_intelligence_enabled BOOLEAN NOT NULL DEFAULT TRUE")
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS brief_conversations (
@@ -82,6 +84,55 @@ class PostgresSchemaMixin:
                         request_id TEXT,
                         extracted_updates JSONB NOT NULL,
                         created_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS project_telemetry_settings (
+                        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                        capture_prompt_bodies BOOLEAN NOT NULL DEFAULT TRUE,
+                        capture_response_bodies BOOLEAN NOT NULL DEFAULT TRUE,
+                        capture_parsed_results BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS model_call_events (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        layer TEXT NOT NULL,
+                        workflow TEXT NOT NULL,
+                        run_id TEXT,
+                        request_kind TEXT NOT NULL,
+                        provider_kind TEXT NOT NULL,
+                        model_name TEXT,
+                        model_profile_id TEXT,
+                        prompt_key TEXT,
+                        prompt_version TEXT,
+                        status TEXT NOT NULL,
+                        attempt INTEGER NOT NULL DEFAULT 1,
+                        retry_count INTEGER NOT NULL DEFAULT 0,
+                        latency_ms INTEGER NOT NULL DEFAULT 0,
+                        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                        completion_tokens INTEGER NOT NULL DEFAULT 0,
+                        total_tokens INTEGER NOT NULL DEFAULT 0,
+                        estimated_cost_usd DOUBLE PRECISION,
+                        request_chars INTEGER NOT NULL DEFAULT 0,
+                        response_chars INTEGER NOT NULL DEFAULT 0,
+                        system_prompt TEXT,
+                        user_prompt TEXT,
+                        raw_response TEXT,
+                        parsed_result JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        error_type TEXT,
+                        error_message TEXT,
+                        started_at TIMESTAMPTZ NOT NULL,
+                        completed_at TIMESTAMPTZ NOT NULL,
+                        metadata JSONB NOT NULL DEFAULT '{}'::jsonb
                     )
                     """
                 )
@@ -158,6 +209,32 @@ class PostgresSchemaMixin:
                         error TEXT,
                         created_at TIMESTAMPTZ NOT NULL,
                         updated_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS platform_jobs (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        kind TEXT NOT NULL,
+                        workflow TEXT NOT NULL,
+                        scope TEXT NOT NULL,
+                        scope_id TEXT,
+                        status TEXT NOT NULL,
+                        progress INTEGER NOT NULL,
+                        current_step TEXT NOT NULL DEFAULT '',
+                        request_payload JSONB NOT NULL,
+                        result_payload JSONB NOT NULL,
+                        error_type TEXT,
+                        error_message TEXT,
+                        dedupe_key TEXT,
+                        cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+                        attempt INTEGER NOT NULL DEFAULT 1,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        started_at TIMESTAMPTZ,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        completed_at TIMESTAMPTZ
                     )
                     """
                 )
@@ -700,6 +777,18 @@ class PostgresSchemaMixin:
                 )
                 cursor.execute(
                     """
+                    CREATE INDEX IF NOT EXISTS idx_platform_jobs_project_updated
+                    ON platform_jobs(project_id, updated_at)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_platform_jobs_dedupe
+                    ON platform_jobs(project_id, dedupe_key, status)
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_research_sources_project_scope
                     ON research_sources(project_id, scope, COALESCE(scope_id, ''), fetched_at)
                     """
@@ -774,6 +863,18 @@ class PostgresSchemaMixin:
                     """
                     CREATE INDEX IF NOT EXISTS idx_layer3_decisions_card
                     ON layer3_open_decisions(card_id, status)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_model_call_events_project_started
+                    ON model_call_events(project_id, started_at DESC)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_model_call_events_project_layer
+                    ON model_call_events(project_id, layer, workflow)
                     """
                 )
                 cursor.execute(

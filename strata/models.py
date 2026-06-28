@@ -32,9 +32,11 @@ Layer2ReviewActionType = Literal[
     "needs_review",
     "manual_add",
 ]
-ResearchJobStatus = Literal["queued", "running", "completed", "failed"]
+ResearchJobStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 ResearchJobType = Literal["layer0_competitors", "layer1_pillar_competitors", "layer2_feature_competitors"]
 ResearchScope = Literal["layer0", "layer1", "layer2"]
+PlatformJobStatus = Literal["queued", "running", "completed", "failed", "cancelled", "interrupted"]
+PlatformJobKind = Literal["research", "generation", "assistant", "replay", "audit", "diagnostics"]
 CoverageStatus = Literal["supported", "partially_supported", "unclear", "not_evident"]
 AdoptionLevel = Literal["common", "emerging", "rare", "unclear"]
 CoverageMatrixStatus = Literal["missing", "partial", "covered", "excluded"]
@@ -99,6 +101,8 @@ class ProjectLLMProfile(BaseModel):
     max_parallel_requests: int = Field(ge=1, le=32, default=1)
     max_specialists: int = Field(ge=0, le=16, default=2)
     max_output_tokens: int = Field(ge=256, le=16000, default=1800)
+    input_cost_per_million: float = Field(ge=0, default=0)
+    output_cost_per_million: float = Field(ge=0, default=0)
 
 
 class ProjectEmbeddingProfile(BaseModel):
@@ -116,6 +120,7 @@ class ProjectModelSettings(BaseModel):
     concurrency_policy: dict[str, int] = Field(default_factory=dict)
     assignments: dict[str, Any] = Field(default_factory=dict)
     prompt_catalog: dict[str, str] = Field(default_factory=dict)
+    competitive_intelligence_enabled: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -502,6 +507,29 @@ class ResearchJob(BaseModel):
     error: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class PlatformJob(BaseModel):
+    id: str
+    project_id: str
+    kind: PlatformJobKind
+    workflow: str
+    scope: str
+    scope_id: str | None = None
+    status: PlatformJobStatus
+    progress: int = Field(ge=0, le=100)
+    current_step: str = ""
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    result_payload: dict[str, Any] = Field(default_factory=dict)
+    error_type: str | None = None
+    error_message: str | None = None
+    dedupe_key: str | None = None
+    cancel_requested: bool = False
+    attempt: int = 1
+    created_at: datetime
+    started_at: datetime | None = None
+    updated_at: datetime
+    completed_at: datetime | None = None
 
 
 class ResearchSource(BaseModel):

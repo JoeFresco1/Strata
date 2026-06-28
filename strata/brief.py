@@ -14,6 +14,7 @@ from strata.prompts import (
     load_prompt_catalog,
 )
 from strata.server_manager import LlamaServerManager, ServerManagerError
+from strata.telemetry import model_call_context
 
 
 BRIEF_FIELDS = {
@@ -145,6 +146,13 @@ class BriefService:
                 model_name=runtime["model_name"],
                 max_tokens=1200,
                 temperature=0.1,
+                telemetry=model_call_context(
+                    project_id=current.project_id,
+                    layer="layer0",
+                    workflow="brief_extraction",
+                    runtime_profile=runtime,
+                    prompt_key="layer0_brief_extraction",
+                ),
             )
         except LLMError:
             return {"notes": message}
@@ -178,6 +186,13 @@ class BriefService:
                 model_name=runtime["model_name"],
                 max_tokens=420,
                 temperature=0.3,
+                telemetry=model_call_context(
+                    project_id=brief.project_id,
+                    layer="layer0",
+                    workflow="plan_guidance",
+                    runtime_profile=runtime,
+                    prompt_key="layer0_plan_reply",
+                ),
             )
             return self._normalized_plan_guidance(response.parsed_json, brief, updates)
         except LLMError:

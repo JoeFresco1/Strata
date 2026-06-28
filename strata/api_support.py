@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -15,7 +15,6 @@ from strata.api_models import (
     AssistantMessageCreateRequest,
     AppConfigResponse,
     AppSnapshotResponse,
-    ExportResponse,
     Layer0ChatRequest,
     Layer0ChatResponse,
     Layer2BulkActionRequest,
@@ -57,8 +56,9 @@ from strata.db import Database
 from strata.embeddings import EmbeddingService
 from strata.export import export_layer2_markdown, export_layer3_manifest, export_project
 from strata.generation import GenerationService
+from strata.jobs import PlatformJobService
 from strata.layer3_service import validate_product_level_content
-from strata.llm import LLMError, LlamaCppClient
+from strata.llm import LlamaCppClient
 from strata.research import ResearchService
 from strata.project_settings import (
     DEFAULT_EMBEDDING_PROFILE_ID,
@@ -82,6 +82,7 @@ class AppServices:
     brief_service: BriefService
     research_service: ResearchService
     assistant_service: AssistantService
+    job_service: PlatformJobService | None = None
 
 
 def _normalize_runtime_model_defaults(config: AppConfig) -> None:
@@ -112,11 +113,14 @@ def _build_services(config: AppConfig | None = None) -> AppServices:
     config = config or AppConfig()
     ensure_runtime_dirs(config)
     db = build_database(config)
+    db.recover_interrupted_platform_jobs()
     db.recover_interrupted_assistant_runs()
+    db.recover_interrupted_research_jobs()
     persisted_llama_base_url = db.get_app_setting("llama_base_url")
     persisted_llm_model_name = db.get_app_setting("llm_model_name")
     persisted_preferred_model_path = db.get_app_setting("preferred_model_path")
     persisted_embedding_model = db.get_app_setting("embeddings_model_name")
+    persisted_embeddings_enabled = db.get_app_setting("embeddings_enabled")
     if persisted_llama_base_url:
         config.llama_base_url = persisted_llama_base_url
     if persisted_llm_model_name:
@@ -125,8 +129,10 @@ def _build_services(config: AppConfig | None = None) -> AppServices:
         config.preferred_model_path = persisted_preferred_model_path
     if persisted_embedding_model:
         config.embeddings_model_name = persisted_embedding_model
+    if persisted_embeddings_enabled:
+        config.embeddings_enabled = persisted_embeddings_enabled == "true"
     _normalize_runtime_model_defaults(config)
-    llm_client = LlamaCppClient(config)
+    llm_client = LlamaCppClient(config, telemetry_store=db)
     server_manager = LlamaServerManager(config)
     embedding_service = EmbeddingService(config)
     db.set_app_setting("llama_base_url", config.llama_base_url)
@@ -134,7 +140,7 @@ def _build_services(config: AppConfig | None = None) -> AppServices:
     db.set_app_setting("preferred_model_path", config.preferred_model_path or "")
     db.set_app_setting("embeddings_model_name", embedding_service.model_name)
     assistant_index = AssistantIndexService(db, embedding_service)
-    return AppServices(
+    services = AppServices(
         config=config,
         db=db,
         generation_service=GenerationService(db, llm_client, server_manager, embedding_service),
@@ -142,6 +148,8 @@ def _build_services(config: AppConfig | None = None) -> AppServices:
         research_service=ResearchService(db, llm_client, embedding_service, server_manager),
         assistant_service=AssistantService(db, llm_client, assistant_index, server_manager),
     )
+    services.job_service = PlatformJobService(services)
+    return services
 
 
 def _project_snapshot(services: AppServices, project_id: str) -> AppSnapshotResponse:
@@ -527,31 +535,74 @@ def _execute_assistant_action(
             node.id for node in services.db.list_nodes(project_id, parent_id=None, layer=1, node_type="pillar")
         ]
         jobs = [services.research_service.enqueue_layer1(project_id, str(item), reason="assistant") for item in pillar_ids]
+        platform_jobs = []
         for job in jobs:
-            background_tasks.add_task(services.research_service.run_job, job.id)
-        return {"job_ids": [job.id for job in jobs]}
+            platform_job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="research",
+                workflow="research",
+                scope="layer1",
+                scope_id=job.scope_id,
+                request_payload={"research_job_id": job.id, "research_job_type": job.job_type},
+                dedupe_key=f"research:{job.id}",
+            )
+            platform_jobs.append(platform_job)
+            background_tasks.add_task(services.job_service.run_job, platform_job.id)
+        return {"job_ids": [job.id for job in jobs], "platform_job_ids": [job.id for job in platform_jobs]}
     if proposal.action_type == "run_layer2_research":
         job = services.research_service.enqueue_layer2(
             project_id,
             feature_ids=[str(item) for item in payload.get("feature_ids", [])] or None,
             reason="assistant",
         )
-        background_tasks.add_task(services.research_service.run_job, job.id)
-        return {"job_id": job.id}
+        platform_job = services.job_service.enqueue(
+            project_id=project_id,
+            kind="research",
+            workflow="research",
+            scope="layer2",
+            request_payload={"research_job_id": job.id, "research_job_type": job.job_type},
+            dedupe_key=f"research:{job.id}",
+        )
+        background_tasks.add_task(services.job_service.run_job, platform_job.id)
+        return {"job_id": job.id, "platform_job_id": platform_job.id}
     if proposal.action_type == "generate_layer1":
-        background_tasks.add_task(services.generation_service.generate_pillars_until_exhausted, project_id)
-        return {"queued": True, "layer": 1}
+        job = services.job_service.enqueue(
+            project_id=project_id,
+            kind="generation",
+            workflow="layer1_generation",
+            scope="layer1",
+            request_payload={},
+            dedupe_key=f"generation:layer1:{project_id}:assistant",
+        )
+        background_tasks.add_task(services.job_service.run_job, job.id)
+        return {"queued": True, "layer": 1, "platform_job_id": job.id}
     if proposal.action_type == "generate_layer2":
         pillar_ids = [str(item) for item in payload.get("pillar_ids", [])]
         if not pillar_ids:
             raise ValueError("Layer 2 generation requires pillar_ids.")
-        background_tasks.add_task(services.generation_service.generate_layer2_feature_graph, project_id, pillar_ids)
-        return {"queued": True, "layer": 2, "pillar_ids": pillar_ids}
+        job = services.job_service.enqueue(
+            project_id=project_id,
+            kind="generation",
+            workflow="layer2_generation",
+            scope="layer2",
+            request_payload={"pillar_ids": pillar_ids},
+            dedupe_key=f"generation:layer2:{project_id}:assistant:{','.join(pillar_ids)}",
+        )
+        background_tasks.add_task(services.job_service.run_job, job.id)
+        return {"queued": True, "layer": 2, "pillar_ids": pillar_ids, "platform_job_id": job.id}
     if proposal.action_type == "generate_layer3":
         feature_ids = [str(item) for item in payload.get("feature_ids", [])]
         _validate_layer3_layer2_gate(services, project_id, feature_ids)
-        background_tasks.add_task(services.generation_service.generate_capability_cards, project_id, feature_ids)
-        return {"queued": True, "layer": 3, "feature_ids": feature_ids}
+        job = services.job_service.enqueue(
+            project_id=project_id,
+            kind="generation",
+            workflow="layer3_generation",
+            scope="layer3",
+            request_payload={"feature_ids": feature_ids},
+            dedupe_key=f"generation:layer3:{project_id}:assistant:{','.join(feature_ids)}",
+        )
+        background_tasks.add_task(services.job_service.run_job, job.id)
+        return {"queued": True, "layer": 3, "feature_ids": feature_ids, "platform_job_id": job.id}
     raise ValueError(f"Unsupported assistant action: {proposal.action_type}")
 
 

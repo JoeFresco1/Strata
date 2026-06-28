@@ -113,6 +113,37 @@ class ConfigTests(unittest.TestCase):
 
 
 class ResearchServiceTests(unittest.TestCase):
+    def test_interrupted_research_jobs_return_to_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Recovery", "Resume local work")
+            job = db.create_research_job(
+                project_id=project.id,
+                scope="layer0",
+                scope_id=None,
+                job_type="layer0_competitors",
+            )
+            db.update_research_job(job.id, status="running")
+
+            self.assertEqual(db.recover_interrupted_research_jobs(), 1)
+            self.assertEqual(db.list_queued_research_jobs()[0].id, job.id)
+
+    def test_competitive_intelligence_switch_blocks_all_research_queues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Private", "No competitor research")
+            settings = default_project_model_settings(AppConfig())
+            settings["competitive_intelligence_enabled"] = False
+            db.upsert_project_model_settings(project_id=project.id, **settings)
+            service = ResearchService(db, MagicMock(), MagicMock())
+
+            with self.assertRaisesRegex(ValueError, "disabled"):
+                service.enqueue_layer0(project.id)
+            with self.assertRaisesRegex(ValueError, "disabled"):
+                service.enqueue_layer1(project.id, "pillar-id")
+            with self.assertRaisesRegex(ValueError, "disabled"):
+                service.enqueue_layer2(project.id)
+
     @staticmethod
     def _layer2_fixture(tmpdir: str, *, feature_count: int = 2) -> tuple[Database, object, list[object]]:
         """Create a small active/cut feature graph for Layer 2 research tests."""

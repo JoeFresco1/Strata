@@ -36,6 +36,7 @@ from strata.models import (
     ProjectMemory,
     SimilarityMatch,
 )
+from strata.migrations import apply_migrations, migration_status
 from strata.project_settings import default_project_model_settings, normalize_model_settings
 from strata.prompts import (
     build_pillar_prompt,
@@ -51,6 +52,165 @@ from requests.exceptions import SSLError
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_schema_migrations_are_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            self.assertEqual(apply_migrations(db), [1])
+            self.assertEqual(apply_migrations(db), [])
+            self.assertEqual(migration_status(db)["current_version"], 1)
+
+    def test_telemetry_aggregates_usage_and_honors_body_retention(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Telemetry", "Track model activity")
+            db.record_model_call({
+                "project_id": project.id,
+                "layer": "layer2",
+                "workflow": "feature_generation",
+                "provider_kind": "remote",
+                "model_name": "test-model",
+                "status": "completed",
+                "latency_ms": 1250,
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "estimated_cost_usd": 0.01,
+                "system_prompt": "system",
+                "user_prompt": "user",
+                "raw_response": '{"ok":true}',
+                "parsed_result": {"ok": True},
+            })
+
+            summary = db.telemetry_summary(project.id)
+            self.assertEqual(summary["totals"]["total_tokens"], 150)
+            self.assertEqual(summary["totals"]["remote_calls"], 1)
+            self.assertEqual(summary["by_layer"][0]["name"], "layer2")
+
+            db.upsert_telemetry_settings(project.id, {
+                "enabled": True,
+                "capture_prompt_bodies": False,
+                "capture_response_bodies": False,
+                "capture_parsed_results": False,
+            })
+            db.record_model_call({
+                "project_id": project.id,
+                "layer": "assistant",
+                "workflow": "assistant_synthesis",
+                "status": "failed",
+                "error_type": "timeout",
+                "system_prompt": "private",
+                "user_prompt": "private",
+                "raw_response": "private",
+                "parsed_result": {"private": True},
+            })
+            latest = db.list_model_calls(project.id, limit=1)[0]
+            self.assertIsNone(latest["system_prompt"])
+            self.assertIsNone(latest["raw_response"])
+            self.assertEqual(latest["parsed_result"], {})
+            self.assertEqual(db.telemetry_summary(project.id)["totals"]["timeouts"], 1)
+
+    def test_platform_jobs_dedupe_cancel_retry_and_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Jobs", "Durable work")
+            job = db.create_platform_job(
+                project_id=project.id,
+                kind="generation",
+                workflow="layer1_generation",
+                scope="layer1",
+                request_payload={"max_rounds": 1},
+                dedupe_key="layer1-once",
+            )
+            duplicate = db.create_platform_job(
+                project_id=project.id,
+                kind="generation",
+                workflow="layer1_generation",
+                scope="layer1",
+                dedupe_key="layer1-once",
+            )
+            self.assertEqual(duplicate.id, job.id)
+
+            running = db.update_platform_job(job.id, status="running", started_at=datetime.now().isoformat())
+            self.assertEqual(running.status, "running")
+            self.assertEqual(db.recover_interrupted_platform_jobs(), 1)
+            interrupted = db.get_platform_job(job.id)
+            self.assertEqual(interrupted.status, "interrupted")
+            self.assertIn("restart", interrupted.error_message or "")
+
+            retried = db.retry_platform_job(job.id)
+            self.assertEqual(retried.status, "queued")
+            self.assertEqual(retried.attempt, 2)
+            cancelled = db.request_platform_job_cancel(job.id)
+            self.assertEqual(cancelled.status, "cancelled")
+            self.assertTrue(cancelled.cancel_requested)
+
+            summary = db.platform_job_summary(project.id)
+            self.assertEqual(summary["cancelled"], 1)
+            self.assertEqual(summary["recent"][0]["id"], job.id)
+
+    def test_diagnostics_export_uses_unified_platform_job_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "api.db"
+            exports_dir = Path(tmpdir) / "exports"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, exports_dir=exports_dir, embeddings_enabled=False)
+            with patch("strata.api.AppConfig", return_value=config), TestClient(create_app()) as client:
+                created = client.post("/api/projects", json={"name": "Queued", "idea": "Durable diagnostics"})
+                self.assertEqual(created.status_code, 200)
+                project_id = created.json()["id"]
+
+                queued = client.post(f"/api/projects/{project_id}/diagnostics/export")
+                self.assertEqual(queued.status_code, 200)
+                job_id = queued.json()["job"]["id"]
+
+                jobs = client.get(f"/api/projects/{project_id}/jobs").json()["jobs"]
+                matching = next(job for job in jobs if job["id"] == job_id)
+                self.assertEqual(matching["workflow"], "diagnostics_export")
+                self.assertEqual(matching["status"], "completed")
+                output_path = Path(matching["result_payload"]["json_path"])
+                self.assertTrue(output_path.exists())
+                payload = json.loads(output_path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["manifest"]["bundle_version"], 1)
+                self.assertIn("dependency_health", payload["manifest"]["included_sections"])
+                self.assertIn("database", payload["dependency_health"])
+                self.assertIn("model_server", payload["dependency_health"])
+
+    def test_manual_layer1_pillar_route_requires_published_brief(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "api.db"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, embeddings_enabled=False)
+            with patch("strata.api.AppConfig", return_value=config), TestClient(create_app()) as client:
+                created = client.post("/api/projects", json={"name": "Manual", "idea": "Known product map"})
+                self.assertEqual(created.status_code, 200)
+                project_id = created.json()["id"]
+
+                draft_response = client.post(
+                    f"/api/projects/{project_id}/layer1/pillars",
+                    json={"title": "Workflow Intelligence", "description": "High-level known area"},
+                )
+                self.assertEqual(draft_response.status_code, 400)
+
+                snapshot = client.get(f"/api/projects/{project_id}").json()
+                settings = snapshot["project_model_settings"]
+                settings["competitive_intelligence_enabled"] = False
+                self.assertEqual(client.patch(f"/api/projects/{project_id}/settings/models", json=settings).status_code, 200)
+                self.assertEqual(client.post(f"/api/projects/{project_id}/brief/publish").status_code, 200)
+
+                response = client.post(
+                    f"/api/projects/{project_id}/layer1/pillars",
+                    json={
+                        "title": "Workflow Intelligence",
+                        "description": "Manual pillar",
+                        "status": "prioritized",
+                        "priority": 7,
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                pillars = [node for node in response.json()["snapshot"]["nodes"] if node["node_type"] == "pillar"]
+                self.assertEqual(len(pillars), 1)
+                self.assertEqual(pillars[0]["title"], "Workflow Intelligence")
+                self.assertEqual(pillars[0]["status"], "prioritized")
+                self.assertEqual(pillars[0]["json_payload"]["source"], "manual")
+
     def test_layer3_boundary_rejects_implementation_specs(self) -> None:
         forbidden_examples = [
             "Create backend API endpoints and database tables.",
@@ -191,7 +351,8 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(stored.routing_policy["assistant"], "local")
             self.assertEqual(stored.concurrency_policy["managed_local_parallelism"], 1)
             self.assertEqual(stored.assignments["layer2_generation"], "default-chat")
-            self.assertEqual(stored.prompt_catalog["system_json_generator"], "You are Strata, a local product specification generation engine. You must return valid JSON that matches the requested schema and avoid prose outside the JSON.")
+            self.assertIn("structured product-architecture engine", stored.prompt_catalog["system_json_generator"])
+            self.assertIn("return only valid JSON", stored.prompt_catalog["system_json_generator"])
 
     def test_project_workspace_state_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

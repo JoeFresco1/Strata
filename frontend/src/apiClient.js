@@ -1,4 +1,7 @@
-const API_BASE = "http://127.0.0.1:8000/api";
+const API_BASE = (
+  import.meta.env?.VITE_API_BASE
+  || (typeof window === "undefined" ? "http://127.0.0.1:8000/api" : "/api")
+).replace(/\/$/, "");
 const MAX_CACHE_ENTRIES = 48;
 const MAX_STALE_RETRIES = 3;
 const responseCache = new Map();

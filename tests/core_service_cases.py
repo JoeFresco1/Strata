@@ -111,6 +111,39 @@ class EmbeddingServiceTests(unittest.TestCase):
 
 
 class LLMClientTests(unittest.TestCase):
+    @patch("strata.llm.requests.post")
+    def test_generate_json_records_provider_usage(self, mock_post: MagicMock) -> None:
+        store = MagicMock()
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "model": "remote-model",
+            "choices": [{"message": {"content": '{"ok": true}'}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        mock_post.return_value = response
+        client = LlamaCppClient(AppConfig(), telemetry_store=store)
+
+        result = client.generate_json(
+            system_prompt="system",
+            user_prompt="user",
+            base_url="https://models.example.com",
+            telemetry={
+                "project_id": "project-1",
+                "layer": "layer1",
+                "workflow": "pillar_generation",
+                "input_cost_per_million": 1,
+                "output_cost_per_million": 2,
+            },
+        )
+
+        self.assertTrue(result.parsed_json["ok"])
+        recorded = store.record_model_call.call_args.args[0]
+        self.assertEqual(recorded["provider_kind"], "remote")
+        self.assertEqual(recorded["total_tokens"], 15)
+        self.assertEqual(recorded["estimated_cost_usd"], 0.00002)
+        self.assertTrue(recorded["prompt_version"])
+
     def test_setters_update_runtime_endpoint_and_model(self) -> None:
         client = LlamaCppClient(AppConfig())
         client.set_base_url("http://localhost:9000/")
@@ -123,6 +156,16 @@ class LLMClientTests(unittest.TestCase):
         cleaned = LlamaCppClient._strip_reasoning_wrappers('thought\n{"pillars":[{"title":"A"}]}')
 
         self.assertEqual(cleaned, '{"pillars":[{"title":"A"}]}')
+
+    def test_strip_reasoning_wrappers_handles_llama_channel_markers(self) -> None:
+        self.assertEqual(
+            LlamaCppClient._strip_reasoning_wrappers("<|channel|>thought\n<channel|>GGUF_OK"),
+            "GGUF_OK",
+        )
+        self.assertEqual(
+            LlamaCppClient._strip_reasoning_wrappers("<|channel>thought\n<channel|>GGUF_OK"),
+            "GGUF_OK",
+        )
 
     def test_strip_reasoning_wrappers_handles_code_fences(self) -> None:
         cleaned = LlamaCppClient._strip_reasoning_wrappers('```json\n{"ok": true}\n```')

@@ -66,8 +66,24 @@ class Layer1GenerateRequest(BaseModel):
     thinking_enabled: bool = False
     max_rounds: int = 6
     target_per_round: int = 12
+    total_cap: int | None = Field(default=None, ge=1)
     min_new_items_per_round: int = 2
     stale_rounds_to_stop: int = 2
+
+
+class Layer1PillarCreateRequest(BaseModel):
+    title: str
+    description: str = ""
+    status: Literal["generated", "kept", "cut", "merged", "prioritized"] = "kept"
+    priority: int = Field(default=0, ge=0, le=10)
+
+    @field_validator("title")
+    @classmethod
+    def require_title(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Manual Layer 1 pillars require a title.")
+        return cleaned
 
 
 class Layer2GenerateRequest(BaseModel):
@@ -75,6 +91,7 @@ class Layer2GenerateRequest(BaseModel):
     thinking_enabled: bool = False
     max_rounds: int = 5
     target_per_round: int = 10
+    total_cap: int | None = Field(default=None, ge=1)
     min_new_items_per_round: int = 2
     stale_rounds_to_stop: int = 2
 
@@ -324,6 +341,8 @@ class ProjectLLMProfileRequest(BaseModel):
     max_parallel_requests: int = Field(ge=1, le=32, default=1)
     max_specialists: int = Field(ge=0, le=16, default=2)
     max_output_tokens: int = Field(ge=256, le=16000, default=1800)
+    input_cost_per_million: float = Field(ge=0, default=0)
+    output_cost_per_million: float = Field(ge=0, default=0)
 
 
 class ProjectEmbeddingProfileRequest(BaseModel):
@@ -340,6 +359,7 @@ class ProjectModelSettingsUpdateRequest(BaseModel):
     concurrency_policy: dict[str, int] = Field(default_factory=dict)
     assignments: dict[str, Any] = Field(default_factory=dict)
     prompt_catalog: dict[str, str] = Field(default_factory=dict)
+    competitive_intelligence_enabled: bool = True
 
 
 class ProjectWorkspaceStateUpdateRequest(BaseModel):
@@ -349,6 +369,20 @@ class ProjectWorkspaceStateUpdateRequest(BaseModel):
     table_scope: Literal["focused", "project"] = "focused"
     map_state: dict[str, Any] = Field(default_factory=dict)
     table_state: dict[str, Any] = Field(default_factory=dict)
+
+
+class TelemetrySettingsUpdateRequest(BaseModel):
+    enabled: bool = True
+    capture_prompt_bodies: bool = True
+    capture_response_bodies: bool = True
+    capture_parsed_results: bool = True
+
+
+class SetupCompleteRequest(BaseModel):
+    llama_base_url: str = "http://127.0.0.1:8080"
+    model_name: str = "local-model"
+    embeddings_enabled: bool = True
+    embeddings_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 class AssistantConversationCreateRequest(BaseModel):

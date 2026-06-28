@@ -204,6 +204,43 @@ class Layer3ApiTests(unittest.TestCase):
             self.assertEqual(approval.status_code, 400)
             self.assertEqual(exported.status_code, 400)
 
+    def test_speckit_handoff_rejects_unresolved_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db, project, _, _, _ = self._fixture(tmpdir)
+            client = self._client(db.db_path, Path(tmpdir) / "exports")
+
+            preview = client.get(f"/api/projects/{project.id}/delivery/speckit")
+            response = client.post(f"/api/projects/{project.id}/delivery/speckit", json={})
+
+            self.assertEqual(preview.status_code, 200)
+            self.assertEqual(preview.json()["ready_card_count"], 0)
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("Resolve all Layer 3 open decisions", response.text)
+
+    def test_speckit_handoff_exports_spec_seed_and_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db, project, _, card, decision = self._fixture(tmpdir)
+            db.update_layer3_decision(decision.id, status="resolved", resolution="Plain text")
+            db.update_layer3_card(
+                card.id,
+                product_behaviors=[{"title": "Capture response", "description": "The user can submit free-form text."}],
+                validation_constraints=[{"title": "Required response", "description": "Response cannot be empty."}],
+                edge_cases=["Very long responses are handled with clear product messaging."],
+            )
+            exports_dir = Path(tmpdir) / "exports"
+            client = self._client(db.db_path, exports_dir)
+
+            response = client.post(f"/api/projects/{project.id}/delivery/speckit", json={"card_ids": [card.id]})
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            output_dir = Path(payload["output_dir"])
+            self.assertTrue(Path(payload["zip_path"]).exists())
+            spec_path = output_dir / payload["slices"][0]["folder"] / "spec.md"
+            lineage_path = output_dir / payload["slices"][0]["folder"] / "strata-lineage.json"
+            self.assertIn("/speckit.specify", spec_path.read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(lineage_path.read_text(encoding="utf-8"))["layer3"]["card_id"], card.id)
+
     def test_relationship_edit_rejects_inactive_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db, project, _, card, _ = self._fixture(tmpdir)

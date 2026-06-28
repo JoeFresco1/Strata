@@ -1,16 +1,26 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { CompetitiveIntelligencePanel } from "./Layer2GraphPanel";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiFetch, subscribeApiActivity } from "./apiClient";
-import { TABS, applyAssistantNavigation, approvedNodes, assistantScopeFor, findWorkspaceEntity, sortProjects } from "./appUtils";
+import { TABS, applyAssistantNavigation, assistantScopeFor, findWorkspaceEntity, sortProjects } from "./appUtils";
 import PromptCatalogEditor from "./PromptCatalogEditor";
 import BriefWorkspace from "./BriefWorkspace";
 import AssistantDrawer from "./AssistantDrawer";
 import LivingWorkspace from "./LivingWorkspace";
 import Layer3Workspace from "./Layer3Workspace";
+import ProjectAnalytics from "./ProjectAnalytics";
+import ProjectToolsTab from "./ProjectToolsTab";
+import SetupWizard from "./SetupWizard";
 import { buildWorkspaceTree } from "./projectWorkspaceData";
-import { AppSettingsModal, ProjectSettingsTab } from "./ModelSettingsPanel";
+import { AppSettingsModal } from "./ModelSettingsPanel";
 import { CreateProjectModal, GuideModal, ModalFrame, ProjectHub } from "./ProjectShell";
 import { GenerationSummary, MarketPanel, ResearchStatus } from "./ReviewPanels";
+
+function parseOptionalPositiveInt(value) {
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 export default function App() {
   const [config, setConfig] = useState(null);
   const [projects, setProjects] = useState([]);
@@ -36,37 +46,39 @@ export default function App() {
   const [layer1Thinking, setLayer1Thinking] = useState(false);
   const [layer1MaxRounds, setLayer1MaxRounds] = useState(6);
   const [layer1TargetPerRound, setLayer1TargetPerRound] = useState(12);
+  const [layer1TotalCap, setLayer1TotalCap] = useState(null);
   const [layer1MinNew, setLayer1MinNew] = useState(2);
   const [layer2Thinking, setLayer2Thinking] = useState(false);
   const [layer2MaxRounds, setLayer2MaxRounds] = useState(5);
   const [layer2TargetPerRound, setLayer2TargetPerRound] = useState(10);
+  const [layer2TotalCap, setLayer2TotalCap] = useState(null);
   const [layer2MinNew, setLayer2MinNew] = useState(2);
   const [layer3Thinking, setLayer3Thinking] = useState(false);
   const [lastExport, setLastExport] = useState(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
+  const [setupState, setSetupState] = useState(null);
   const [projectLoading, setProjectLoading] = useState(false);
   const [pendingMutations, setPendingMutations] = useState(0);
   const savedWorkspaceStates = useRef(new Map());
   const workspaceSaveQueue = useRef(Promise.resolve());
-
   useEffect(() => subscribeApiActivity(setPendingMutations), []);
-
-  // Load config and project list on first render.
   useEffect(() => {
     let active = true;
     async function loadBootstrap() {
       setBootstrapLoading(true);
       try {
-        const [configPayload, projectsPayload, healthPayload] = await Promise.all([
+        const [configPayload, projectsPayload, healthPayload, setupPayload] = await Promise.all([
           apiFetch("/config"),
           apiFetch("/projects"),
           apiFetch("/health"),
+          apiFetch("/setup/status"),
         ]);
         if (!active) return;
         setConfig(configPayload);
         setAppSettings(configPayload);
         setProjects(projectsPayload);
+        setSetupState(setupPayload);
         setStatusMessage(
           healthPayload.ok
             ? "Local model ready."
@@ -84,8 +96,6 @@ export default function App() {
       active = false;
     };
   }, []);
-
-  // Refresh the active project snapshot whenever the selected project changes.
   useEffect(() => {
     if (!activeProjectId) {
       setSnapshot(null);
@@ -119,7 +129,6 @@ export default function App() {
       active = false;
     };
   }, [activeProjectId]);
-
   useEffect(() => {
     if (!activeProjectId || !workspaceState) return undefined;
     const serializedState = JSON.stringify(workspaceState);
@@ -144,8 +153,6 @@ export default function App() {
     }, 500);
     return () => window.clearTimeout(timer);
   }, [activeProjectId, workspaceState]);
-
-  // Poll only while background research is active so progress and completed evidence appear automatically.
   useEffect(() => {
     const hasActiveResearch = (snapshot?.research_jobs || []).some((job) => ["queued", "running"].includes(job.status));
     if (!activeProjectId || !hasActiveResearch) return undefined;
@@ -170,19 +177,15 @@ export default function App() {
       window.clearTimeout(timer);
     };
   }, [activeProjectId, snapshot?.research_jobs]);
-
-  // Refresh the project list after create/generation flows that might change ordering.
   async function refreshProjects() {
     const payload = await apiFetch("/projects");
     setProjects(payload);
   }
-
   // Replace the local snapshot after an API action.
   function applySnapshot(nextSnapshot) {
     setSnapshot(nextSnapshot);
     setProjectModelSettings(nextSnapshot?.project_model_settings || null);
   }
-
   // Create a new project from the homepage form.
   async function handleCreateProject(event) {
     event.preventDefault();
@@ -201,7 +204,6 @@ export default function App() {
     setActiveTab("Workspace");
     setActiveProjectId(payload.id);
   }
-
   async function handleSaveModelSettings() {
     // Persists reusable defaults for future projects and runtime routing.
     if (!appSettings) {
@@ -223,7 +225,6 @@ export default function App() {
       setError(saveError.message);
     }
   }
-
   async function handleSaveProjectModelSettings() {
     // Persists model assignments that apply only to the active project.
     if (!activeProjectId || !projectModelSettings) {
@@ -245,7 +246,6 @@ export default function App() {
       setError(saveError.message);
     }
   }
-
   // Save a node edit and then refresh the active snapshot.
   async function handleNodeSave(nodeId, payload) {
     setError("");
@@ -261,7 +261,6 @@ export default function App() {
       throw saveError;
     }
   }
-
   async function handleBriefSave(payload) {
     // Saves structured Layer 0 form edits without publishing the brief.
     setError("");
@@ -275,7 +274,6 @@ export default function App() {
       setError(saveError.message);
     }
   }
-
   async function handlePlanChat(message, requestId) {
     // Sends conversational Layer 0 input and applies extracted brief updates.
     setError("");
@@ -295,7 +293,6 @@ export default function App() {
       throw chatError;
     }
   }
-
   async function handlePublishBrief() {
     // Locks Layer 0 for downstream generation and queues initial research.
     setError("");
@@ -309,7 +306,6 @@ export default function App() {
       setError(publishError.message);
     }
   }
-
   async function handleRerunLayer0Research() {
     // Requeues project-level competitor discovery.
     setError("");
@@ -348,12 +344,23 @@ export default function App() {
           thinking_enabled: layer1Thinking,
           max_rounds: layer1MaxRounds,
           target_per_round: layer1TargetPerRound,
+          total_cap: layer1TotalCap,
           min_new_items_per_round: layer1MinNew,
           stale_rounds_to_stop: 2,
         }),
       });
-      setLastSummary(payload.summary);
+      setLastSummary({
+        stop_reason: "queued",
+        total_rounds: 0,
+        created_nodes: [],
+        duplicate_candidates: 0,
+        filtered_candidates: 0,
+        thinking_enabled: layer1Thinking,
+        final_coverage_summary: `Layer 1 generation queued as job ${payload.job?.id?.slice(0, 8) || ""}.`,
+        round_summaries: [],
+      });
       applySnapshot(payload.snapshot);
+      setStatusMessage("Layer 1 generation queued.");
       await refreshProjects();
     } catch (generationError) {
       setError(generationError.message);
@@ -371,21 +378,23 @@ export default function App() {
           thinking_enabled: layer2Thinking,
           max_rounds: layer2MaxRounds,
           target_per_round: layer2TargetPerRound,
+          total_cap: layer2TotalCap,
           min_new_items_per_round: layer2MinNew,
           stale_rounds_to_stop: 2,
         }),
       });
       setLastSummary({
-        stop_reason: "layer2_graph_review_queue",
-        total_rounds: layer2MaxRounds,
-        created_nodes: payload.summary?.created_feature_ids || [],
-        duplicate_candidates: payload.summary?.duplicate_recommendations || 0,
-        filtered_candidates: payload.summary?.negative_cache_matches || 0,
+        stop_reason: "queued",
+        total_rounds: 0,
+        created_nodes: [],
+        duplicate_candidates: 0,
+        filtered_candidates: 0,
         thinking_enabled: layer2Thinking,
-        final_coverage_summary: `${payload.summary?.raw_candidate_count || 0} raw candidates, ${payload.summary?.review_queue_count || 0} items awaiting review.`,
+        final_coverage_summary: `Layer 2 generation queued as job ${payload.job?.id?.slice(0, 8) || ""}.`,
         round_summaries: [],
       });
       applySnapshot(payload.snapshot);
+      setStatusMessage("Layer 2 generation queued.");
       setStatusMessage("Layer 2 generated. Full feature research queued automatically.");
     } catch (generationError) {
       setError(generationError.message);
@@ -408,7 +417,6 @@ export default function App() {
   }
 
   async function handleLayer2FeatureCreate(payload) {
-    // Adds a human-authored feature directly into the Layer 2 review queue.
     setError("");
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer2/features`, {
@@ -423,8 +431,22 @@ export default function App() {
     }
   }
 
+  async function handleLayer1PillarCreate(payload) {
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer1/pillars`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage("Layer 1 pillar added.");
+    } catch (createError) {
+      setError(createError.message);
+      throw createError;
+    }
+  }
+
   async function handleLayer2FeatureUpdate(featureId, payload) {
-    // Saves inline workbench edits without forcing a full generation pass.
     setError("");
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer2/features/${featureId}`, {
@@ -540,7 +562,7 @@ export default function App() {
         }),
       });
       applySnapshot(payload.snapshot);
-      setStatusMessage(`Layer 3 updated ${payload.created.length} Capability Design Card${payload.created.length === 1 ? "" : "s"}.`);
+      setStatusMessage(`Layer 3 generation queued as job ${payload.job?.id?.slice(0, 8) || ""}.`);
     } catch (generationError) {
       setError(generationError.message);
       throw generationError;
@@ -590,7 +612,14 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({ thinking_enabled: layer3Thinking }),
       }),
-      "Capability Design pressure test updated.",
+      "Capability Design pressure test queued.",
+    );
+  }
+
+  async function handleLayer3CoverageGaps(cardId) {
+    return runLayer3Mutation(
+      () => apiFetch(`/projects/${activeProjectId}/layer3/cards/${cardId}/coverage-gaps`, { method: "POST", body: JSON.stringify({ thinking_enabled: layer3Thinking }) }),
+      "Layer 3 coverage-gap audit queued.",
     );
   }
 
@@ -653,6 +682,7 @@ export default function App() {
   const layer2Graph = snapshot?.layer2_graph || {};
   const layer3 = snapshot?.layer3 || {};
   const project = snapshot?.project || null;
+  const competitiveIntelligenceEnabled = projectModelSettings?.competitive_intelligence_enabled ?? true;
   const quarantine = memories.find((item) => item.scope === "layer1" && item.memory_type === "quarantine");
   const layer1Enabled = brief?.status === "published";
   const sortedProjects = sortProjects(projects, sortOrder);
@@ -668,6 +698,13 @@ export default function App() {
 
   if (bootstrapLoading && !config) {
     return <div className="app-loading-screen"><div className="loading-spinner" /><strong>Loading Strata</strong><span>Connecting to the local workspace...</span></div>;
+  }
+
+  if (setupState && !setupState.completed) {
+    return <SetupWizard defaults={setupState.defaults} apiFetch={apiFetch} onComplete={(result) => {
+      setSetupState({ ...setupState, completed: true });
+      setStatusMessage(result.model_ok ? "Model connected." : result.model_message);
+    }} />;
   }
 
   if (!config) {
@@ -788,7 +825,7 @@ export default function App() {
                   onChat={handlePlanChat}
                   onPublish={handlePublishBrief}
                 />
-                <details className="panel quiet-details">
+                {competitiveIntelligenceEnabled ? <details className="panel quiet-details">
                   <summary>Research and market evidence</summary>
                   <ResearchStatus
                     jobs={researchJobs}
@@ -796,7 +833,7 @@ export default function App() {
                     onRerunLayer1={handleRerunLayer1Research}
                   />
                   <MarketPanel findings={researchFindings} />
-                </details>
+                </details> : <div className="panel"><p className="muted">Competitive intelligence is disabled for this project.</p></div>}
               </section>
             ) : null}
 
@@ -807,19 +844,20 @@ export default function App() {
                   brief={brief}
                   tree={workspaceTree}
                   layer2Graph={layer2Graph}
-                  findings={researchFindings}
-                  researchJobs={researchJobs}
+                  findings={competitiveIntelligenceEnabled ? researchFindings : []}
+                  researchJobs={competitiveIntelligenceEnabled ? researchJobs : []}
                   workspaceState={workspaceState}
                   onWorkspaceStateChange={setWorkspaceState}
                   onSaveBrief={handleBriefSave}
                   onPublishBrief={handlePublishBrief}
                   onSaveNode={handleNodeSave}
+                  onCreatePillar={handleLayer1PillarCreate}
                   onUpdateFeature={handleLayer2FeatureUpdate}
                   onCreateFeature={handleLayer2FeatureCreate}
                   onReviewFeature={handleLayer2Review}
                   onAddEvidence={handleLayer2Evidence}
-                  onResearchLayer1={handleRerunLayer1Research}
-                  onResearchLayer2={handleLayer2Research}
+                  onResearchLayer1={competitiveIntelligenceEnabled ? handleRerunLayer1Research : null}
+                  onResearchLayer2={competitiveIntelligenceEnabled ? handleLayer2Research : null}
                   onGenerateLayer1={handleGenerateLayer1}
                   onGenerateLayer2={handleGenerateLayer2}
                   onBulkFeatureStatus={handleBulkFeatureStatus}
@@ -828,10 +866,12 @@ export default function App() {
                     layer1Thinking, setLayer1Thinking,
                     layer1MaxRounds, setLayer1MaxRounds,
                     layer1TargetPerRound, setLayer1TargetPerRound,
+                    layer1TotalCap, setLayer1TotalCap: (value) => setLayer1TotalCap(parseOptionalPositiveInt(value)),
                     layer1MinNew, setLayer1MinNew,
                     layer2Thinking, setLayer2Thinking,
                     layer2MaxRounds, setLayer2MaxRounds,
                     layer2TargetPerRound, setLayer2TargetPerRound,
+                    layer2TotalCap, setLayer2TotalCap: (value) => setLayer2TotalCap(parseOptionalPositiveInt(value)),
                     layer2MinNew, setLayer2MinNew,
                   }}
                 />
@@ -842,6 +882,7 @@ export default function App() {
             {activeTab === "Specs" ? (
               <section className="tab-content">
                 <Layer3Workspace
+                  projectId={activeProjectId}
                   layer3={layer3}
                   thinkingEnabled={layer3Thinking}
                   onThinkingChange={setLayer3Thinking}
@@ -849,71 +890,38 @@ export default function App() {
                   onSave={handleLayer3Save}
                   onReview={handleLayer3Review}
                   onPressureTest={handleLayer3PressureTest}
+                  onCoverageGaps={handleLayer3CoverageGaps}
                   onDecision={handleLayer3Decision}
                   onExport={handleLayer3Export}
                 />
               </section>
             ) : null}
 
-            {activeTab === "Project" ? (
+            {activeTab === "Analytics" ? (
               <section className="tab-content">
-                <details className="panel project-tool-section" open>
-                  <summary>Project settings</summary>
-                  <ProjectSettingsTab
-                    settings={projectModelSettings}
-                    config={config}
-                    saveState={projectSettingsSaveState}
-                    onChange={setProjectModelSettings}
-                    onSave={handleSaveProjectModelSettings}
-                  />
-                </details>
-                <details className="panel project-tool-section">
-                  <summary>Export</summary>
-                  <div className="button-row">
-                    <button type="button" onClick={handleExport}>
-                      Create Full Project Export
-                    </button>
-                    <button type="button" onClick={handleLayer2Export}>
-                      Create Layer 2 Export
-                    </button>
-                  </div>
-                  <p className="muted">Exports are written to the configured local exports folder.</p>
-                  {lastExport ? (
-                    <div className="export-result" role="status">
-                      <strong>{lastExport.kind} export created</strong>
-                      {lastExport.markdown_path ? <span>Markdown: {lastExport.markdown_path}</span> : null}
-                      <span>JSON: {lastExport.json_path}</span>
-                    </div>
-                  ) : null}
-                  {layer2Graph.review_open ? (
-                    <p className="warning">Layer 2 export includes unresolved review state. Layer 3 still requires approved features.</p>
-                  ) : null}
-                </details>
-                <details className="panel project-tool-section">
-                  <summary>Competitive intelligence</summary>
-                  <CompetitiveIntelligencePanel
-                    graph={layer2Graph}
-                    pillars={approvedNodes(nodes, "pillar")}
-                    onCompetitiveSettings={handleCompetitiveSettings}
-                    onResearch={handleLayer2Research}
-                    researchJobs={researchJobs}
-                  />
-                </details>
-                <details className="panel export-diagnostics">
-                  <summary>Advanced diagnostics and generation memory</summary>
-                  <p className="muted">{memories.length} memory records{quarantine ? " including Layer 1 quarantine data" : ""}.</p>
-                  <details>
-                    <summary>Generation memory</summary>
-                    <pre>{JSON.stringify(memories, null, 2)}</pre>
-                  </details>
-                  {quarantine ? (
-                    <details>
-                      <summary>Layer 1 quarantine</summary>
-                      <pre>{JSON.stringify(quarantine.content, null, 2)}</pre>
-                    </details>
-                  ) : null}
-                </details>
+                <ProjectAnalytics projectId={activeProjectId} apiFetch={apiFetch} />
               </section>
+            ) : null}
+
+            {activeTab === "Project" ? (
+              <ProjectToolsTab
+                config={config}
+                competitiveIntelligenceEnabled={competitiveIntelligenceEnabled}
+                layer2Graph={layer2Graph}
+                lastExport={lastExport}
+                memories={memories}
+                nodes={nodes}
+                projectModelSettings={projectModelSettings}
+                projectSettingsSaveState={projectSettingsSaveState}
+                quarantine={quarantine}
+                researchJobs={researchJobs}
+                onCompetitiveSettings={handleCompetitiveSettings}
+                onExport={handleExport}
+                onLayer2Export={handleLayer2Export}
+                onProjectSettingsChange={setProjectModelSettings}
+                onProjectSettingsSave={handleSaveProjectModelSettings}
+                onResearchLayer2={handleLayer2Research}
+              />
             ) : null}
           </>
         ) : (

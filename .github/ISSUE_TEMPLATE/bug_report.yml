@@ -1,0 +1,27 @@
+name: Bug report
+description: Report a reproducible Strata defect
+body:
+  - type: textarea
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Strata version
+  - type: dropdown
+    attributes:
+      label: Installation
+      options:
+        - Docker Compose
+        - Windows native
+        - Linux/macOS native
+  - type: textarea
+    attributes:
+      label: Diagnostics
+      description: Remove prompts, API keys, private content, and personal data before attaching anything.

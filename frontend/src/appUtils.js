@@ -2,6 +2,7 @@ export const TABS = [
   { id: "Workspace", label: "Workspace" },
   { id: "Layer 0", label: "Brief" },
   { id: "Specs", label: "Capability Design" },
+  { id: "Analytics", label: "Analytics" },
   { id: "Project", label: "Project" },
 ];
 

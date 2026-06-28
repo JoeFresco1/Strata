@@ -27,12 +27,16 @@ from strata.models import (
     CapabilityDesignResponse,
     CapabilityPressureTest,
     CapabilityPressureTestResponse,
+    CriticResponse,
     Layer2Candidate,
     Layer2CandidateResponse,
     Layer2CoverageAssessmentResponse,
     Layer2CoverageFamilyAssessment,
     Node,
+    PillarCandidate,
     PillarAssessment,
+    PillarAssessmentResponse,
+    PillarResponse,
     ProjectMemory,
     SimilarityMatch,
 )
@@ -51,6 +55,26 @@ from requests.exceptions import SSLError
 
 
 class GenerationHelperTests(unittest.TestCase):
+    def test_layer3_coverage_gap_analysis_is_bounded_and_normalized(self) -> None:
+        analysis = GenerationService._validate_coverage_gap_analysis({
+            "coverage_gap_analysis": {
+                "coverage_score": 120,
+                "summary": "Missing lifecycle behavior.",
+                "gaps": [{
+                    "area": "Lifecycle",
+                    "severity": "high",
+                    "missing": "Archived behavior",
+                    "recommendation": "Define the observable archived state.",
+                }],
+                "complete_areas": ["Purpose"],
+                "recommended_next_actions": ["Add lifecycle states"],
+            },
+        })
+
+        self.assertEqual(analysis["coverage_score"], 100)
+        self.assertEqual(analysis["gaps"][0]["area"], "Lifecycle")
+        self.assertEqual(analysis["recommended_next_actions"], ["Add lifecycle states"])
+
     def test_layer3_generation_batches_never_include_empty_passes(self) -> None:
         sections = [
             "product_purpose",
@@ -97,12 +121,21 @@ class GenerationHelperTests(unittest.TestCase):
             db.upsert_project_brief(
                 project_id=project.id,
                 product_idea="Published idea",
-                known_competitors=[],
-                constraints="",
+                known_competitors=["Acme"],
+                constraints="Mobile-first",
+                target_users="Field teams",
+                goals=["Reduce rework"],
+                preferred_directions=["Offline flows"],
+                rejected_directions=["Crypto"],
+                notes="Keep setup simple.",
                 status="published",
             )
 
-            self.assertEqual(service._published_product_idea(project.id), "Published idea")
+            context = service._published_product_idea(project.id)
+            self.assertIn("Product idea: Published idea", context)
+            self.assertIn("Target users: Field teams", context)
+            self.assertIn("Known competitors: Acme", context)
+            self.assertIn("Rejected directions: Crypto", context)
 
     def test_assessment_matching_tolerates_small_renames(self) -> None:
         assessment = PillarAssessment(
@@ -198,6 +231,140 @@ class GenerationHelperTests(unittest.TestCase):
             self.assertTrue(graph["features"][0]["candidate_source_ids"])
             self.assertEqual(len(graph["coverage"]), 1)
             self.assertEqual(graph["coverage"][0]["content"]["saturation_signal"], "high")
+
+    def test_layer1_generation_honors_optional_total_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            db.upsert_project_brief(
+                project_id=project.id,
+                product_idea="A useful product",
+                known_competitors=[],
+                constraints="",
+                status="published",
+            )
+            service = GenerationService(db, llm_client=None)  # type: ignore[arg-type]
+            service._ensure_profile_loaded = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+            service._call_structured_json_pass = lambda **_kwargs: ("", PillarResponse(pillars=[]))  # type: ignore[method-assign]
+            service._normalize_pillars = lambda **_kwargs: PillarResponse(  # type: ignore[method-assign]
+                pillars=[
+                    PillarCandidate(title="Cash Flow Intelligence", description="Track money.", why_it_matters="Helps users act."),
+                    PillarCandidate(title="Forecasting", description="Predict money.", why_it_matters="Helps users plan."),
+                ]
+            )
+            service._assess_pillars = lambda **_kwargs: PillarAssessmentResponse(  # type: ignore[method-assign]
+                assessments=[
+                    PillarAssessment(
+                        title="Cash Flow Intelligence",
+                        canonical_title="Cash Flow Intelligence",
+                        cluster_id="cash-flow",
+                        is_true_pillar=True,
+                        distinctiveness_score=90,
+                        strategic_value_score=90,
+                        pillar_quality_score=90,
+                        rationale="Strong pillar.",
+                    ),
+                    PillarAssessment(
+                        title="Forecasting",
+                        canonical_title="Forecasting",
+                        cluster_id="forecasting",
+                        is_true_pillar=True,
+                        distinctiveness_score=90,
+                        strategic_value_score=90,
+                        pillar_quality_score=90,
+                        rationale="Strong pillar.",
+                    ),
+                ]
+            )
+            service._run_critic = lambda **_kwargs: CriticResponse(  # type: ignore[method-assign]
+                coverage_summary="Stopped at cap.",
+                saturation_signal="medium",
+                novelty_score=80,
+                continue_recommendation=True,
+                reasoning="Cap ended the run.",
+            )
+
+            summary = service.generate_pillars_until_exhausted(
+                project.id,
+                model_profiles=[ModelProfile(alias="stub", display_name="Stub", path=None)],
+                total_cap=1,
+            )
+
+            self.assertEqual(summary.stop_reason, "total_cap_reached")
+            self.assertEqual(len(summary.created_nodes), 1)
+            self.assertEqual(len(db.list_nodes(project.id, parent_id=None, layer=1, node_type="pillar")), 1)
+
+    def test_layer2_graph_generation_honors_optional_total_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            db.upsert_project_brief(
+                project_id=project.id,
+                product_idea="A useful product",
+                known_competitors=[],
+                constraints="",
+                status="published",
+            )
+            pillar = db.create_node(
+                project_id=project.id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title="Cash Flow Intelligence",
+                description="Understand money movement.",
+                status="kept",
+            )
+            service = GenerationService(db, llm_client=None)  # type: ignore[arg-type]
+            service._project_llm_runtime = lambda *_args, **_kwargs: {"id": "stub", "label": "Stub Model"}  # type: ignore[method-assign]
+            service._ensure_profile_loaded = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+            def stub_pass(**kwargs: object):
+                if kwargs.get("schema_label") == "layer2_coverage_assessment":
+                    return "", Layer2CoverageAssessmentResponse(
+                        coverage_summary="Survey builder coverage is saturated for this stub.",
+                        family_assessments=[
+                            Layer2CoverageFamilyAssessment(
+                                family=family,
+                                status="covered",
+                                evidence_feature_ids=[],
+                            )
+                            for family, _ in LAYER2_SURVEY_BUILDER_FAMILIES
+                        ],
+                        saturation_signal="high",
+                        novelty_score=10,
+                        continue_recommendation=False,
+                        reasoning="Stubbed coverage says stop.",
+                    )
+                return "", Layer2CandidateResponse(
+                    features=[
+                        Layer2Candidate(
+                            canonical_name="Transaction categorization",
+                            description="Group incoming and outgoing transactions into meaningful categories.",
+                            feature_type="workflow",
+                            aliases=["Spend categorization"],
+                            specificity_score=90,
+                            pillar_fit_score=92,
+                            distinctiveness_score=80,
+                            implementation_leakage_score=5,
+                            strategic_value_score=88,
+                        )
+                    ]
+                )
+
+            service._call_structured_json_pass = stub_pass  # type: ignore[method-assign]
+
+            summary = service.generate_layer2_feature_graph(
+                project.id,
+                [pillar.id],
+                max_rounds=1,
+                target_per_lens=1,
+                total_cap=2,
+            )
+
+            graph = db.layer2_graph_snapshot(project.id)
+            self.assertEqual(summary["stop_reason"], "total_cap_reached")
+            self.assertEqual(len(summary["created_feature_ids"]), 2)
+            self.assertEqual(len(graph["features"]), 2)
 
     def test_layer2_scope_gate_routes_drift_to_review(self) -> None:
         candidate = Layer2Candidate(

@@ -11,14 +11,16 @@ The current production product covers Layer 0 through Layer 3.
 
 ## Runtime topology
 
-The supported localhost stack consists of:
+The self-hosted production stack consists of:
 
-1. React and Vite on `127.0.0.1:5173`
-2. FastAPI on `127.0.0.1:8000`
-3. PostgreSQL with pgvector on `127.0.0.1:55433`
-4. An OpenAI-compatible model endpoint, normally managed `llama.cpp` on `127.0.0.1:8080`
+1. FastAPI serving both the API and built React application on port `8000`
+2. PostgreSQL with pgvector
+3. An operator-provided OpenAI-compatible model endpoint
 
-`start_specforge.ps1` is the canonical full-stack launcher. `stop_specforge.ps1` stops the managed frontend, API, model server, and local PostgreSQL processes.
+`compose.yml` is the portable recommended deployment. `start_strata.ps1` and
+`start_strata.sh` build the frontend and run the same combined application
+natively. The older `start_specforge.ps1` launcher remains a Windows development
+workflow with separate Vite and managed llama.cpp processes.
 
 ## Application boundaries
 
@@ -61,6 +63,8 @@ Routing is resolved by domain for Layer 0, generation, research, and assistant w
 PostgreSQL is the production source of truth. It stores canonical project state, generated artifacts, research, Layer 2 graph state, assistant state, settings, and provenance.
 
 pgvector supports semantic overlap and retrieval. SQLite is restricted to tests and one-time legacy import compatibility.
+Versioned upgrades are recorded in `schema_migrations` and can be inspected with
+`python -m strata.migrations status`.
 
 ## Canonical data flows
 

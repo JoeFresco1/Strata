@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import "./Layer3Workspace.css";
+import DeliveryHandoff from "./DeliveryHandoff";
 
 const ARRAY_SECTIONS = [
   ["supported_variants", "Supported variants"],
@@ -34,6 +35,7 @@ function cardDraft(card) {
 }
 
 export default function Layer3Workspace({
+  projectId,
   layer3,
   thinkingEnabled,
   onThinkingChange,
@@ -41,6 +43,7 @@ export default function Layer3Workspace({
   onSave,
   onReview,
   onPressureTest,
+  onCoverageGaps,
   onDecision,
   onExport,
 }) {
@@ -156,6 +159,7 @@ export default function Layer3Workspace({
           <button type="button" onClick={() => runWorkspaceAction(() => onGenerate(selectedFeatureIds, []))} disabled={hasUnsavedEdits || !selectedFeatureIds.length}>Generate cards</button>
         </div>
       </section>
+      <DeliveryHandoff projectId={projectId} cards={cards} />
       {editorError ? <p className="error-banner" role="alert">{editorError}</p> : null}
 
       {cards.length ? (
@@ -197,6 +201,7 @@ export default function Layer3Workspace({
                   <button type="button" onClick={saveCard}>Save edits</button>
                   {hasUnsavedEdits ? <button type="button" className="ghost-button" onClick={discardEdits}>Discard edits</button> : null}
                   <button type="button" className="secondary-button" disabled={hasUnsavedEdits} onClick={() => runWorkspaceAction(() => onPressureTest(selectedCard.id))}>Rerun pressure test</button>
+                  <button type="button" className="secondary-button" disabled={hasUnsavedEdits} onClick={() => runWorkspaceAction(() => onCoverageGaps(selectedCard.id))}>Check coverage gaps</button>
                   <button type="button" className="secondary-button" disabled={hasUnsavedEdits || selectedCard.pressure_test?.stale} onClick={() => runWorkspaceAction(() => onReview(selectedCard.id, "approve"))}>Approve</button>
                   <button type="button" className="secondary-button" disabled={hasUnsavedEdits} onClick={() => runWorkspaceAction(() => onReview(selectedCard.id, "needs_review"))}>Needs review</button>
                   <button type="button" className="danger-button" disabled={hasUnsavedEdits} onClick={() => runWorkspaceAction(() => onReview(selectedCard.id, "reject"))}>Reject</button>
@@ -239,6 +244,32 @@ export default function Layer3Workspace({
                 {Object.entries(selectedCard.pressure_test || {}).filter(([key, value]) => Array.isArray(value) && value.length).map(([key, value]) => (
                   <div key={key} className="pressure-group"><strong>{key.replaceAll("_", " ")}</strong><ul>{value.map((item) => <li key={item}>{item}</li>)}</ul></div>
                 ))}
+              </section>
+
+              <section className="panel">
+                <h3>Coverage gaps</h3>
+                {selectedCard.pressure_test?.coverage_gap_analysis ? (
+                  <>
+                    {selectedCard.pressure_test.coverage_gap_analysis.stale ? <p className="warning">Card content changed. Rerun the coverage-gap check.</p> : null}
+                    <div className="layer3-heading">
+                      <p>{selectedCard.pressure_test.coverage_gap_analysis.summary}</p>
+                      <div className="readiness-score">
+                        <strong>{selectedCard.pressure_test.coverage_gap_analysis.coverage_score}</strong>
+                        <span>coverage score</span>
+                      </div>
+                    </div>
+                    {(selectedCard.pressure_test.coverage_gap_analysis.gaps || []).map((gap) => (
+                      <div key={`${gap.area}-${gap.missing}`} className="layer3-decision">
+                        <div><strong>{gap.area}</strong><span className={`status-pill ${gap.severity}`}>{gap.severity}</span></div>
+                        <p>{gap.missing}</p>
+                        <p className="muted">{gap.recommendation}</p>
+                      </div>
+                    ))}
+                    {selectedCard.pressure_test.coverage_gap_analysis.recommended_next_actions?.length ? (
+                      <ul>{selectedCard.pressure_test.coverage_gap_analysis.recommended_next_actions.map((item) => <li key={item}>{item}</li>)}</ul>
+                    ) : null}
+                  </>
+                ) : <p className="muted">Run Check coverage gaps to review completeness across behaviors, variants, states, constraints, risks, and decisions.</p>}
               </section>
 
               <section className="panel">

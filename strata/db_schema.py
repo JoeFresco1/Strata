@@ -51,6 +51,7 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     concurrency_policy TEXT NOT NULL DEFAULT '{}',
                     assignments TEXT NOT NULL,
                     prompt_catalog TEXT NOT NULL DEFAULT '{}',
+                    competitive_intelligence_enabled INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
@@ -66,6 +67,51 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     table_state TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS project_telemetry_settings (
+                    project_id TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    capture_prompt_bodies INTEGER NOT NULL DEFAULT 1,
+                    capture_response_bodies INTEGER NOT NULL DEFAULT 1,
+                    capture_parsed_results INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS model_call_events (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    layer TEXT NOT NULL,
+                    workflow TEXT NOT NULL,
+                    run_id TEXT,
+                    request_kind TEXT NOT NULL,
+                    provider_kind TEXT NOT NULL,
+                    model_name TEXT,
+                    model_profile_id TEXT,
+                    prompt_key TEXT,
+                    prompt_version TEXT,
+                    status TEXT NOT NULL,
+                    attempt INTEGER NOT NULL DEFAULT 1,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    latency_ms INTEGER NOT NULL DEFAULT 0,
+                    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    estimated_cost_usd REAL,
+                    request_chars INTEGER NOT NULL DEFAULT 0,
+                    response_chars INTEGER NOT NULL DEFAULT 0,
+                    system_prompt TEXT,
+                    user_prompt TEXT,
+                    raw_response TEXT,
+                    parsed_result TEXT NOT NULL DEFAULT '{}',
+                    error_type TEXT,
+                    error_message TEXT,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    metadata TEXT NOT NULL DEFAULT '{}',
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
 
@@ -130,6 +176,30 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS platform_jobs (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    workflow TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    scope_id TEXT,
+                    status TEXT NOT NULL,
+                    progress INTEGER NOT NULL,
+                    current_step TEXT NOT NULL DEFAULT '',
+                    request_payload TEXT NOT NULL,
+                    result_payload TEXT NOT NULL,
+                    error_type TEXT,
+                    error_message TEXT,
+                    dedupe_key TEXT,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    attempt INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
 
@@ -490,6 +560,12 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                 CREATE INDEX IF NOT EXISTS idx_research_jobs_project_scope
                 ON research_jobs(project_id, scope, COALESCE(scope_id, ''), updated_at);
 
+                CREATE INDEX IF NOT EXISTS idx_platform_jobs_project_updated
+                ON platform_jobs(project_id, updated_at);
+
+                CREATE INDEX IF NOT EXISTS idx_platform_jobs_dedupe
+                ON platform_jobs(project_id, dedupe_key, status);
+
                 CREATE INDEX IF NOT EXISTS idx_research_sources_project_scope
                 ON research_sources(project_id, scope, COALESCE(scope_id, ''), fetched_at);
 
@@ -538,6 +614,12 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
 
                 CREATE INDEX IF NOT EXISTS idx_layer3_decisions_card
                 ON layer3_open_decisions(card_id, status);
+
+                CREATE INDEX IF NOT EXISTS idx_model_call_events_project_started
+                ON model_call_events(project_id, started_at);
+
+                CREATE INDEX IF NOT EXISTS idx_model_call_events_project_layer
+                ON model_call_events(project_id, layer, workflow);
                 """
             )
         try:
@@ -551,6 +633,7 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
             "ALTER TABLE project_model_settings ADD COLUMN execution_intent TEXT NOT NULL DEFAULT 'local_first'",
             "ALTER TABLE project_model_settings ADD COLUMN routing_policy TEXT NOT NULL DEFAULT '{}'",
             "ALTER TABLE project_model_settings ADD COLUMN concurrency_policy TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE project_model_settings ADD COLUMN competitive_intelligence_enabled INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE assistant_messages ADD COLUMN execution_intent_override TEXT",
             "ALTER TABLE assistant_runs ADD COLUMN execution_intent TEXT NOT NULL DEFAULT 'local_first'",
             "ALTER TABLE assistant_runs ADD COLUMN effective_parallelism INTEGER NOT NULL DEFAULT 1",

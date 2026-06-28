@@ -132,6 +132,7 @@ export default function LivingWorkspace({
   onSaveBrief,
   onPublishBrief,
   onSaveNode,
+  onCreatePillar,
   onUpdateFeature,
   onCreateFeature,
   onReviewFeature,
@@ -199,6 +200,7 @@ export default function LivingWorkspace({
           onSaveBrief={onSaveBrief}
           onPublishBrief={onPublishBrief}
           onSaveNode={onSaveNode}
+          onCreatePillar={onCreatePillar}
           onUpdateFeature={onUpdateFeature}
           onCreateFeature={onCreateFeature}
           onReviewFeature={onReviewFeature}
@@ -241,6 +243,7 @@ export default function LivingWorkspace({
               pillars={pillars}
               onSaveBrief={onSaveBrief}
               onPublishBrief={onPublishBrief}
+              onCreatePillar={onCreatePillar}
               onUpdateFeature={onUpdateFeature}
               onCreateFeature={onCreateFeature}
               onReviewFeature={onReviewFeature}

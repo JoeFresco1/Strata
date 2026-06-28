@@ -25,6 +25,7 @@ from strata.prompts import (
     build_system_prompt,
     load_prompt_catalog,
 )
+from strata.telemetry import model_call_context
 
 
 SEARCH_URL = "https://duckduckgo.com/html/?q={query}"
@@ -76,6 +77,7 @@ class ResearchService(Layer2ResearchMixin):
 
     def enqueue_layer0(self, project_id: str, *, reason: str = "publish") -> ResearchJob:
         """Create a Layer 0 landscape job; callers run it through the local background runner."""
+        self._ensure_competitive_intelligence_enabled(project_id)
         return self.db.create_research_job(
             project_id=project_id,
             scope="layer0",
@@ -86,6 +88,7 @@ class ResearchService(Layer2ResearchMixin):
 
     def enqueue_layer1(self, project_id: str, pillar_id: str, *, reason: str = "layer1_generation") -> ResearchJob:
         """Create a Layer 1 pillar competitor-coverage job."""
+        self._ensure_competitive_intelligence_enabled(project_id)
         return self.db.create_research_job(
             project_id=project_id,
             scope="layer1",
@@ -96,6 +99,14 @@ class ResearchService(Layer2ResearchMixin):
 
     def run_job(self, job_id: str) -> None:
         """Execute one queued research job inside the current API process."""
+        job = self.db.get_research_job(job_id)
+        if not self._competitive_intelligence_enabled(job.project_id):
+            self.db.update_research_job(
+                job_id,
+                status="cancelled",
+                error="Competitive intelligence is disabled for this project.",
+            )
+            return
         job = self.db.update_research_job(job_id, status="running", progress=5, error=None)
         try:
             if job.job_type == "layer0_competitors":
@@ -106,9 +117,30 @@ class ResearchService(Layer2ResearchMixin):
                 self._run_layer2(job)
             else:
                 raise ValueError(f"Unsupported research job type: {job.job_type}")
+            if not self._competitive_intelligence_enabled(job.project_id):
+                self.db.update_research_job(
+                    job_id,
+                    status="cancelled",
+                    error="Competitive intelligence was disabled while this job was running.",
+                )
+                return
             self.db.update_research_job(job_id, status="completed", progress=100, error=None)
         except Exception as exc:  # noqa: BLE001 - durable job state should capture any local failure.
             self.db.update_research_job(job_id, status="failed", error=str(exc))
+
+    def _competitive_intelligence_enabled(self, project_id: str) -> bool:
+        """Return whether this project allows competitor research to execute."""
+        settings = self.db.get_project_model_settings(project_id)
+        return settings is None or settings.competitive_intelligence_enabled
+
+    def competitive_intelligence_enabled(self, project_id: str) -> bool:
+        """Expose the project master switch to API orchestration without duplicating policy."""
+        return self._competitive_intelligence_enabled(project_id)
+
+    def _ensure_competitive_intelligence_enabled(self, project_id: str) -> None:
+        """Block every research entrypoint when the project master switch is off."""
+        if not self._competitive_intelligence_enabled(project_id):
+            raise ValueError("Competitive intelligence is disabled in this project's settings.")
 
     def _run_layer0(self, job: ResearchJob) -> None:
         """Build a project-level competitor landscape from seeds, search, crawl, and evidence."""
@@ -180,6 +212,13 @@ class ResearchService(Layer2ResearchMixin):
                 model_name=runtime["model_name"],
                 max_tokens=500,
                 temperature=0.2,
+                telemetry=model_call_context(
+                    project_id=brief.project_id,
+                    layer="layer0",
+                    workflow="competitor_discovery",
+                    runtime_profile=runtime,
+                    prompt_key="layer0_research_competitor_discovery",
+                ),
             )
             names = response.parsed_json.get("competitors", [])
         except LLMError:
@@ -339,6 +378,14 @@ class ResearchService(Layer2ResearchMixin):
                     model_name=runtime["model_name"],
                     max_tokens=1200,
                     temperature=0.2,
+                    telemetry=model_call_context(
+                        project_id=project_id,
+                        layer="layer1",
+                        workflow="pillar_research_assessment",
+                        runtime_profile=runtime,
+                        prompt_key="layer1_research_assessment",
+                        metadata={"pillar_id": pillar.id},
+                    ),
                 )
                 return self._validate_pillar_research_assessment(response.parsed_json, pillar, matrix)
         except LLMError:

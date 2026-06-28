@@ -440,7 +440,65 @@ function PillarResearch({ node, findings }) {
   );
 }
 
-function BriefInspector({ brief, onSaveBrief, onPublishBrief, onGenerateLayer1, generationControls }) {
+function Layer1PillarForm({ disabled, onCreate }) {
+  const [form, setForm] = useState({ title: "", description: "", status: "kept", priority: 0 });
+  const [saveState, setSaveState] = useState("idle");
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!onCreate || disabled || !form.title.trim()) {
+      return;
+    }
+    setSaveState("saving");
+    try {
+      await onCreate({
+        ...form,
+        title: form.title.trim(),
+        description: form.description.trim(),
+        priority: Number(form.priority || 0),
+      });
+      setForm({ title: "", description: "", status: "kept", priority: 0 });
+      setSaveState("saved");
+    } catch {
+      setSaveState("error");
+    }
+  }
+
+  return (
+    <form className="tree-edit-form" onSubmit={submit}>
+      <div className="panel-header">
+        <div>
+          <h4>Manual Layer 1 Pillar</h4>
+          <p className="muted">Add a known high-level product area without running Layer 1 generation.</p>
+        </div>
+        <div className="tree-save-state">{saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : saveState === "error" ? "Could not save" : ""}</div>
+      </div>
+      <label>
+        Pillar title
+        <input disabled={disabled} value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} />
+      </label>
+      <label>
+        Description
+        <textarea disabled={disabled} rows={4} value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
+      </label>
+      <div className="field-row">
+        <label>
+          Status
+          <select disabled={disabled} value={form.status} onChange={(event) => setForm((current) => ({ ...current, status: event.target.value }))}>
+            {["kept", "prioritized", "generated"].map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+        </label>
+        <label>
+          Priority
+          <input disabled={disabled} type="number" min="0" max="10" value={form.priority} onChange={(event) => setForm((current) => ({ ...current, priority: Number(event.target.value) }))} />
+        </label>
+      </div>
+      <button type="submit" disabled={disabled || !form.title.trim()}>Add Pillar</button>
+    </form>
+  );
+}
+
+function BriefInspector({ brief, onSaveBrief, onPublishBrief, onCreatePillar, onGenerateLayer1, generationControls }) {
   const [form, setForm] = useState(brief || {});
 
   useEffect(() => setForm(brief || {}), [brief]);
@@ -470,9 +528,11 @@ function BriefInspector({ brief, onSaveBrief, onPublishBrief, onGenerateLayer1, 
           <label>Thinking<input type="checkbox" checked={generationControls.layer1Thinking} onChange={(event) => generationControls.setLayer1Thinking(event.target.checked)} /></label>
           <label>Max rounds<input type="number" value={generationControls.layer1MaxRounds} onChange={(event) => generationControls.setLayer1MaxRounds(Number(event.target.value))} /></label>
           <label>Target per round<input type="number" value={generationControls.layer1TargetPerRound} onChange={(event) => generationControls.setLayer1TargetPerRound(Number(event.target.value))} /></label>
+          <label>Total cap<input type="number" min="1" placeholder="No cap" value={generationControls.layer1TotalCap ?? ""} onChange={(event) => generationControls.setLayer1TotalCap(event.target.value)} /></label>
           <label>Min new<input type="number" value={generationControls.layer1MinNew} onChange={(event) => generationControls.setLayer1MinNew(Number(event.target.value))} /></label>
         </div>
       </details>
+      <Layer1PillarForm disabled={brief?.status !== "published"} onCreate={onCreatePillar} />
     </div>
   );
 }
@@ -486,6 +546,7 @@ export function NodeDetail({
   overlapLinks,
   onSelectNode,
   onSaveNode,
+  onCreatePillar,
   pillars,
   onSaveBrief,
   onPublishBrief,
@@ -533,7 +594,7 @@ export function NodeDetail({
           onAddEvidence={onAddEvidence}
         />
         <div className="button-row">
-          <button type="button" className="secondary-button" onClick={() => onResearchLayer2?.([node.id])}>Research Feature</button>
+          {onResearchLayer2 ? <button type="button" className="secondary-button" onClick={() => onResearchLayer2([node.id])}>Research Feature</button> : null}
           {parentNode ? <button type="button" className="link-button" onClick={() => onSelectNode(parentNode.id)}>Back to {parentNode.title}</button> : null}
         </div>
       </section>
@@ -574,6 +635,7 @@ export function NodeDetail({
             brief={brief}
             onSaveBrief={onSaveBrief}
             onPublishBrief={onPublishBrief}
+            onCreatePillar={onCreatePillar}
             onGenerateLayer1={onGenerateLayer1}
             generationControls={generationControls}
           />
@@ -645,7 +707,7 @@ export function NodeDetail({
             <>
               <div className="button-row">
                 <button type="button" onClick={() => onGenerateLayer2?.([node.id])}>Expand This Pillar</button>
-                <button type="button" className="secondary-button" onClick={() => onResearchLayer1?.([node.id])}>Research Pillar</button>
+                {onResearchLayer1 ? <button type="button" className="secondary-button" onClick={() => onResearchLayer1([node.id])}>Research Pillar</button> : null}
                 <Layer2FeatureForm pillars={pillars} defaultOwnerId={node.id} onCreate={onCreateFeature} />
               </div>
               <details className="review-details">
@@ -654,6 +716,7 @@ export function NodeDetail({
                   <label>Thinking<input type="checkbox" checked={generationControls.layer2Thinking} onChange={(event) => generationControls.setLayer2Thinking(event.target.checked)} /></label>
                   <label>Max rounds<input type="number" value={generationControls.layer2MaxRounds} onChange={(event) => generationControls.setLayer2MaxRounds(Number(event.target.value))} /></label>
                   <label>Target per round<input type="number" value={generationControls.layer2TargetPerRound} onChange={(event) => generationControls.setLayer2TargetPerRound(Number(event.target.value))} /></label>
+                  <label>Total cap<input type="number" min="1" placeholder="No cap" value={generationControls.layer2TotalCap ?? ""} onChange={(event) => generationControls.setLayer2TotalCap(event.target.value)} /></label>
                   <label>Min new<input type="number" value={generationControls.layer2MinNew} onChange={(event) => generationControls.setLayer2MinNew(Number(event.target.value))} /></label>
                 </div>
               </details>

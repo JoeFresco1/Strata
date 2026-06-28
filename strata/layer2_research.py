@@ -8,6 +8,7 @@ from typing import Any
 from strata.llm import LLMError
 from strata.models import Layer2Feature, ResearchJob
 from strata.prompts import render_prompt
+from strata.telemetry import model_call_context
 
 
 ACTIVE_LAYER2_RESEARCH_STATUSES = ["candidate", "kept", "renamed", "needs_review", "approved"]
@@ -35,6 +36,7 @@ class Layer2ResearchMixin:
         reason: str = "manual_rerun",
     ) -> ResearchJob:
         """Create a durable Layer 2 job for selected features or the complete active review set."""
+        self._ensure_competitive_intelligence_enabled(project_id)
         self.db.get_project(project_id)
         features = self._layer2_research_features(project_id, feature_ids)
         return self.db.create_research_job(
@@ -183,6 +185,14 @@ class Layer2ResearchMixin:
             model_name=runtime["model_name"],
             max_tokens=3500,
             temperature=0.1,
+            telemetry=model_call_context(
+                project_id=project_id,
+                layer="layer2",
+                workflow="feature_competitor_assessment",
+                runtime_profile=runtime,
+                prompt_key="layer2_feature_competitor_assessment",
+                metadata={"feature_count": len(features), "evidence_page_count": len(pages)},
+            ),
         )
         assessments = response.parsed_json.get("assessments", [])
         if not isinstance(assessments, list):

@@ -107,6 +107,37 @@ class ResearchDatabaseMixin:
         )
         return [self._row_to_research_job(row) for row in rows]
 
+    def cancel_active_research_jobs(self, project_id: str, reason: str) -> int:
+        """Mark queued/running competitor jobs cancelled when project research is disabled."""
+        rows = self._fetchall(
+            f"""
+            SELECT id FROM research_jobs
+            WHERE project_id = {self.param} AND status IN ('queued', 'running')
+            """,
+            (project_id,),
+        )
+        for row in rows:
+            self.update_research_job(str(row["id"]), status="cancelled", error=reason)
+        return len(rows)
+
+    def recover_interrupted_research_jobs(self) -> int:
+        """Return interrupted research work to the durable queue after a restart."""
+        rows = self._fetchall("SELECT id FROM research_jobs WHERE status = 'running'")
+        for row in rows:
+            self.update_research_job(
+                str(row["id"]),
+                status="queued",
+                error="Recovered after an interrupted Strata process.",
+            )
+        return len(rows)
+
+    def list_queued_research_jobs(self) -> list[ResearchJob]:
+        """Return durable queued jobs in creation order for startup recovery."""
+        rows = self._fetchall(
+            "SELECT * FROM research_jobs WHERE status = 'queued' ORDER BY created_at ASC"
+        )
+        return [self._row_to_research_job(row) for row in rows]
+
     def clear_research_scope(
         self,
         *,

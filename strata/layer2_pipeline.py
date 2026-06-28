@@ -23,11 +23,12 @@ class Layer2PipelineMixin:
         prompt_catalog: dict[str, str],
         scope_contract: PillarScopeContract,
         candidates: list[Layer2Candidate],
+        max_new_features: int | None,
         stats: dict[str, Any],
     ) -> list[str]:
         """Persist raw candidates, apply semantic veto, run critics, and create graph features."""
         raw_pairs: list[tuple[Any, Layer2Candidate]] = []
-        for candidate in candidates:
+        for candidate in candidates[:max_new_features] if max_new_features is not None else candidates:
             stats["raw_candidate_count"] += 1
             veto = self._layer2_semantic_negative_cache_veto(project_id, candidate)
             if veto and veto["action"] == "auto_reject":
@@ -84,6 +85,8 @@ class Layer2PipelineMixin:
         created_feature_ids: list[str] = []
         selected_pillar_ids = [item.id for item in selected_pillars]
         for raw, candidate in raw_pairs:
+            if max_new_features is not None and len(created_feature_ids) >= max_new_features:
+                break
             assessment = integrity_by_id.get(raw.id)
             granularity = assessment.granularity_class if assessment else FeatureGranularity.FEATURE
             ambiguity_score = assessment.ambiguity_score if assessment else 0.0
@@ -197,4 +200,6 @@ class Layer2PipelineMixin:
             "negative_cache_matches": stats["negative_cache_matches"],
             "duplicate_recommendations": stats["duplicate_recommendations"],
             "review_queue_count": review_queue_count,
+            "stop_reason": stats.get("stop_reason", "layer2_graph_review_queue"),
+            "total_rounds": stats.get("total_rounds", 0),
         }

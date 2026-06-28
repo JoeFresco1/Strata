@@ -420,6 +420,29 @@ def build_layer3_pressure_test_prompt(
     return f"{rendered}\n\nOutput budget: use at most 1 concise item per issue list and complete the JSON object within 220 tokens."
 
 
+def build_layer3_coverage_gap_prompt(
+    *,
+    project_context: dict[str, Any],
+    card: dict[str, Any],
+    sibling_features: list[dict[str, Any]],
+    relationships: list[dict[str, Any]],
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    """Render an explicit Layer 3 product-definition completeness review."""
+    return render_prompt(
+        "layer3_coverage_gap_analysis",
+        {
+            "project_context": json.dumps(project_context, ensure_ascii=True, indent=2),
+            "card": json.dumps(card, ensure_ascii=True, indent=2),
+            "sibling_features": json.dumps(sibling_features, ensure_ascii=True, indent=2),
+            "relationships": json.dumps(relationships, ensure_ascii=True, indent=2),
+        },
+        prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
+    )
+
+
 def build_json_repair_prompt(
     *,
     schema_label: str,

@@ -11,7 +11,7 @@ from strata.models import (
     CapabilityDesignResponse,
     CapabilityPressureTestResponse,
 )
-from strata.prompts import build_layer3_capability_prompt, build_layer3_pressure_test_prompt
+from strata.prompts import build_layer3_capability_prompt, build_layer3_coverage_gap_prompt, build_layer3_pressure_test_prompt
 
 
 LAYER3_CARD_SECTIONS = [
@@ -286,6 +286,95 @@ class Layer3ServiceMixin:
             payload={"thinking_enabled": thinking_enabled},
         )
         return updated
+
+    def check_capability_coverage_gaps(
+        self,
+        project_id: str,
+        card_id: str,
+        *,
+        thinking_enabled: bool = False,
+    ) -> Any:
+        """Find missing product-definition coverage without regenerating the card."""
+        card = self.db.get_layer3_card(card_id)
+        if card.project_id != project_id:
+            raise ValueError("Layer 3 card belongs to another project.")
+        runtime_profile = self._project_llm_runtime(project_id, "layer3_generation")
+        self._ensure_profile_loaded(runtime_profile, thinking_enabled=thinking_enabled)
+        brief = self.db.get_project_brief(project_id)
+        siblings = [
+            self._layer3_feature_context(item)
+            for item in self.db.list_layer2_features(project_id)
+            if item.id != card.feature_id
+            and item.owner_pillar_id == card.parent_pillar_id
+            and item.status in {"kept", "approved"}
+        ]
+        relationships = [
+            item.model_dump(mode="json") for item in self.db.list_layer3_relationships(card.id)
+        ]
+        prompt = build_layer3_coverage_gap_prompt(
+            project_context={
+                "product_idea": brief.product_idea if brief else self.db.get_project(project_id).idea,
+                "target_users": brief.target_users if brief else "",
+                "goals": brief.goals if brief else [],
+                "constraints": brief.constraints if brief else "",
+            },
+            card=card.model_dump(mode="json"),
+            sibling_features=siblings,
+            relationships=relationships,
+            prompt_catalog=self._prompt_catalog(project_id),
+        )
+        _, analysis = self._call_structured_json_pass(
+            project_id=project_id,
+            node_id=card.parent_pillar_id,
+            prompt=prompt,
+            runtime_profile=runtime_profile,
+            max_tokens=900,
+            temperature=0.1,
+            validator=self._validate_coverage_gap_analysis,
+            schema_label="layer3_coverage_gap_analysis",
+            schema_instructions="Return {'coverage_gap_analysis': {coverage_score, summary, gaps, complete_areas, recommended_next_actions}}.",
+            telemetry_layer="layer3",
+            telemetry_workflow="coverage_gap_analysis",
+        )
+        pressure_test = {
+            **card.pressure_test,
+            "coverage_gap_analysis": analysis,
+        }
+        updated = self.db.update_layer3_card(card.id, pressure_test=pressure_test)
+        self.db.record_layer3_review_action(
+            project_id=project_id,
+            card_id=card.id,
+            action_type="coverage_gap_check",
+            payload={"coverage_score": analysis["coverage_score"]},
+        )
+        return updated
+
+    @staticmethod
+    def _validate_coverage_gap_analysis(payload: dict[str, Any]) -> dict[str, Any]:
+        """Normalize Layer 3 completeness findings into a bounded inspector shape."""
+        raw = payload.get("coverage_gap_analysis", {})
+        if not isinstance(raw, dict):
+            raise LLMError("Layer 3 coverage analysis is missing.")
+        gaps = raw.get("gaps", [])
+        normalized_gaps = []
+        for item in gaps if isinstance(gaps, list) else []:
+            if not isinstance(item, dict) or not str(item.get("area", "")).strip():
+                continue
+            normalized_gaps.append({
+                "area": str(item["area"]).strip(),
+                "severity": str(item.get("severity", "medium")).strip(),
+                "missing": str(item.get("missing", "")).strip(),
+                "recommendation": str(item.get("recommendation", "")).strip(),
+            })
+        return {
+            "coverage_score": max(0, min(100, int(raw.get("coverage_score", 0)))),
+            "summary": str(raw.get("summary", "")).strip(),
+            "gaps": normalized_gaps[:12],
+            "complete_areas": [str(item).strip() for item in raw.get("complete_areas", []) if str(item).strip()][:12],
+            "recommended_next_actions": [
+                str(item).strip() for item in raw.get("recommended_next_actions", []) if str(item).strip()
+            ][:8],
+        }
 
     @staticmethod
     def _valid_layer3_sections(selected_sections: list[str] | None) -> list[str]:
