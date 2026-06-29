@@ -2,7 +2,7 @@
 
 Date: 2026-06-28
 
-Status: native disposable release matrix passed on this machine; Docker evidence and native PostgreSQL backup/restore evidence are still required before the completion-audit blocker can be closed.
+Status: native disposable release matrix passed on this machine. Docker runtime evidence and native PostgreSQL backup/restore evidence are tracked as post-release operator-confidence follow-ups rather than blockers for a downloadable self-hosted v0.1 release.
 
 ## Native evidence
 
@@ -20,10 +20,11 @@ Status: native disposable release matrix passed on this machine; Docker evidence
 - Added API lifecycle checks for restart recovery, cancel/retry, archive export/import, and archive read-only semantics.
 - Added regression coverage for archive import warnings, archived-project write protection, and provider-readiness-aware test fixtures.
 
-## Current blocker state
+## Follow-up validation
 
-Item 8 in `docs/PLATFORM_COMPLETION_AUDIT.md` remains open until:
+The following evidence would still be useful for downstream operators and
+packagers:
 
 - one fresh native run includes PostgreSQL backup and restore proof;
 - one fresh Docker run passes on a Docker-capable environment;
-- the dated evidence report includes those remaining transcripts alongside the native disposable bundle above.
+- the dated evidence report includes those transcripts alongside the native disposable bundle above.

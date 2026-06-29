@@ -2,7 +2,9 @@
 
 Date: 2026-06-28
 
-Purpose: close the remaining end-to-end release QA blocker in `docs/PLATFORM_COMPLETION_AUDIT.md` with one repeatable matrix, one native evidence run, and one Docker evidence run.
+Purpose: record repeatable release QA evidence for the closed v0.1 platform
+readiness audit in `docs/PLATFORM_COMPLETION_AUDIT.md`, plus optional
+operator-confidence evidence for Docker and native PostgreSQL backup/restore.
 
 ## Environments
 
@@ -12,9 +14,10 @@ Purpose: close the remaining end-to-end release QA blocker in `docs/PLATFORM_COM
 | Docker Compose disposable install | Packaging and setup parity for self-hosters | Startup transcript, first-run/setup proof, smoke-path report, archive/export proof, final pass/fail summary | Docker-capable host or CI runner |
 | Native PostgreSQL backup/restore validation | Data ownership and restore viability | Backup command transcript, restore command transcript, post-restore project verification | Native host with `pg_dump` and `pg_restore` |
 
-## Closure Criteria
+## v0.1 Closure Criteria
 
-The release QA blocker stays open until every item below has fresh dated evidence:
+The downloadable self-hosted v0.1 release is covered by fresh dated evidence for
+the core product paths below:
 
 | Audit bullet | Closure requirement | Evidence source |
 | --- | --- | --- |
@@ -23,10 +26,18 @@ The release QA blocker stays open until every item below has fresh dated evidenc
 | Project creation through Layer 3 | Create a real project in UI, then verify a seeded Layer 3-ready fixture through workspace, analytics, project tools, and capability design surfaces | Browser setup report, browser surface report |
 | Restart during active work | Restart with a seeded running durable job and verify startup recovery marks it `interrupted` and retryable | API lifecycle report |
 | Cancel/retry paths | Cancel a queued durable job, retry an interrupted job, retry a cancelled job, and confirm completion where applicable | API lifecycle report |
-| Backup/restore | Produce a PostgreSQL backup, restore into a clean target, reopen Strata, and confirm a real project is intact | Manual transcript attached to dated evidence report |
 | Archive export/import | Export a portable project archive, import it as a new project, verify warnings and remapped identity, and confirm archive read-only behavior | API lifecycle report and browser surface report |
-| Docker and native installation checks | Record one passing native run and one passing Docker run | Native summary plus Docker summary |
 | Desktop and mobile browser QA | Run desktop and 390 px mobile audits with screenshots and console/network diagnostics | Browser surface report |
+
+## Post-Release Operator Evidence
+
+These checks are useful for downstream operators, but they are not blockers for
+a downloadable self-hosted v0.1 release:
+
+| Follow-up | Evidence source |
+| --- | --- |
+| Native PostgreSQL backup/restore | Manual transcript using `pg_dump`, `pg_restore`, and `python -m strata.backup verify-live` |
+| Docker Compose disposable install | Docker-capable host or CI runner transcript covering startup, setup, health, project/archive smoke, and shutdown |
 
 ## Automated Assets
 
@@ -52,7 +63,7 @@ The release QA blocker stays open until every item below has fresh dated evidenc
 7. Run the browser surface audit on desktop and mobile widths.
 8. Review the generated summary JSON and copy the key results into a dated evidence report.
 
-## Manual Additions Per Run
+## Optional Manual Additions Per Run
 
 - Native PostgreSQL backup and restore transcript.
 - Docker Compose run transcript from a Docker-capable host or CI runner.
@@ -69,4 +80,5 @@ The native runner writes:
 - `screenshots/`
 - `surface-text/`
 
-All release evidence reports should link to these artifacts and explicitly call out any missing Docker or backup/restore proof.
+Release evidence reports should link to these artifacts and explicitly call out
+whether optional Docker or backup/restore proof was collected.

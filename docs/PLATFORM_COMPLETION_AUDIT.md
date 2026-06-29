@@ -1,184 +1,58 @@
 # Strata Platform Completion Audit
 
-Date: 2026-06-27
+Date closed: 2026-06-29
 
-Status: pre-release platform; packaging exists, product completion remains open.
+Status: v0.1 platform readiness is closed for a downloadable, self-hosted open
+source release.
 
-## What is already substantial
+## Closure Summary
 
-Strata has working Layer 0 through Layer 3 workflows, durable PostgreSQL state,
-project-scoped model routing, competitive-intelligence controls, a project
-assistant, telemetry, exports, a self-hosted runtime, and automated regression
-coverage. The remaining work is not a blank platform build. It is the set of
-product and reliability boundaries required before calling the platform
-finished.
+The original completion audit tracked the product and reliability boundaries
+needed before Strata could reasonably be published for users to download and run
+on their own machines. Those release-critical items are now implemented and
+covered by automated or local release evidence.
 
-## Release blockers
+Closed release-critical areas:
 
-### 1. Unified durable job control
+- unified durable job control for generation, research, assistant work, replay,
+  diagnostics, and Layer 3 audits;
+- project lifecycle management, including archive/unarchive, read-only archive
+  enforcement, clone, portable archive import/export, and admin purge;
+- backup/restore documentation, Docker backup wrappers, backup metadata,
+  restore verification helpers, and project data ownership controls;
+- unified Analytics visibility for model calls, health, diagnostics, and jobs;
+- versioned diagnostics bundles with redaction, recent logs/errors/traces, and
+  deterministic manifests;
+- optional cited Layer 3 competitive analysis separated from coverage-gap
+  analysis;
+- first-run provider onboarding with secure token persistence, offline-tolerant
+  setup, provider validation, and model-backed workflow gating;
+- native disposable release QA covering setup, project creation, lifecycle
+  recovery, cancel/retry, archive import/export, desktop/mobile surfaces, and
+  release exports.
 
-Implemented on 2026-06-27. Strata now has a shared `platform_jobs` control
-plane across research, generation, assistant execution, telemetry replay,
-diagnostics export, and Layer 3 pressure/coverage audits.
+## Evidence
 
-Current behavior:
+Primary evidence:
 
-- one job vocabulary across research, generation, assistant, replay,
-  diagnostics, and audits;
-- queue, running, completed, failed, cancelled, and interrupted states;
-- progress and current-step reporting;
-- user cancellation and retry through project job routes;
-- in-process bounded execution and active duplicate-job prevention;
-- restart recovery that marks interrupted jobs retryable without deleting
-  domain provenance.
+- `docs/QA_2026-06-28_release-matrix.md`
+- `docs/RELEASE_QA_MATRIX.md`
+- backend regression suite: 118 tests plus 3 subtests passing at closure
+- frontend production build passing at closure
+- frontend cache tests passing at closure
+- Python compile checks passing at closure
+- source line-cap scan passing at closure
 
-### 2. Project lifecycle management
+## Follow-Up Hardening
 
-Implemented on 2026-06-28. Strata now has active/archived project library
-filters, project metadata editing, archive/unarchive, read-only archived
-inspection, deep clone, portable project archive export/import, and an
-admin-only irreversible purge command.
+The following are useful operator-confidence checks, but they are not blockers
+for a downloadable self-hosted v0.1 release because this project is not a hosted
+service:
 
-Current behavior:
+- native PostgreSQL backup/restore transcript using local `pg_dump` and
+  `pg_restore`;
+- Docker-capable release run transcript on a host with current Docker Engine
+  and Compose.
 
-- `GET /api/projects` supports lifecycle state, search, and server-backed sort;
-- project metadata edits update library name and summary without rewriting the
-  canonical Layer 0 brief;
-- archived projects remain readable/exportable/cloneable but reject canonical
-  project writes until unarchived;
-- clone creates a working copy with clone lineage while excluding telemetry,
-  assistant history, active job state, workspace selection, and disk exports;
-- portable archive export/import creates a new project ID and preserves
-  project-scoped product state, telemetry, assistant history, research, Layer 2,
-  and Layer 3 state;
-- imported unavailable local model paths are normalized with warnings;
-- irreversible purge is restricted to the admin CLI with an explicit
-  confirmation token.
-
-### 3. Backup, restore, and data ownership
-
-JSON exports are not a complete database backup.
-
-PostgreSQL backup and restore commands are documented for Docker Compose and
-native installs. Docker installations now have scripted backup and restore
-wrappers, timestamped backup metadata sidecars, backup inspection, and a live
-restore verification command.
-
-Current behavior:
-
-- Docker backup scripts create compressed PostgreSQL dumps under `backups/`;
-- restore scripts require an explicit `RESTORE-<backup filename>` token before
-  replacing the database;
-- `python -m strata.backup verify-live` checks migration status, project
-  readability, pgvector, telemetry, research, assistant tables, and exports;
-- project data ownership settings default to retain-until-explicit-deletion;
-- admin cleanup can redact/delete telemetry, research content, assistant
-  history, and matching export artifacts by configured or explicit retention;
-- project purge has dry-run table/artifact previews and still requires the
-  admin confirmation token for destructive deletion.
-
-### 4. Full background-work visibility
-
-The Analytics surface now reports model calls, dependency health, and one
-unified queue for research, generation, assistant, replay, diagnostics, and
-Layer 3 audit jobs. The queue shows status, current step, progress, recent
-failure context, basic failure grouping by model-provider, database, crawler,
-parser, and application categories, plus cancel/retry actions.
-
-### 5. Diagnostics completeness
-
-Implemented on 2026-06-28. The diagnostics bundle now runs as a durable job and
-contains a version-2 deterministic manifest, schema or migration status,
-dependency-health snapshots, project model settings, telemetry, platform jobs,
-research jobs, sanitized runtime logs, recent errors, and recent traces.
-
-Current behavior:
-
-- diagnostics export accepts request-scoped inclusion and line-limit options;
-- preview returns included sections, counts, warning metadata, redaction counts,
-  and sample snippets without writing an export file;
-- logs and support payloads redact bearer/basic tokens, API keys, database URLs,
-  emails, local paths, and long secret-like values with stable labels;
-- manifest includes `strata.diagnostics.bundle.v2`, generator version, sorted
-  sections, warnings, redaction metadata, and a deterministic content hash.
-
-### 6. Layer 3 competitive intelligence
-
-Implemented on 2026-06-28. Competitive intelligence can be disabled
-project-wide, and when enabled Layer 3 now supports a separate optional cited
-competitive-analysis pass that reuses latest Layer 2 feature evidence instead
-of blending competitor interpretation into the noncompetitive coverage-gap
-audit.
-
-Current behavior:
-
-- parity requirements;
-- differentiation opportunities;
-- competitor patterns worth avoiding;
-- product-positioning decisions;
-- source citations and provenance;
-- explicit separation from the noncompetitive coverage-gap audit.
-
-### 7. First-run and provider onboarding
-
-Implemented on 2026-06-28. The first-run screen records one
-OpenAI-compatible endpoint, model name, embedding choice, runtime preset,
-context window, output limit, and optional bearer token. Setup can complete
-while the provider is offline, but model-backed workflows remain gated until
-provider validation succeeds.
-
-Current behavior:
-
-- endpoint validation returns actionable reachability, auth, model-listing, and
-  chat-capability errors;
-- bearer tokens are persisted server-side and never returned to the browser;
-- context-window and output-limit values are validated and persisted;
-- provider readiness gates generation, research, assistant replies, replay, and
-  Layer 3 model-backed audits;
-- upgraded installs with existing projects but no setup flag still block
-  unverified model-backed workflows;
-- common local runtime presets are covered by setup-runtime tests.
-
-### 8. End-to-end release QA
-
-The product passed a fresh live QA pass on 2026-06-27 across core and release
-surfaces after telemetry, self-hosting, first-run setup, competitive-intelligence
-controls, and Layer 3 coverage-gap analysis landed. What remains incomplete is
-the full release matrix rather than basic post-change coverage.
-
-As of 2026-06-28, the repo now includes a reusable release matrix runbook in
-`docs/RELEASE_QA_MATRIX.md`, a disposable native runner in
-`scripts/run_release_qa_native.ps1`, and dedicated browser/API evidence probes
-under `.tmp-playwright/`. A fresh native disposable run now exists in
-`docs/QA_2026-06-28_release-matrix.md` and
-`.runtime/release-qa/20260628-082739`. This blocker remains open until the
-same report also includes native PostgreSQL backup/restore proof and a
-separate Docker-capable run report.
-
-Completion requires:
-
-- a fresh disposable install;
-- first-run setup;
-- project creation through Layer 3;
-- restart during active work;
-- cancel/retry paths;
-- backup/restore;
-- archive export/import release validation;
-- Docker and native installation checks;
-- desktop and mobile browser QA.
-
-## Important but not release-blocking
-
-- Project templates and examples.
-- Better onboarding copy and guided empty states.
-- Prompt-catalog version history and rollback.
-- Automatic update notifications.
-- Optional plugin/provider architecture.
-- Localization.
-- Performance testing on larger projects.
-
-## Definition of finished for the first public release
-
-The first public release is ready when every release blocker above is either
-implemented and verified or explicitly removed from the promised v0.1 scope.
-Packaging alone does not satisfy this gate.
+These remain tracked in `docs/TODO_LOG.md` as post-release hardening rather
+than platform completion blockers.

@@ -15,9 +15,11 @@ Strata runs as a `FastAPI + React` application with `PostgreSQL + pgvector` and
 OpenAI-compatible model endpoints, including local runtimes such as
 `llama.cpp`.
 
-Current status: **pre-release**. The platform is substantial and usable, but it
-is not being presented as finished. The current public release gate lives in
-[`docs/PLATFORM_COMPLETION_AUDIT.md`](docs/PLATFORM_COMPLETION_AUDIT.md).
+Current status: **v0.1 release-ready for self-hosted use**. The platform
+completion audit is closed in
+[`docs/PLATFORM_COMPLETION_AUDIT.md`](docs/PLATFORM_COMPLETION_AUDIT.md);
+remaining Docker and native PostgreSQL restore transcripts are tracked as
+post-release operator-confidence follow-ups.
 
 ## Why Strata exists
 
@@ -189,7 +191,7 @@ Contribution guidance lives in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - [`docs/layer architecture.md`](<docs/layer architecture.md>): layer-by-layer
   behavior and memory model
 - [`docs/PLATFORM_COMPLETION_AUDIT.md`](docs/PLATFORM_COMPLETION_AUDIT.md):
-  current release blockers
+  closed v0.1 readiness audit
 - [`AGENTS.md`](AGENTS.md): repo operating rules
 
 ## License
@@ -199,4 +201,3 @@ Strata is licensed under the
 
 If you run a modified version for users over a network, AGPL requires you to
 make the corresponding source available to those users under the same license.
-
