@@ -12,7 +12,8 @@ Strata should feel like a guided product-architecture workspace.
 6. Review scope, ownership, overlap, relationships, and competitor evidence.
 7. Generate and review Layer 3 Capability Design Cards for approved features.
 8. Resolve product decisions and approve cards.
-9. Export the project, Layer 2 graph, or approved Layer 3 downstream manifest.
+9. Export the project, Layer 2 graph, approved Layer 3 manifest, diagnostics,
+   portable archive, or Delivery handoff bundle.
 
 ## UI behavior
 
@@ -25,6 +26,9 @@ Strata should feel like a guided product-architecture workspace.
 - Keep Layer 3 section editing, relationship review, decisions, pressure-test findings, readiness scoring, and selective regeneration in one workspace.
 - Keep runtime routing, model profiles, prompt editing, diagnostics, and raw memory behind advanced disclosure.
 - Keep the assistant available across the project without requiring users to configure orchestration before asking a question.
+- Keep lifecycle operations explicit: archive/unarchive, clone, portable archive
+  import/export, and destructive purge should be deliberate actions with clear
+  status or confirmation.
 
 ## Export behavior
 
@@ -32,4 +36,8 @@ Strata should feel like a guided product-architecture workspace.
 - Export a JSON copy for downstream tooling.
 - Export the Layer 2 graph separately when graph-level provenance and review state are needed.
 - Export approved Layer 3 cards as structured JSON with relationships, risks, decisions, provenance, and Layer 0/1/2 lineage.
+- Export approved and ready Layer 3 cards as Delivery handoff bundles containing
+  Spec Kit-ready seeds, lineage, traceability notes, and handoff guidance.
+- Export diagnostics with redaction controls and deterministic manifests.
+- Export portable project archives for import into another Strata installation.
 - Show output paths and completion state in the UI.

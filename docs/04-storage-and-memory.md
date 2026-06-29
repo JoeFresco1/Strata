@@ -4,14 +4,20 @@ Strata keeps PostgreSQL as the production source of truth and uses bounded memor
 
 ## Production persistence
 
-- PostgreSQL runs in the repo-local cluster on port `55433`.
+- PostgreSQL is selected with `STRATA_DB_BACKEND=postgres` and
+  `STRATA_DATABASE_URL`. The native default `.env.example` points at
+  `127.0.0.1:55433`; Docker Compose uses its internal `postgres:5432` service.
 - `pgvector` stores semantic representations used by overlap checks and retrieval.
-- Core project records include projects, briefs, conversations, Layer 1 nodes, generations, research, and project memory.
+- Core project records include projects, lifecycle state, briefs, conversations,
+  Layer 1 nodes, generations, research, platform jobs, telemetry, diagnostics,
+  ownership settings, archives, and project memory.
 - Layer 2 uses dedicated graph, provenance, coverage, review, rejection-memory, and competitor-evidence tables.
 - Layer 3 uses dedicated card, relationship, open-decision, and review-action tables; readiness, optional competitive analysis, and provenance live on the card rather than in raw chat history.
 - The project assistant persists conversations, messages, runs, specialist runs, documents, and action proposals.
 
-SQLite is not a production runtime. It remains available for isolated tests and one-time import of older local data.
+SQLite is not the production runtime. It remains available for isolated tests,
+disposable release QA runs, and one-time import or compatibility work with
+older local data.
 
 ## Memory behavior
 

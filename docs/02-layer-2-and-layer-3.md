@@ -1,41 +1,66 @@
 # Layer 2 And Layer 3
 
-Layer 2 and Layer 3 should behave as controlled descents from the selected and approved items above them.
+Layer 2 and Layer 3 are controlled descents from approved upstream product
+structure. They stay product-definition focused: they describe capabilities,
+relationships, decisions, risks, and readiness before any implementation-spec
+or code-generation system takes over.
 
-## Layer 2
+## Layer 2: Feature Graph
 
-## Layer 2: Functional Subfeatures & Core Components
+Layer 2 expands only approved Layer 1 pillars into concrete product
+capabilities. The output is a provenance-aware feature graph, not a tree of
+implementation tasks.
 
-Layer 2 executes a **convergent, downward expansion** of the system architecture. Rather than broadening the product's scope, this phase deeply explores the functional requirements of the validated Layer 1 modules, mapping out concrete system capabilities while rigorously preventing cross-pillar redundancy.
+### Key Objectives
 
-### Key Objectives & Execution Logic
+- Expand only pillars the user kept, prioritized, or approved.
+- Generate capabilities at product-feature granularity, avoiding pages,
+  endpoints, schemas, code tasks, and Layer 1-sized modules.
+- Give each feature one owner pillar while preserving cross-pillar relationships
+  as graph edges.
+- Track coverage families, aliases, scope contracts, ambiguity, integrity
+  signals, shared concerns, competitor evidence, and rejection memory.
+- Keep candidates reviewable instead of silently deleting ambiguous, duplicate,
+  or off-scope ideas.
 
-* **Scoped Pillar Deep-Dives:** The generation engine isolates and expands *only* the pillars explicitly retained or prioritized by the user during the Layer 1 pruning phase. 
-* **Comprehensive Subfunctional Mapping:** For each active pillar, the system systematically generates highly specific subfeatures across critical operational vectors, ensuring the model evaluates:
-    * *Core Workflows & Automation:* Primary user actions and background processes.
-    * *Edge-Case Mitigation:* Boundary conditions and error handling.
-    * *Administrative & Governance Controls:* Role-based access, audit logs, and internal configurations.
-    * *Data Engineering & Integrations:* Data ingestion models, schema structures, reporting metrics, and external API touchpoints.
-* **Contextual Saturation Guardrails:** Applies the same semantic compression and information saturation logic developed in Layer 1. However, the context window is strictly **scoped to the parent pillar lineage** to maintain deep vertical specificity without diluting token efficiency.
-* **Negative Cache Memory (Idea Preservation):** Formally stores and tokenizes all human-rejected concepts in a local cache. This prevents the generator and critic agents from entering recursive loops or regenerating previously discarded architectures in future iterations.
+### Review And Persistence
 
-## Layer 3: System Integration & Architectural Contracts
-## Layer 3: Relationship Modeling & Topology Matrix
+- Users can keep, cut, merge, rename, reprioritize, approve, and mark features
+  for review.
+- Duplicate recommendations, ownership changes, and relationship changes remain
+  separate review decisions.
+- Rejected and merged-away concepts remain available as anti-rediscovery memory.
+- Competitive evidence is cited and advisory; it does not automatically decide
+  product scope.
 
-Layer 3 maps the cognitive relationship graph across the validated product ecosystem. Instead of defining technical architecture (such as API endpoints or schemas), this phase exposes the non-technical dependencies, data flows, risks, and value drivers of each subfeature. The output of this layer transforms a flat list of features into an interconnected Product Knowledge Graph.
+## Layer 3: Capability Design Cards
 
-### Key Objectives & Execution Logic
+Layer 3 turns approved Layer 2 features into persisted Capability Design Cards.
+It defines what the capability means as a product experience and operational
+contract while explicitly excluding implementation specifications.
 
-* **Dependency & Enablement Mapping:** For every approved subfeature, the system identifies its prerequisites and downstream impacts within the product ecosystem:
-    * *Requires:* What other capabilities, inputs, or user actions must exist for this feature to function?
-    * *Enables:* What advanced capabilities, automations, or future modules are unlocked by implementing this feature?
-* **Product Risk & Value Attribution:** The engine evaluates the human and business dynamics of each feature node by generating:
-    * *Core Risks & Assumptions:* Critical vulnerabilities, edge-case failure modes, or external dependencies that could break the user experience.
-    * *Value Drivers:* Explicit user value (e.g., efficiency gains, cost reductions) and business value (e.g., conversion drivers, retention vectors).
-* **Deterministic Graph Compilation:** Compiles the entire product footprint into an interconnected topology matrix (JSON Graph). This artifact serves as an upstream "Source of Truth" that downstream execution tools (PRD writers, execution agents, codebase builders) can ingest to understand product context without hallucinating requirements.
+### Key Objectives
 
-## Review & State Persistence Behavior
+- Generate cards only for approved Layer 2 features.
+- Use compact Layer 0 context, the parent pillar, approved siblings, and
+  relevant Layer 2 graph edges as bounded context.
+- Define purpose, archetype, variants, options, behaviors, product constraints,
+  lifecycle states, relationships, dependencies, conflicts, edge cases, risks,
+  and open decisions.
+- Run a pressure-test pass for ambiguity, overreach, product risk, unresolved
+  decisions, downstream blockers, and implementation leakage.
+- Persist cards, card relationships, decisions, readiness scores, review
+  actions, optional competitive analysis, and provenance independently of chat
+  history.
 
-* **Unified State Workflow:** The user reviews Layer 2 and Layer 3 nodes using a consistent state manipulation workflow: `Keep`, `Cut`, `Rename`, or `Prioritize`.
-* **Graph Integrity Retention:** If a user renames, moves, or adjusts the priority of a parent pillar or subfeature, the system dynamically shifts the node labels while preserving the underlying relational vectors (dependencies, risks, and enablers).
-* **Negative Matrix Caching:** Concepts, dependencies, or risks explicitly rejected by the human during review are stored in a local negative cache to ensure subsequent generation cycles do not re-introduce discarded product paths.
+### Review And Delivery
+
+- Users can edit sections, rerun selected sections, resolve decisions,
+  pressure-test, approve, reject, and export cards.
+- Approved cards can be exported as structured JSON with complete Layer 0/1/2
+  lineage.
+- Delivery handoff converts approved, ready cards into Spec Kit-ready seeds,
+  lineage files, traceability notes, and a zip archive without writing into a
+  target code repository.
+- Layer 3 must not generate target-product APIs, database schemas, components,
+  test cases, wireframes, user stories, architecture diagrams, or coding tasks.
