@@ -121,18 +121,23 @@ Current behavior:
 
 ### 7. First-run and provider onboarding
 
-The first-run screen records one OpenAI-compatible endpoint, model name, and
-embedding choice, offers simple local runtime presets, explains no-model
-read-only behavior, then runs a basic post-save health check. Advanced provider
-setup still remains in project and app settings.
+Implemented on 2026-06-28. The first-run screen records one
+OpenAI-compatible endpoint, model name, embedding choice, runtime preset,
+context window, output limit, and optional bearer token. Setup can complete
+while the provider is offline, but model-backed workflows remain gated until
+provider validation succeeds.
 
-Completion requires:
+Current behavior:
 
-- endpoint validation with actionable errors;
-- secure bearer-token entry that is never returned to the browser;
-- context-window and output-limit checks;
-- a model capability test before starting expensive workflows;
-- tested verification for common local runtime presets.
+- endpoint validation returns actionable reachability, auth, model-listing, and
+  chat-capability errors;
+- bearer tokens are persisted server-side and never returned to the browser;
+- context-window and output-limit values are validated and persisted;
+- provider readiness gates generation, research, assistant replies, replay, and
+  Layer 3 model-backed audits;
+- upgraded installs with existing projects but no setup flag still block
+  unverified model-backed workflows;
+- common local runtime presets are covered by setup-runtime tests.
 
 ### 8. End-to-end release QA
 
