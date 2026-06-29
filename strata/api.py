@@ -33,7 +33,6 @@ from strata.api_models import (
     ModelProfileResponse,
     NodeUpdateRequest,
     ProjectBriefUpdateRequest,
-    ProjectCreateRequest,
     PublishBriefResponse,
     ProjectModelSettingsUpdateRequest,
     ProjectWorkspaceStateUpdateRequest,
@@ -61,7 +60,6 @@ from strata.project_settings import (
     DEFAULT_EMBEDDING_PROFILE_ID,
     DEFAULT_LLM_PROFILE_ID,
     default_app_model_settings,
-    default_project_model_settings,
     normalize_model_settings,
     normalize_project_model_settings,
 )
@@ -73,10 +71,12 @@ from strata.api_delivery import register_delivery_routes
 from strata.api_export import register_export_routes
 from strata.api_jobs import register_job_routes
 from strata.api_layer1 import register_layer1_routes
+from strata.api_lifecycle import register_lifecycle_routes
 from strata.api_telemetry import register_telemetry_routes
 from strata.api_setup import register_setup_routes
 from strata.api_support import (
     AppServices,
+    _apply_runtime_provider_update,
     _apply_layer2_review_action,
     _build_services as _build_services_support,
     _ensure_project_model_settings,
@@ -94,6 +94,7 @@ from strata.api_support import (
     _validate_layer2_owner_pillar,
     _validate_layer3_layer2_gate,
 )
+from strata.provider_onboarding import provider_status_payload
 def _build_services() -> AppServices:
     """Build services while preserving the public AppConfig patch seam used by isolated API tests."""
     return _build_services_support(AppConfig())
@@ -146,6 +147,7 @@ def create_app() -> FastAPI:
         profiles = build_model_profiles(services.config)
         default_profile = resolve_default_model_profile(services.config, profiles)
         app_model_settings = _load_app_model_settings(services)
+        provider_status = provider_status_payload(services.db, services.config)
         return AppConfigResponse(
             database_backend=services.config.database_backend,
             database_target=describe_database_target(services.config),
@@ -155,7 +157,12 @@ def create_app() -> FastAPI:
             exports_dir=str(services.config.exports_dir),
             default_model_alias=default_profile.alias if default_profile else None,
             embeddings_model_name=services.generation_service.embedding_service.model_name if services.generation_service.embedding_service else services.config.embeddings_model_name,
+            has_bearer_token=provider_status["has_bearer_token"],
+            context_window=services.config.context_size,
+            max_output_tokens=services.config.max_output_tokens,
             embedding_model_presets=EMBEDDING_MODEL_PRESETS,
+            provider_readiness=provider_status["provider_readiness"],
+            runtime_presets=provider_status["runtime_presets"],
             model_profiles=[
                 ModelProfileResponse(
                     alias=profile.alias,
@@ -172,42 +179,12 @@ def create_app() -> FastAPI:
             assignments=app_model_settings["assignments"],
             prompt_catalog=app_model_settings["prompt_catalog"],
         )
-    @app.get("/api/projects")
-    def list_projects() -> list[dict[str, object]]:
-        return [
-            {
-                **project,
-                "created_at": project["created_at"].isoformat(),
-                "brief_updated_at": project["brief_updated_at"].isoformat() if project["brief_updated_at"] else None,
-            }
-            for project in services.db.list_projects()
-        ]
+    register_lifecycle_routes(app, services)
     register_telemetry_routes(app, services)
     register_job_routes(app, services)
     register_layer1_routes(app, services)
     register_delivery_routes(app, services)
     register_export_routes(app, services)
-    @app.post("/api/projects")
-    def create_project(request: ProjectCreateRequest) -> dict[str, object]:
-        project = services.db.create_project(request.name.strip(), request.idea.strip())
-        services.db.upsert_project_model_settings(
-            project_id=project.id,
-            **default_project_model_settings(services.config, _load_app_model_settings(services)),
-        )
-        services.brief_service.update_brief(
-            project.id,
-            {
-                "product_idea": request.idea,
-                "known_competitors": request.known_competitors,
-                "constraints": request.constraints,
-                "target_users": request.target_users,
-                "goals": request.goals,
-                "preferred_directions": request.preferred_directions,
-                "rejected_directions": request.rejected_directions,
-                "notes": request.notes,
-            },
-        )
-        return project.model_dump(mode="json")
     @app.get("/api/projects/{project_id}/assistant/conversations")
     def list_assistant_conversations(project_id: str) -> list[dict[str, object]]:
         """List the project's durable assistant conversations."""
@@ -379,33 +356,11 @@ def create_app() -> FastAPI:
     def update_runtime_model_settings(request: RuntimeModelSettingsUpdateRequest) -> AppConfigResponse:
         """Persist runtime model settings for chat and embeddings and apply them immediately."""
         try:
-            cleaned_base_url = request.llama_base_url.strip().rstrip("/")
-            cleaned_model_name = request.llm_model_name.strip()
-            cleaned_preferred_model_path = request.preferred_model_path.strip()
-            cleaned_embeddings_model_name = request.embeddings_model_name.strip()
-            if not cleaned_base_url:
-                raise ValueError("LLM base URL cannot be empty.")
-            if not cleaned_model_name:
-                raise ValueError("LLM model name cannot be empty.")
-            if not cleaned_embeddings_model_name:
-                raise ValueError("Embedding model name cannot be empty.")
-            services.config.llama_base_url = cleaned_base_url
-            services.config.model_name = cleaned_model_name
-            services.config.preferred_model_path = cleaned_preferred_model_path or None
-            services.config.embeddings_model_name = cleaned_embeddings_model_name
-            services.generation_service.llm_client.set_base_url(cleaned_base_url)
-            services.generation_service.llm_client.set_model_name(cleaned_model_name)
-            services.generation_service.server_manager.config = services.config
-            services.generation_service.server_manager.refresh_runtime_settings()
-            services.generation_service.embedding_service.set_model_name(cleaned_embeddings_model_name)
-            services.db.set_app_setting("llama_base_url", cleaned_base_url)
-            services.db.set_app_setting("llm_model_name", cleaned_model_name)
-            services.db.set_app_setting("preferred_model_path", cleaned_preferred_model_path)
-            services.db.set_app_setting("embeddings_model_name", cleaned_embeddings_model_name)
-            app_model_settings = normalize_model_settings(request.model_dump(mode="json"), services.config)
-            app_model_settings = _sync_default_app_profiles(app_model_settings, services)
-            _persist_app_model_settings(services, app_model_settings)
-        except (ValueError, AttributeError) as exc:
+            payload = request.model_dump(mode="json")
+            services.config.preferred_model_path = request.preferred_model_path.strip() or None
+            services.db.set_app_setting("preferred_model_path", request.preferred_model_path.strip())
+            _apply_runtime_provider_update(services, payload)
+        except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return get_config()
     @app.patch("/api/projects/{project_id}/settings/models")
@@ -431,6 +386,7 @@ def create_app() -> FastAPI:
     def get_project(project_id: str) -> AppSnapshotResponse:
         """Return the current project snapshot for the main workspace view."""
         try:
+            services.db.touch_project(project_id, opened=True, updated=False)
             return _project_snapshot(services, project_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -837,8 +793,15 @@ def create_app() -> FastAPI:
                     **card.pressure_test["coverage_gap_analysis"],
                     "stale": True,
                 }
+            competitive_analysis = card.competitive_analysis
+            if competitive_analysis:
+                competitive_analysis = {
+                    **competitive_analysis,
+                    "stale": True,
+                }
             updates.update({
                 "pressure_test": pressure_test,
+                "competitive_analysis": competitive_analysis,
                 "downstream_readiness_score": 0,
                 "readiness_rationale": "Card changed. Rerun the pressure test before approval.",
                 "review_state": "needs_review",
@@ -936,6 +899,34 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
+    @app.post("/api/projects/{project_id}/layer3/cards/{card_id}/competitive-analysis")
+    def analyze_layer3_card_competitive_positioning(
+        project_id: str,
+        card_id: str,
+        request: Layer3PressureTestRequest,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, object]:
+        """Queue optional cited competitor-aware Layer 3 analysis for one card."""
+        try:
+            if not services.research_service.competitive_intelligence_enabled(project_id):
+                raise ValueError("Competitive intelligence is disabled for this project.")
+            card = services.db.get_layer3_card(card_id)
+            if card.project_id != project_id:
+                raise ValueError("Layer 3 card belongs to another project.")
+            job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="audit",
+                workflow="layer3_competitive_analysis",
+                scope="layer3",
+                scope_id=card_id,
+                request_payload={"card_id": card_id, **request.model_dump(mode="json")},
+                dedupe_key=f"audit:layer3-competitive:{card_id}:{request.model_dump_json()}",
+            )
+            background_tasks.add_task(services.job_service.run_job, job.id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"job": job.model_dump(mode="json"), "snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
 
     @app.patch("/api/projects/{project_id}/layer3/decisions/{decision_id}")
     def update_layer3_decision(

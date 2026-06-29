@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -68,6 +69,16 @@ from strata.project_settings import (
     normalize_model_settings,
     normalize_project_model_settings,
 )
+from strata.provider_onboarding import (
+    CONTEXT_WINDOW_SETTING,
+    MAX_OUTPUT_TOKENS_SETTING,
+    ProviderValidator,
+    failed_provider_readiness,
+    normalize_provider_payload,
+    persist_bearer_token,
+    persist_provider_readiness,
+    stored_bearer_token,
+)
 from strata.prompts import load_prompt_catalog
 from strata.server_manager import LlamaServerManager
 from strata.storage import build_database
@@ -121,6 +132,9 @@ def _build_services(config: AppConfig | None = None) -> AppServices:
     persisted_preferred_model_path = db.get_app_setting("preferred_model_path")
     persisted_embedding_model = db.get_app_setting("embeddings_model_name")
     persisted_embeddings_enabled = db.get_app_setting("embeddings_enabled")
+    persisted_context_window = db.get_app_setting(CONTEXT_WINDOW_SETTING)
+    persisted_max_output_tokens = db.get_app_setting(MAX_OUTPUT_TOKENS_SETTING)
+    persisted_model_api_key = stored_bearer_token(db)
     if persisted_llama_base_url:
         config.llama_base_url = persisted_llama_base_url
     if persisted_llm_model_name:
@@ -131,6 +145,12 @@ def _build_services(config: AppConfig | None = None) -> AppServices:
         config.embeddings_model_name = persisted_embedding_model
     if persisted_embeddings_enabled:
         config.embeddings_enabled = persisted_embeddings_enabled == "true"
+    if persisted_context_window:
+        config.context_size = max(2048, int(persisted_context_window))
+    if persisted_max_output_tokens:
+        config.max_output_tokens = max(256, min(16000, int(persisted_max_output_tokens)))
+    if persisted_model_api_key:
+        config.model_api_key = persisted_model_api_key
     _normalize_runtime_model_defaults(config)
     llm_client = LlamaCppClient(config, telemetry_store=db)
     server_manager = LlamaServerManager(config)
@@ -139,6 +159,8 @@ def _build_services(config: AppConfig | None = None) -> AppServices:
     db.set_app_setting("llm_model_name", config.model_name)
     db.set_app_setting("preferred_model_path", config.preferred_model_path or "")
     db.set_app_setting("embeddings_model_name", embedding_service.model_name)
+    db.set_app_setting(CONTEXT_WINDOW_SETTING, str(config.context_size))
+    db.set_app_setting(MAX_OUTPUT_TOKENS_SETTING, str(config.max_output_tokens))
     assistant_index = AssistantIndexService(db, embedding_service)
     services = AppServices(
         config=config,
@@ -267,6 +289,8 @@ def _sync_default_app_profiles(settings: dict[str, object], services: AppService
             profile["base_url"] = services.config.llama_base_url
             profile["model_name"] = services.config.model_name
             profile["local_path"] = services.config.preferred_model_path or ""
+            profile["context_window"] = services.config.context_size
+            profile["max_output_tokens"] = services.config.max_output_tokens
     for profile in embedding_profiles:
         if str(profile.get("id", "")).strip() == DEFAULT_EMBEDDING_PROFILE_ID:
             profile["model_name"] = services.config.embeddings_model_name
@@ -275,6 +299,70 @@ def _sync_default_app_profiles(settings: dict[str, object], services: AppService
         "llm_profiles": llm_profiles,
         "embedding_profiles": embedding_profiles,
     }
+
+
+def _apply_runtime_provider_update(
+    services: AppServices,
+    payload: dict[str, object],
+    *,
+    mark_setup_completed: bool = False,
+    allow_unready: bool = False,
+) -> dict[str, Any]:
+    """Persist shared provider defaults, token state, and readiness from setup or settings."""
+    normalized = normalize_provider_payload(payload, config=services.config, db=services.db)
+    try:
+        result = ProviderValidator().validate(normalized)
+    except ValueError as exc:
+        readiness = persist_provider_readiness(
+            services.db,
+            getattr(exc, "readiness", failed_provider_readiness(normalized, str(exc))),
+        )
+        if allow_unready:
+            _persist_runtime_provider_config(services, payload, normalized, mark_setup_completed=mark_setup_completed)
+            return readiness
+        raise
+    _persist_runtime_provider_config(services, payload, normalized, mark_setup_completed=mark_setup_completed)
+    readiness = persist_provider_readiness(services.db, result.readiness)
+    return readiness
+
+
+def _persist_runtime_provider_config(
+    services: AppServices,
+    payload: dict[str, object],
+    normalized: dict[str, Any],
+    *,
+    mark_setup_completed: bool,
+) -> None:
+    """Apply and persist runtime defaults after validation or first-run offline setup."""
+    services.config.llama_base_url = normalized["llama_base_url"]
+    services.config.model_name = normalized["model_name"]
+    services.config.embeddings_model_name = normalized["embeddings_model_name"]
+    services.config.context_size = normalized["context_window"]
+    services.config.max_output_tokens = normalized["max_output_tokens"]
+    services.config.model_api_key = normalized["effective_bearer_token"]
+    services.generation_service.llm_client.set_base_url(normalized["llama_base_url"])
+    services.generation_service.llm_client.set_model_name(normalized["model_name"])
+    services.generation_service.llm_client.set_api_key(normalized["effective_bearer_token"])
+    services.generation_service.server_manager.config = services.config
+    services.generation_service.server_manager.refresh_runtime_settings()
+    services.generation_service.embedding_service.set_model_name(normalized["embeddings_model_name"])
+    persist_bearer_token(
+        services.db,
+        token=normalized["bearer_token"] or normalized["effective_bearer_token"],
+        clear=normalized["clear_bearer_token"],
+    )
+    services.db.set_app_setting("llama_base_url", normalized["llama_base_url"])
+    services.db.set_app_setting("llm_model_name", normalized["model_name"])
+    services.db.set_app_setting("embeddings_model_name", normalized["embeddings_model_name"])
+    services.db.set_app_setting(CONTEXT_WINDOW_SETTING, str(normalized["context_window"]))
+    services.db.set_app_setting(MAX_OUTPUT_TOKENS_SETTING, str(normalized["max_output_tokens"]))
+    services.db.set_app_setting("setup_runtime_preset", normalized["runtime_preset"])
+    if mark_setup_completed:
+        services.db.set_app_setting("setup_completed", "true")
+    settings_source = payload if payload.get("llm_profiles") else _load_app_model_settings(services)
+    settings_payload = normalize_model_settings(settings_source, services.config)
+    settings_payload = _sync_default_app_profiles(settings_payload, services)
+    _persist_app_model_settings(services, settings_payload)
 
 
 def _resolve_layer1_profiles(config: AppConfig, aliases: list[str]):

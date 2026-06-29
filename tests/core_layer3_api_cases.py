@@ -102,6 +102,11 @@ class Layer3ApiTests(unittest.TestCase):
             edge_cases=[],
             product_risks=[],
             pressure_test={"implementation_leakage": []},
+            competitive_analysis={
+                "summary": "Initial cited analysis.",
+                "evidence_strength": "limited",
+                "citations": [],
+            },
             downstream_readiness_score=85,
             readiness_rationale="Clear product behavior.",
             review_state="approved",
@@ -142,6 +147,7 @@ class Layer3ApiTests(unittest.TestCase):
             self.assertEqual(updated["review_state"], "needs_review")
             self.assertEqual(updated["downstream_readiness_score"], 0)
             self.assertTrue(updated["pressure_test"]["stale"])
+            self.assertTrue(updated["competitive_analysis"]["stale"])
 
             approval = client.post(
                 f"/api/projects/{project.id}/layer3/cards/{card.id}/review",
@@ -240,6 +246,33 @@ class Layer3ApiTests(unittest.TestCase):
             lineage_path = output_dir / payload["slices"][0]["folder"] / "strata-lineage.json"
             self.assertIn("/speckit.specify", spec_path.read_text(encoding="utf-8"))
             self.assertEqual(json.loads(lineage_path.read_text(encoding="utf-8"))["layer3"]["card_id"], card.id)
+
+    def test_competitive_analysis_endpoint_respects_project_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db, project, _, card, _ = self._fixture(tmpdir)
+            defaults = default_project_model_settings(
+                AppConfig(database_backend="sqlite", db_path=Path(tmpdir) / "layer3-api.db", embeddings_enabled=False),
+            )
+            db.upsert_project_model_settings(
+                project_id=project.id,
+                llm_profiles=defaults["llm_profiles"],
+                embedding_profiles=[],
+                execution_intent=defaults["execution_intent"],
+                routing_policy=defaults["routing_policy"],
+                concurrency_policy=defaults["concurrency_policy"],
+                assignments=defaults["assignments"],
+                prompt_catalog=load_prompt_catalog(),
+                competitive_intelligence_enabled=False,
+            )
+            client = self._client(db.db_path, Path(tmpdir) / "exports")
+
+            response = client.post(
+                f"/api/projects/{project.id}/layer3/cards/{card.id}/competitive-analysis",
+                json={"thinking_enabled": False},
+            )
+
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("disabled", response.text)
 
     def test_relationship_edit_rejects_inactive_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

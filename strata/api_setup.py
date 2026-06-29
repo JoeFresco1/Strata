@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from strata.api_models import SetupCompleteRequest
-from strata.api_support import AppServices
+from strata.api_support import AppServices, _apply_runtime_provider_update
+from strata.provider_onboarding import provider_status_payload
 
 
 def register_setup_routes(app: FastAPI, services: AppServices) -> None:
@@ -12,36 +13,31 @@ def register_setup_routes(app: FastAPI, services: AppServices) -> None:
     @app.get("/api/setup/status")
     def setup_status() -> dict[str, object]:
         completed = services.db.get_app_setting("setup_completed") == "true" or bool(services.db.list_projects())
-        return {
-            "completed": completed,
-            "defaults": {
-                "llama_base_url": services.config.llama_base_url,
-                "model_name": services.config.model_name,
-                "embeddings_enabled": services.config.embeddings_enabled,
-                "embeddings_model_name": services.config.embeddings_model_name,
-            },
-        }
+        return {"completed": completed, **provider_status_payload(services.db, services.config)}
 
     @app.post("/api/setup/complete")
     def complete_setup(request: SetupCompleteRequest) -> dict[str, object]:
-        base_url = request.llama_base_url.strip().rstrip("/")
-        model_name = request.model_name.strip()
-        if not base_url or not model_name:
-            raise HTTPException(status_code=400, detail="Model endpoint and model name are required.")
-        services.config.llama_base_url = base_url
-        services.config.model_name = model_name
-        services.config.embeddings_enabled = request.embeddings_enabled
-        services.config.embeddings_model_name = request.embeddings_model_name.strip()
-        services.generation_service.llm_client.set_base_url(base_url)
-        services.generation_service.llm_client.set_model_name(model_name)
-        services.generation_service.embedding_service.set_model_name(services.config.embeddings_model_name)
-        for key, value in {
-            "llama_base_url": base_url,
-            "llm_model_name": model_name,
-            "embeddings_enabled": str(request.embeddings_enabled).lower(),
-            "embeddings_model_name": services.config.embeddings_model_name,
-            "setup_completed": "true",
-        }.items():
-            services.db.set_app_setting(key, value)
-        ok, message = services.generation_service.llm_client.healthcheck()
-        return {"completed": True, "model_ok": ok, "model_message": message}
+        try:
+            services.config.embeddings_enabled = request.embeddings_enabled
+            services.db.set_app_setting("embeddings_enabled", str(request.embeddings_enabled).lower())
+            readiness = _apply_runtime_provider_update(
+                services,
+                request.model_dump(mode="json"),
+                mark_setup_completed=True,
+                allow_unready=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": str(exc),
+                    "provider_readiness": provider_status_payload(services.db, services.config)["provider_readiness"],
+                },
+            ) from exc
+        return {
+            "completed": True,
+            "model_ok": bool(readiness.get("ready")),
+            "model_message": readiness.get("message", ""),
+            "has_bearer_token": provider_status_payload(services.db, services.config)["has_bearer_token"],
+            "provider_readiness": readiness,
+        }

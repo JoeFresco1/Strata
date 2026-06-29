@@ -44,6 +44,7 @@ export default function Layer3Workspace({
   onReview,
   onPressureTest,
   onCoverageGaps,
+  onCompetitiveAnalysis,
   onDecision,
   onExport,
 }) {
@@ -202,6 +203,7 @@ export default function Layer3Workspace({
                   {hasUnsavedEdits ? <button type="button" className="ghost-button" onClick={discardEdits}>Discard edits</button> : null}
                   <button type="button" className="secondary-button" disabled={hasUnsavedEdits} onClick={() => runWorkspaceAction(() => onPressureTest(selectedCard.id))}>Rerun pressure test</button>
                   <button type="button" className="secondary-button" disabled={hasUnsavedEdits} onClick={() => runWorkspaceAction(() => onCoverageGaps(selectedCard.id))}>Check coverage gaps</button>
+                  <button type="button" className="secondary-button" disabled={hasUnsavedEdits} onClick={() => runWorkspaceAction(() => onCompetitiveAnalysis(selectedCard.id))}>Analyze competitors</button>
                   <button type="button" className="secondary-button" disabled={hasUnsavedEdits || selectedCard.pressure_test?.stale} onClick={() => runWorkspaceAction(() => onReview(selectedCard.id, "approve"))}>Approve</button>
                   <button type="button" className="secondary-button" disabled={hasUnsavedEdits} onClick={() => runWorkspaceAction(() => onReview(selectedCard.id, "needs_review"))}>Needs review</button>
                   <button type="button" className="danger-button" disabled={hasUnsavedEdits} onClick={() => runWorkspaceAction(() => onReview(selectedCard.id, "reject"))}>Reject</button>
@@ -270,6 +272,61 @@ export default function Layer3Workspace({
                     ) : null}
                   </>
                 ) : <p className="muted">Run Check coverage gaps to review completeness across behaviors, variants, states, constraints, risks, and decisions.</p>}
+              </section>
+
+              <section className="panel">
+                <h3>Competitive analysis</h3>
+                {selectedCard.competitive_analysis && Object.keys(selectedCard.competitive_analysis).length ? (
+                  <>
+                    {selectedCard.competitive_analysis.stale ? <p className="warning">Card content changed. Rerun the competitive analysis.</p> : null}
+                    <div className="layer3-heading">
+                      <div>
+                        <p>{selectedCard.competitive_analysis.summary}</p>
+                        {selectedCard.competitive_analysis.evidence_limitations?.length ? (
+                          <ul>
+                            {selectedCard.competitive_analysis.evidence_limitations.map((item) => <li key={item}>{item}</li>)}
+                          </ul>
+                        ) : null}
+                      </div>
+                      <div className="readiness-score">
+                        <strong>{selectedCard.competitive_analysis.evidence_strength || "limited"}</strong>
+                        <span>evidence strength</span>
+                      </div>
+                    </div>
+                    {[
+                      ["Parity requirements", selectedCard.competitive_analysis.parity_requirements || [], "capability", "rationale"],
+                      ["Differentiation opportunities", selectedCard.competitive_analysis.differentiation_opportunities || [], "opportunity", "rationale"],
+                      ["Patterns to avoid", selectedCard.competitive_analysis.patterns_to_avoid || [], "pattern", "why_to_avoid"],
+                      ["Positioning decisions", selectedCard.competitive_analysis.positioning_decisions || [], "decision", "rationale"],
+                    ].map(([title, rows, leadKey, detailKey]) => (
+                      <div key={title} className="pressure-group">
+                        <strong>{title}</strong>
+                        {rows.length ? rows.map((row) => (
+                          <div key={`${row[leadKey]}-${row[detailKey]}`} className="layer3-decision">
+                            <div><strong>{row[leadKey]}</strong></div>
+                            {row[detailKey] ? <p>{row[detailKey]}</p> : null}
+                          </div>
+                        )) : <p className="muted">No items yet.</p>}
+                      </div>
+                    ))}
+                    <div className="pressure-group">
+                      <strong>Citations</strong>
+                      {selectedCard.competitive_analysis.citations?.length ? selectedCard.competitive_analysis.citations.map((citation) => (
+                        <div key={citation.id} className="layer3-citation">
+                          <div><strong>{citation.competitor_name}</strong><span className={`status-pill ${citation.coverage_status}`}>{citation.coverage_status}</span></div>
+                          {citation.evidence_snippet ? <p>{citation.evidence_snippet}</p> : null}
+                          <p className="muted">
+                            {citation.source_url ? <a href={citation.source_url} target="_blank" rel="noreferrer">{citation.source_url}</a> : "No source URL"}
+                            {" | "}
+                            confidence {citation.confidence}
+                            {" | "}
+                            {citation.source_type}
+                          </p>
+                        </div>
+                      )) : <p className="muted">No Layer 2 competitor evidence is attached to this feature yet.</p>}
+                    </div>
+                  </>
+                ) : <p className="muted">Run Analyze competitors to generate cited parity, differentiation, avoid-pattern, and positioning guidance separate from the coverage-gap audit.</p>}
               </section>
 
               <section className="panel">

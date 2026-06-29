@@ -79,21 +79,39 @@ Back up the PostgreSQL volume or database before upgrading between releases.
 PostgreSQL is Strata's production source of truth. Artifact exports are useful
 for sharing generated outputs, but they are not a complete backup.
 
-For Docker Compose, create a compressed database backup from the `postgres`
-service:
+For Docker Compose, use the scripted backup wrapper. It creates a timestamped
+PostgreSQL custom-format dump under `backups/` plus a JSON metadata sidecar:
 
 ```bash
-docker compose exec -T postgres pg_dump -U strata -d strata -Fc > strata.backup
+scripts/backup_docker.sh
 ```
 
-Restore into a fresh or stopped installation:
+On Windows:
+
+```powershell
+.\scripts\backup_docker.ps1
+```
+
+Inspect the backup metadata before relying on it:
+
+```bash
+python -m strata.backup verify --backup backups/strata-YYYYMMDDTHHMMSSZ.backup
+```
+
+Restore into a fresh or stopped Docker installation with an explicit
+confirmation token based on the backup filename:
 
 ```bash
 docker compose up -d postgres
-docker compose exec -T postgres dropdb -U strata --if-exists strata
-docker compose exec -T postgres createdb -U strata strata
-docker compose exec -T postgres pg_restore -U strata -d strata --clean --if-exists < strata.backup
+scripts/restore_docker.sh backups/strata-YYYYMMDDTHHMMSSZ.backup RESTORE-strata-YYYYMMDDTHHMMSSZ.backup
 docker compose run --rm strata python -m strata.migrations status
+docker compose run --rm strata python -m strata.backup verify-live
+```
+
+On Windows:
+
+```powershell
+.\scripts\restore_docker.ps1 -Backup backups\strata-YYYYMMDDTHHMMSSZ.backup -Confirm RESTORE-strata-YYYYMMDDTHHMMSSZ.backup
 ```
 
 For a native PostgreSQL install, use the configured database URL or equivalent
@@ -110,6 +128,37 @@ python -m strata.migrations status
 After restore, start Strata and open Analytics for a real project. Confirm that
 Database health is healthy, recent jobs are visible, and project data appears as
 expected before deleting the old backup.
+
+## Data ownership and deletion
+
+Project data is retained until explicit deletion by default. Per-project data
+ownership settings can define optional retention windows for telemetry rows,
+telemetry bodies, research content, assistant history, and export artifacts.
+Blank retention values mean uncapped retention.
+
+Operators can inspect the current ownership summary through the API:
+
+```bash
+curl http://127.0.0.1:8000/api/projects/<project-id>/data-ownership
+```
+
+Apply configured or explicit cleanup from the admin CLI:
+
+```bash
+python -m strata.lifecycle_admin cleanup-project-data <project-id> --telemetry-body-days 30 --research-days 90
+```
+
+Preview irreversible project purge before deleting anything:
+
+```bash
+python -m strata.lifecycle_admin purge-project <project-id> --dry-run --delete-artifacts
+```
+
+Then run the destructive purge only with the required confirmation token:
+
+```bash
+python -m strata.lifecycle_admin purge-project <project-id> --confirm PURGE-<first-8-project-id-chars> --delete-artifacts
+```
 
 ## Network safety
 

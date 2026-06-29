@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from strata.config import build_model_profiles
+from strata.diagnostics import DiagnosticsOptions, build_diagnostics_bundle
 from strata.execution_policy import resolved_runtime_request
 from strata.llm import LLMError
-from strata.migrations import migration_status
 from strata.models import PlatformJob
+from strata.provider_onboarding import assert_provider_ready
 from strata.telemetry import model_call_context
 
 
@@ -21,6 +22,18 @@ class JobCancelled(Exception):
 
 class PlatformJobService:
     """Run durable background work through one shared lifecycle vocabulary."""
+
+    PROVIDER_REQUIRED_WORKFLOWS = {
+        "research",
+        "layer1_generation",
+        "layer2_generation",
+        "layer3_generation",
+        "layer3_pressure_test",
+        "layer3_coverage_gap_audit",
+        "telemetry_replay",
+        "diagnostics_export",
+        "assistant_message",
+    }
 
     def __init__(self, services: Any):
         self.services = services
@@ -38,6 +51,8 @@ class PlatformJobService:
         dedupe_key: str | None = None,
     ) -> PlatformJob:
         self.services.db.get_project(project_id)
+        if workflow in self.PROVIDER_REQUIRED_WORKFLOWS:
+            assert_provider_ready(self.services.db, f"{workflow.replace('_', ' ').capitalize()} jobs")
         return self.services.db.create_platform_job(
             project_id=project_id,
             kind=kind,
@@ -114,6 +129,7 @@ class PlatformJobService:
             "layer3_generation": self._run_layer3_generation,
             "layer3_pressure_test": self._run_layer3_pressure_test,
             "layer3_coverage_gap_audit": self._run_layer3_coverage_gap_audit,
+            "layer3_competitive_analysis": self._run_layer3_competitive_analysis,
             "telemetry_replay": self._run_telemetry_replay,
             "diagnostics_export": self._run_diagnostics_export,
             "assistant_message": self._run_assistant_message,
@@ -220,6 +236,17 @@ class PlatformJobService:
         )
         return {"card": card.model_dump(mode="json")}
 
+    def _run_layer3_competitive_analysis(self, job: PlatformJob) -> dict[str, Any]:
+        payload = job.request_payload
+        card_id = str(payload.get("card_id") or job.scope_id or "")
+        self._checkpoint(job.id, "Analyzing Layer 3 competitive positioning", 20)
+        card = self.services.generation_service.analyze_capability_competitive_positioning(
+            job.project_id,
+            card_id,
+            thinking_enabled=bool(payload.get("thinking_enabled")),
+        )
+        return {"card": card.model_dump(mode="json")}
+
     def _run_telemetry_replay(self, job: PlatformJob) -> dict[str, Any]:
         call_id = str(job.request_payload.get("call_id") or job.scope_id or "")
         run = self.services.db.get_model_call(job.project_id, call_id)
@@ -248,71 +275,15 @@ class PlatformJobService:
 
     def _run_diagnostics_export(self, job: PlatformJob) -> dict[str, Any]:
         self._checkpoint(job.id, "Collecting diagnostics", 20)
-        project = self.services.db.get_project(job.project_id)
-        project_settings = self.services.db.get_project_model_settings(job.project_id)
-        dependency_health = self._diagnostics_dependency_health(job.project_id)
-        jobs = self.services.db.platform_job_summary(job.project_id)
-        payload = {
-            "manifest": {
-                "bundle_version": 1,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "project_id": job.project_id,
-                "schema_version": migration_status(self.services.db),
-                "included_sections": [
-                    "project",
-                    "dependency_health",
-                    "telemetry",
-                    "jobs",
-                    "platform_jobs",
-                    "research_jobs",
-                    "project_model_settings",
-                ],
-                "redaction": "Telemetry body retention follows the project's saved analytics settings.",
-            },
-            "schema_version": migration_status(self.services.db),
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "project": project.model_dump(mode="json"),
-            "dependency_health": dependency_health,
-            "telemetry": self.services.db.telemetry_summary(job.project_id),
-            "jobs": jobs,
-            "platform_jobs": [item.model_dump(mode="json") for item in self.services.db.list_platform_jobs(job.project_id, limit=100)],
-            "research_jobs": [item.model_dump(mode="json") for item in self.services.db.list_research_jobs(job.project_id)],
-            "project_model_settings": project_settings.model_dump(mode="json") if project_settings else None,
-        }
+        payload = build_diagnostics_bundle(
+            self.services,
+            job.project_id,
+            DiagnosticsOptions.from_payload(job.request_payload),
+        )
         target = Path(self.services.config.exports_dir) / f"{job.project_id}-diagnostics.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(payload, indent=2, ensure_ascii=True, default=str), encoding="utf-8")
         return {"json_path": str(target), "markdown_path": ""}
-
-    def _diagnostics_dependency_health(self, project_id: str) -> dict[str, Any]:
-        database_ok = True
-        database_message = "Database query succeeded."
-        embedding_count = 0
-        try:
-            row = self.services.db._fetchone(
-                f"SELECT COUNT(*) AS count FROM node_embeddings WHERE project_id = {self.services.db.param}",
-                (project_id,),
-            )
-            embedding_count = int(row["count"]) if row else 0
-        except Exception as exc:  # noqa: BLE001 - diagnostics should capture dependency state, not fail the bundle.
-            database_ok = False
-            database_message = str(exc)
-        model_ok, model_message = self.services.generation_service.llm_client.healthcheck()
-        return {
-            "database": {
-                "ok": database_ok,
-                "backend": self.services.config.database_backend,
-                "message": database_message,
-            },
-            "pgvector": {
-                "enabled": self.services.db.is_postgres,
-                "embedding_count": embedding_count,
-            },
-            "model_server": {
-                "ok": model_ok,
-                "message": model_message,
-            },
-        }
 
     def _run_assistant_message(self, job: PlatformJob) -> dict[str, Any]:
         message_id = str(job.request_payload.get("assistant_message_id") or job.scope_id or "")

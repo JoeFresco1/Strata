@@ -16,6 +16,7 @@ from strata.execution_policy import (
 )
 from strata.llm import LLMError, LlamaCppClient
 from strata.models import AssistantActionProposal, AssistantConversation, AssistantMessage
+from strata.provider_onboarding import assert_provider_ready
 from strata.prompts import build_system_prompt, render_prompt
 from strata.server_manager import LlamaServerManager
 from strata.telemetry import model_call_context
@@ -89,6 +90,7 @@ class AssistantService:
         clean = content.strip()
         if not clean:
             raise ValueError("Assistant messages cannot be blank.")
+        assert_provider_ready(self.db, "Assistant replies")
         profile = self._profile(
             project_id,
             "assistant_orchestration",
@@ -163,6 +165,7 @@ class AssistantService:
         message = self.db.get_assistant_message(message_id)
         if message.role != "assistant" or message.status not in {"failed", "completed"}:
             raise ValueError("Only completed or failed assistant messages can be retried.")
+        assert_provider_ready(self.db, "Assistant replies")
         run = self.db.get_assistant_run_for_message(message.id)
         if run is None:
             raise ValueError("Assistant run is missing.")

@@ -89,7 +89,7 @@ def _base_model_settings(config: AppConfig) -> dict[str, Any]:
                 "supports_parallel": False,
                 "max_parallel_requests": 1,
                 "max_specialists": 2,
-                "max_output_tokens": 1800,
+                "max_output_tokens": config.max_output_tokens,
                 "input_cost_per_million": 0.0,
                 "output_cost_per_million": 0.0,
             }

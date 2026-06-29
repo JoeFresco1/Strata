@@ -25,6 +25,7 @@ from strata.prompts import (
     build_system_prompt,
     load_prompt_catalog,
 )
+from strata.provider_onboarding import assert_provider_ready
 from strata.telemetry import model_call_context
 
 
@@ -78,6 +79,7 @@ class ResearchService(Layer2ResearchMixin):
     def enqueue_layer0(self, project_id: str, *, reason: str = "publish") -> ResearchJob:
         """Create a Layer 0 landscape job; callers run it through the local background runner."""
         self._ensure_competitive_intelligence_enabled(project_id)
+        assert_provider_ready(self.db, "Competitive research")
         return self.db.create_research_job(
             project_id=project_id,
             scope="layer0",
@@ -89,6 +91,7 @@ class ResearchService(Layer2ResearchMixin):
     def enqueue_layer1(self, project_id: str, pillar_id: str, *, reason: str = "layer1_generation") -> ResearchJob:
         """Create a Layer 1 pillar competitor-coverage job."""
         self._ensure_competitive_intelligence_enabled(project_id)
+        assert_provider_ready(self.db, "Competitive research")
         return self.db.create_research_job(
             project_id=project_id,
             scope="layer1",

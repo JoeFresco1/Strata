@@ -19,6 +19,40 @@
   margin: 0.35rem 0 0;
 }
 
+.hub-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.project-search {
+  min-width: 220px;
+}
+
+.segmented-control {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  padding: 0.2rem;
+  border: 1px solid #d8e1e7;
+  border-radius: 8px;
+  background: #f7fafb;
+}
+
+.segmented-control button {
+  border: 0;
+  background: transparent;
+  color: #405158;
+  padding: 0.45rem 0.65rem;
+}
+
+.segmented-control button.active {
+  background: #ffffff;
+  color: #172026;
+  box-shadow: 0 1px 4px rgba(23, 32, 38, 0.12);
+}
+
 .project-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -49,6 +83,11 @@
   transform: translateY(-2px);
 }
 
+.project-card.archived {
+  background: #f8faf8;
+  border-style: dashed;
+}
+
 .project-card p {
   margin: 0;
   color: #4e5f65;
@@ -67,6 +106,12 @@
   justify-content: flex-start;
   color: #61727a;
   font-size: 0.92rem;
+}
+
+.project-card-actions {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
 }
 
 .project-card::before {

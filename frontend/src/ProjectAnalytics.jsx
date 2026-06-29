@@ -82,6 +82,14 @@ export default function ProjectAnalytics({ projectId, apiFetch }) {
   const [analytics, setAnalytics] = useState(null);
   const [health, setHealth] = useState(null);
   const [selectedRun, setSelectedRun] = useState(null);
+  const [diagnosticsPreview, setDiagnosticsPreview] = useState(null);
+  const [diagnosticsOptions, setDiagnosticsOptions] = useState({
+    include_logs: true,
+    include_recent_errors: true,
+    include_traces: true,
+    log_line_limit: 400,
+    redaction_profile: "standard",
+  });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -139,13 +147,44 @@ export default function ProjectAnalytics({ projectId, apiFetch }) {
   }
 
   async function exportDiagnostics() {
+    setBusy(true);
     try {
-      const result = await apiFetch(`/projects/${projectId}/diagnostics/export`, { method: "POST" });
+      const result = await apiFetch(`/projects/${projectId}/diagnostics/export`, {
+        method: "POST",
+        body: JSON.stringify(diagnosticsOptions),
+      });
       setMessage(`Diagnostics export queued as job ${result.job?.id?.slice(0, 8) || ""}.`);
       await refresh();
     } catch (error) {
       setMessage(error.message);
+    } finally {
+      setBusy(false);
     }
+  }
+
+  async function previewDiagnostics() {
+    setBusy(true);
+    try {
+      const query = new URLSearchParams({
+        include_logs: String(diagnosticsOptions.include_logs),
+        include_recent_errors: String(diagnosticsOptions.include_recent_errors),
+        include_traces: String(diagnosticsOptions.include_traces),
+        log_line_limit: String(diagnosticsOptions.log_line_limit),
+        redaction_profile: diagnosticsOptions.redaction_profile,
+      });
+      const result = await apiFetch(`/projects/${projectId}/diagnostics/preview?${query.toString()}`, { force: true });
+      setDiagnosticsPreview(result);
+      setMessage("Diagnostics redaction preview refreshed.");
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function updateDiagnosticsOption(field, value) {
+    setDiagnosticsOptions((current) => ({ ...current, [field]: value }));
+    setDiagnosticsPreview(null);
   }
 
   async function cancelJob(jobId) {
@@ -191,7 +230,7 @@ export default function ProjectAnalytics({ projectId, apiFetch }) {
         </div>
         <div className="button-row">
           <button type="button" className="secondary-button" onClick={refresh}>Refresh</button>
-          <button type="button" onClick={exportDiagnostics}>Export Diagnostics</button>
+          <button type="button" onClick={exportDiagnostics} disabled={busy}>Export Diagnostics</button>
         </div>
       </div>
 
@@ -234,6 +273,44 @@ export default function ProjectAnalytics({ projectId, apiFetch }) {
       </div>
 
       <JobQueue jobs={health?.jobs?.recent} onCancel={cancelJob} onRetry={retryJob} busy={busy} />
+
+      <div className="panel diagnostics-panel">
+        <div className="panel-header">
+          <div>
+            <h3>Diagnostics bundle</h3>
+            <p className="muted">Preview redaction before creating a support export.</p>
+          </div>
+          <div className="button-row">
+            <button type="button" className="secondary-button" onClick={previewDiagnostics} disabled={busy}>Preview</button>
+            <button type="button" onClick={exportDiagnostics} disabled={busy}>Export</button>
+          </div>
+        </div>
+        <div className="diagnostics-options">
+          <label className="checkbox-item"><input type="checkbox" checked={diagnosticsOptions.include_logs} onChange={(event) => updateDiagnosticsOption("include_logs", event.target.checked)} /> Logs</label>
+          <label className="checkbox-item"><input type="checkbox" checked={diagnosticsOptions.include_recent_errors} onChange={(event) => updateDiagnosticsOption("include_recent_errors", event.target.checked)} /> Recent errors</label>
+          <label className="checkbox-item"><input type="checkbox" checked={diagnosticsOptions.include_traces} onChange={(event) => updateDiagnosticsOption("include_traces", event.target.checked)} /> Traces</label>
+          <label>Log lines <input type="number" min="1" max="1000" value={diagnosticsOptions.log_line_limit} onChange={(event) => updateDiagnosticsOption("log_line_limit", Number(event.target.value || 1))} /></label>
+          <label>Redaction <select value={diagnosticsOptions.redaction_profile} onChange={(event) => updateDiagnosticsOption("redaction_profile", event.target.value)}>
+            <option value="standard">Standard</option>
+          </select></label>
+        </div>
+        {diagnosticsPreview ? (
+          <div className="diagnostics-preview">
+            <div className="analytics-row">
+              <strong>Bundle v{diagnosticsPreview.manifest?.bundle_version}</strong>
+              <span>{diagnosticsPreview.manifest?.bundle_schema_id}</span>
+              <span>{diagnosticsPreview.manifest?.content_hash?.slice(0, 12)}</span>
+              <span>{Object.values(diagnosticsPreview.manifest?.redaction?.replacement_counts || {}).reduce((sum, count) => sum + count, 0)} redactions</span>
+              <span>{diagnosticsPreview.sections?.length || 0} sections</span>
+            </div>
+            <pre>{JSON.stringify({
+              sections: diagnosticsPreview.sections?.map((section) => ({ name: section.name, count: section.count })),
+              redactions: diagnosticsPreview.manifest?.redaction?.replacement_counts,
+              warnings: diagnosticsPreview.manifest?.warnings,
+            }, null, 2)}</pre>
+          </div>
+        ) : <p className="muted">Run preview to inspect included sections and redaction counts.</p>}
+      </div>
 
       <div className="panel">
         <h3>Run inspector</h3>

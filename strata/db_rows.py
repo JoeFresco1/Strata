@@ -29,6 +29,11 @@ class DatabaseRowMixin:
             name=row["name"],
             idea=row["idea"],
             created_at=datetime.fromisoformat(str(row["created_at"])),
+            updated_at=datetime.fromisoformat(str(row["updated_at"])) if row["updated_at"] else None,
+            last_opened_at=datetime.fromisoformat(str(row["last_opened_at"])) if row["last_opened_at"] else None,
+            archived_at=datetime.fromisoformat(str(row["archived_at"])) if row["archived_at"] else None,
+            lifecycle_state=row["lifecycle_state"] or "active",
+            source_project_id=row["source_project_id"],
         )
 
     def _row_to_project_summary(self, row: Any) -> dict[str, Any]:
@@ -39,6 +44,12 @@ class DatabaseRowMixin:
             "name": row["name"],
             "idea": row["idea"],
             "created_at": datetime.fromisoformat(str(row["created_at"])),
+            "updated_at": datetime.fromisoformat(str(row["updated_at"])),
+            "last_opened_at": datetime.fromisoformat(str(row["last_opened_at"])) if row["last_opened_at"] else None,
+            "archived_at": datetime.fromisoformat(str(row["archived_at"])) if row["archived_at"] else None,
+            "lifecycle_state": row["lifecycle_state"] or "active",
+            "source_project_id": row["source_project_id"],
+            "source_project_name": row["source_project_name"],
             "brief_status": row["brief_status"],
             "brief_updated_at": datetime.fromisoformat(str(brief_updated_at)) if brief_updated_at else None,
             "node_count": int(row["node_count"]),

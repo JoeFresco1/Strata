@@ -52,6 +52,7 @@ class AppConfig:
     preferred_model_path: str | None = _env("MODEL_PATH")
     llama_server_exe: str = os.getenv("LLAMA_SERVER_EXE", "")
     context_size: int = int(os.getenv("LLAMA_CONTEXT_SIZE", "32768"))
+    max_output_tokens: int = int(os.getenv("LLAMA_MAX_OUTPUT_TOKENS", "1800"))
     gpu_layers: int = int(os.getenv("LLAMA_GPU_LAYERS", "35"))
     default_temperature: float = float(os.getenv("LLAMA_TEMPERATURE", "0.4"))
     default_top_p: float = float(os.getenv("LLAMA_TOP_P", "0.9"))

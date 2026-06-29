@@ -105,7 +105,9 @@ function cachedResponse(path, now) {
 async function responsePayload(response) {
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(body.detail, response.status));
+    const error = new Error(apiErrorMessage(body.detail, response.status));
+    error.detailPayload = body.detail;
+    throw error;
   }
   if (response.status === 204) return null;
   return response.json();

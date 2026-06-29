@@ -17,7 +17,13 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     idea TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_opened_at TEXT,
+                    archived_at TEXT,
+                    lifecycle_state TEXT NOT NULL DEFAULT 'active',
+                    source_project_id TEXT,
+                    FOREIGN KEY(source_project_id) REFERENCES projects(id)
                 );
 
                 CREATE TABLE IF NOT EXISTS project_briefs (
@@ -76,6 +82,18 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     capture_prompt_bodies INTEGER NOT NULL DEFAULT 1,
                     capture_response_bodies INTEGER NOT NULL DEFAULT 1,
                     capture_parsed_results INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS project_data_ownership_settings (
+                    project_id TEXT PRIMARY KEY,
+                    telemetry_retention_days INTEGER,
+                    telemetry_body_retention_days INTEGER,
+                    research_retention_days INTEGER,
+                    assistant_retention_days INTEGER,
+                    exports_retention_days INTEGER,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
@@ -503,7 +521,7 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     product_behaviors TEXT NOT NULL, validation_constraints TEXT NOT NULL,
                     lifecycle_states TEXT NOT NULL, dependencies TEXT NOT NULL,
                     overlaps_conflicts TEXT NOT NULL, edge_cases TEXT NOT NULL,
-                    product_risks TEXT NOT NULL, pressure_test TEXT NOT NULL,
+                    product_risks TEXT NOT NULL, pressure_test TEXT NOT NULL, competitive_analysis TEXT NOT NULL DEFAULT '{}',
                     downstream_readiness_score INTEGER NOT NULL, readiness_rationale TEXT NOT NULL,
                     review_state TEXT NOT NULL, provenance TEXT NOT NULL,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -630,6 +648,20 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
             if "duplicate column name" not in str(exc).lower():
                 raise
         for statement in (
+            "ALTER TABLE projects ADD COLUMN updated_at TEXT",
+            "ALTER TABLE projects ADD COLUMN last_opened_at TEXT",
+            "ALTER TABLE projects ADD COLUMN archived_at TEXT",
+            "ALTER TABLE projects ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'active'",
+            "ALTER TABLE projects ADD COLUMN source_project_id TEXT",
+        ):
+            try:
+                self._execute(statement)
+            except Exception as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+        self._execute("UPDATE projects SET updated_at = created_at WHERE updated_at IS NULL")
+        self._execute("UPDATE projects SET lifecycle_state = 'active' WHERE lifecycle_state IS NULL OR lifecycle_state = ''")
+        for statement in (
             "ALTER TABLE project_model_settings ADD COLUMN execution_intent TEXT NOT NULL DEFAULT 'local_first'",
             "ALTER TABLE project_model_settings ADD COLUMN routing_policy TEXT NOT NULL DEFAULT '{}'",
             "ALTER TABLE project_model_settings ADD COLUMN concurrency_policy TEXT NOT NULL DEFAULT '{}'",
@@ -650,6 +682,7 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
             "ALTER TABLE layer2_feature_evidence ADD COLUMN rationale TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE layer2_feature_evidence ADD COLUMN research_job_id TEXT",
             "ALTER TABLE brief_conversations ADD COLUMN request_id TEXT",
+            "ALTER TABLE layer3_capability_cards ADD COLUMN competitive_analysis TEXT NOT NULL DEFAULT '{}'",
         ):
             try:
                 self._execute(statement)

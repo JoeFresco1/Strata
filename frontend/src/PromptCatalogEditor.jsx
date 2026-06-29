@@ -19,6 +19,7 @@ const PROMPT_FIELD_HELP = {
   layer3_capability_design_generation: "Drafts product-level Capability Design Card sections from bounded project context.",
   layer3_capability_pressure_test: "Pressure-tests ambiguity, risk, unresolved decisions, leakage, and downstream readiness.",
   layer3_coverage_gap_analysis: "Audits Capability Design Cards for missing product-definition coverage.",
+  layer3_competitive_analysis: "Builds cited competitor-aware Layer 3 parity, differentiation, and positioning analysis.",
   coverage_critic: "Summarizes overlap and saturation across generation loops.",
   json_schema_repair: "Repairs near-miss model output into valid JSON.",
   assistant_query_planner: "Plans allowlisted retrieval and specialist work for a project question.",
@@ -70,7 +71,7 @@ const PROMPT_GROUPS = [
   {
     title: "Layer 3",
     description: "Product-level capability design and downstream-readiness review.",
-    fields: ["layer3_capability_design_generation", "layer3_capability_pressure_test", "layer3_coverage_gap_analysis"],
+    fields: ["layer3_capability_design_generation", "layer3_capability_pressure_test", "layer3_coverage_gap_analysis", "layer3_competitive_analysis"],
   },
   {
     title: "Project Assistant",

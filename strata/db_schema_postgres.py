@@ -15,10 +15,22 @@ class PostgresSchemaMixin:
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
                         idea TEXT NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        last_opened_at TIMESTAMPTZ,
+                        archived_at TIMESTAMPTZ,
+                        lifecycle_state TEXT NOT NULL DEFAULT 'active',
+                        source_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL
                     )
                     """
                 )
+                cursor.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ")
+                cursor.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS last_opened_at TIMESTAMPTZ")
+                cursor.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ")
+                cursor.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'active'")
+                cursor.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS source_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL")
+                cursor.execute("UPDATE projects SET updated_at = created_at WHERE updated_at IS NULL")
+                cursor.execute("UPDATE projects SET lifecycle_state = 'active' WHERE lifecycle_state IS NULL OR lifecycle_state = ''")
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS project_briefs (
@@ -100,6 +112,25 @@ class PostgresSchemaMixin:
                     )
                     """
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS project_data_ownership_settings (
+                        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                        telemetry_retention_days INTEGER,
+                        telemetry_body_retention_days INTEGER,
+                        research_retention_days INTEGER,
+                        assistant_retention_days INTEGER,
+                        exports_retention_days INTEGER,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                cursor.execute("ALTER TABLE project_data_ownership_settings ADD COLUMN IF NOT EXISTS telemetry_retention_days INTEGER")
+                cursor.execute("ALTER TABLE project_data_ownership_settings ADD COLUMN IF NOT EXISTS telemetry_body_retention_days INTEGER")
+                cursor.execute("ALTER TABLE project_data_ownership_settings ADD COLUMN IF NOT EXISTS research_retention_days INTEGER")
+                cursor.execute("ALTER TABLE project_data_ownership_settings ADD COLUMN IF NOT EXISTS assistant_retention_days INTEGER")
+                cursor.execute("ALTER TABLE project_data_ownership_settings ADD COLUMN IF NOT EXISTS exports_retention_days INTEGER")
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS model_call_events (
@@ -406,6 +437,7 @@ class PostgresSchemaMixin:
                         edge_cases JSONB NOT NULL,
                         product_risks JSONB NOT NULL,
                         pressure_test JSONB NOT NULL,
+                        competitive_analysis JSONB NOT NULL DEFAULT '{}'::jsonb,
                         downstream_readiness_score INTEGER NOT NULL,
                         readiness_rationale TEXT NOT NULL,
                         review_state TEXT NOT NULL,
@@ -415,6 +447,9 @@ class PostgresSchemaMixin:
                         UNIQUE(project_id, feature_id)
                     )
                     """
+                )
+                cursor.execute(
+                    "ALTER TABLE layer3_capability_cards ADD COLUMN IF NOT EXISTS competitive_analysis JSONB NOT NULL DEFAULT '{}'::jsonb"
                 )
                 cursor.execute(
                     """

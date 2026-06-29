@@ -32,3 +32,21 @@ The project can also disable competitive intelligence entirely from settings.
 Use the Analytics diagnostics export, then inspect the JSON before sharing it.
 Prompt bodies, raw responses, research content, model settings, and project data
 may be private. Telemetry retention controls affect future model calls.
+
+## Restoring from backup
+
+Run `python -m strata.backup verify --backup <path>` before restore to confirm
+that the dump and metadata sidecar are present. After restoring into Docker or a
+native PostgreSQL install, run `python -m strata.backup verify-live` and confirm
+that migrations are current, project rows are readable, pgvector is available,
+telemetry/research/assistant tables are readable, and the exports directory is
+accessible.
+
+## Removing private project data
+
+Project data is kept by default. Use
+`python -m strata.lifecycle_admin cleanup-project-data <project-id>` with
+explicit retention windows, or configure project data ownership settings through
+the API before running cleanup. Use `purge-project --dry-run` first when a whole
+project must be removed, then rerun with the `PURGE-<first-8-project-id-chars>`
+confirmation token for irreversible deletion.

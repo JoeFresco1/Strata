@@ -7,6 +7,7 @@ from typing import Any
 
 from strata.llm import LLMError
 from strata.models import Layer2Feature, ResearchJob
+from strata.provider_onboarding import assert_provider_ready
 from strata.prompts import render_prompt
 from strata.telemetry import model_call_context
 
@@ -37,6 +38,7 @@ class Layer2ResearchMixin:
     ) -> ResearchJob:
         """Create a durable Layer 2 job for selected features or the complete active review set."""
         self._ensure_competitive_intelligence_enabled(project_id)
+        assert_provider_ready(self.db, "Competitive research")
         self.db.get_project(project_id)
         features = self._layer2_research_features(project_id, feature_ids)
         return self.db.create_research_job(

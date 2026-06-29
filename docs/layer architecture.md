@@ -335,7 +335,7 @@ This is what keeps Layer 2 from collapsing into repeated rediscovery or unfocuse
 
 Layer 3 is the Capability Design Layer. It defines what an approved Layer 2 feature means as a product capability before any implementation-spec system takes over.
 
-Each card includes product purpose, archetype, variants, configurable options, observable behaviors, product-level constraints, lifecycle states, relationships, dependencies, overlaps or conflicts, edge cases, risks, open decisions, readiness score, review state, and provenance.
+Each card includes product purpose, archetype, variants, configurable options, observable behaviors, product-level constraints, lifecycle states, relationships, dependencies, overlaps or conflicts, edge cases, risks, open decisions, readiness score, review state, optional cited competitive analysis, and provenance.
 
 Layer 3 does not generate target-product APIs, database schemas, components, regex patterns, test cases, user stories, wireframes, architecture diagrams, or coding tasks.
 
@@ -346,8 +346,9 @@ Layer 3 does not generate target-product APIs, database schemas, components, reg
 3. Detect typed product relationships to existing Layer 2 features.
 4. Run a separate pressure-test pass for ambiguity, risk, overreach, missing decisions, blockers, and implementation leakage.
 5. Score downstream readiness.
-6. Let the user edit sections, rerun selected sections, resolve decisions, and approve or reject.
-7. Export approved cards with full Layer 0/1/2 lineage.
+6. Optionally run a cited competitor-aware analysis for parity, differentiation, avoid-patterns, and positioning.
+7. Let the user edit sections, rerun selected sections, resolve decisions, and approve or reject.
+8. Export approved cards with full Layer 0/1/2 lineage.
 
 ### How users can interact
 
@@ -357,6 +358,7 @@ The Capability Design workspace shows eligible features and existing cards. User
 - inspect and edit every section
 - review typed relationship edges
 - resolve or reopen explicit product decisions
+- run a separate cited competitive-analysis pass when competitive intelligence is enabled
 - rerun selected sections without replacing the entire card
 - approve, reject, or return a card to review
 - export approved cards as structured JSON

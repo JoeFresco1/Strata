@@ -75,6 +75,23 @@ class GenerationHelperTests(unittest.TestCase):
         self.assertEqual(analysis["gaps"][0]["area"], "Lifecycle")
         self.assertEqual(analysis["recommended_next_actions"], ["Add lifecycle states"])
 
+    def test_layer3_competitive_analysis_is_bounded_and_normalized(self) -> None:
+        analysis = GenerationService._validate_competitive_analysis({
+            "competitive_analysis": {
+                "summary": "The feature needs baseline parity but still has room to differentiate.",
+                "evidence_strength": "grounded",
+                "evidence_limitations": ["Only two competitors have current evidence."],
+                "parity_requirements": [{"capability": "Basic authoring", "rationale": "Common baseline across cited tools."}],
+                "differentiation_opportunities": [{"opportunity": "Safer branching guidance", "rationale": "Competitor language is generic on risk prevention."}],
+                "patterns_to_avoid": [{"pattern": "Opaque rule ordering", "why_to_avoid": "It creates avoidable confusion in similar products."}],
+                "positioning_decisions": [{"decision": "Emphasize clarity over power-user complexity", "rationale": "The evidence suggests users need predictable control first."}],
+            },
+        })
+
+        self.assertEqual(analysis["evidence_strength"], "grounded")
+        self.assertEqual(analysis["parity_requirements"][0]["capability"], "Basic authoring")
+        self.assertEqual(analysis["patterns_to_avoid"][0]["pattern"], "Opaque rule ordering")
+
     def test_layer3_generation_batches_never_include_empty_passes(self) -> None:
         sections = [
             "product_purpose",
@@ -620,5 +637,94 @@ class GenerationHelperTests(unittest.TestCase):
             self.assertEqual(updated.downstream_readiness_score, 88)
             self.assertNotIn("stale", updated.pressure_test)
             self.assertEqual(updated.review_state, "needs_review")
+
+    def test_layer3_competitive_analysis_persists_citations_and_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "competitive.db")
+            project = db.create_project("Competitive", "A product")
+            db.upsert_project_brief(
+                project_id=project.id,
+                product_idea="A product",
+                known_competitors=["Typeform", "SurveyMonkey"],
+                constraints="",
+                target_users="Operations teams",
+                goals=["Reduce setup mistakes"],
+                status="published",
+            )
+            pillar = db.create_node(
+                project_id=project.id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title="Authoring",
+                description="Create content.",
+                status="kept",
+            )
+            feature = db.create_layer2_feature(
+                project_id=project.id,
+                canonical_name="Branching logic",
+                description="Route users based on prior answers.",
+                feature_type="workflow",
+                granularity_class="feature",
+                owner_pillar_id=pillar.id,
+                candidate_source_ids=[],
+                status="approved",
+            )
+            db.create_layer2_feature_evidence(
+                project_id=project.id,
+                feature_id=feature.id,
+                competitor_name="Typeform",
+                coverage_status="has_feature",
+                confidence=84,
+                source_url="https://example.com/typeform-logic",
+                evidence_snippet="Logic jumps route respondents to later questions.",
+                rationale="Direct feature page wording.",
+                source_type="manual",
+            )
+            card = db.upsert_layer3_card(
+                project_id=project.id,
+                feature_id=feature.id,
+                parent_pillar_id=pillar.id,
+                parent_pillar_title=pillar.title,
+                feature_name=feature.canonical_name,
+                feature_description=feature.description,
+                product_purpose="Route respondents through the right flow.",
+                feature_archetype="workflow",
+                supported_variants=[],
+                configurable_options=[],
+                product_behaviors=[],
+                validation_constraints=[],
+                lifecycle_states=[],
+                dependencies=[],
+                overlaps_conflicts=[],
+                edge_cases=[],
+                product_risks=[],
+                pressure_test={"implementation_leakage": []},
+                downstream_readiness_score=82,
+                readiness_rationale="Clear behavior.",
+                review_state="needs_review",
+                provenance={},
+            )
+            service = GenerationService(db, llm_client=None)  # type: ignore[arg-type]
+            service._project_llm_runtime = lambda *_args, **_kwargs: {"id": "stub", "model_name": "Stub Model"}  # type: ignore[method-assign]
+            service._ensure_profile_loaded = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+            service._call_structured_json_pass = lambda **_kwargs: (  # type: ignore[method-assign]
+                "",
+                {
+                    "summary": "Baseline parity matters, but clarity is the stronger wedge.",
+                    "evidence_strength": "grounded",
+                    "evidence_limitations": ["Only one competitor has current evidence."],
+                    "parity_requirements": [{"capability": "Logic jumps", "rationale": "A cited competitor already offers this baseline."}],
+                    "differentiation_opportunities": [{"opportunity": "Explain routing outcomes clearly", "rationale": "The evidence is light on user-facing clarity."}],
+                    "patterns_to_avoid": [{"pattern": "Hidden rule priority", "why_to_avoid": "It can make branching behavior feel arbitrary."}],
+                    "positioning_decisions": [{"decision": "Position as transparent branching", "rationale": "Clarity is the strongest grounded message."}],
+                },
+            )
+
+            updated = service.analyze_capability_competitive_positioning(project.id, card.id)
+
+            self.assertEqual(updated.competitive_analysis["evidence_strength"], "grounded")
+            self.assertEqual(updated.competitive_analysis["citations"][0]["competitor_name"], "Typeform")
+            self.assertEqual(updated.competitive_analysis["provenance"]["source_layer2_feature_id"], feature.id)
 
 

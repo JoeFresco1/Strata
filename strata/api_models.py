@@ -17,6 +17,37 @@ class ProjectCreateRequest(BaseModel):
     notes: str = ""
 
 
+class ProjectUpdateRequest(BaseModel):
+    name: str
+    idea: str
+
+    @field_validator("name", "idea")
+    @classmethod
+    def required_project_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Project name and summary cannot be blank.")
+        return cleaned
+
+
+class ProjectCloneRequest(BaseModel):
+    name: str | None = None
+
+
+class ProjectArchiveExportResponse(BaseModel):
+    archive_path: str
+    manifest: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectArchiveImportRequest(BaseModel):
+    archive_path: str
+
+
+class ProjectArchiveImportResponse(BaseModel):
+    project: dict[str, Any]
+    lifecycle_warnings: list[str] = Field(default_factory=list)
+
+
 class ProjectBriefUpdateRequest(BaseModel):
     product_idea: str
     known_competitors: list[str] = Field(default_factory=list)
@@ -319,6 +350,11 @@ class RuntimeModelSettingsUpdateRequest(BaseModel):
     llm_model_name: str
     preferred_model_path: str = ""
     embeddings_model_name: str
+    bearer_token: str = ""
+    clear_bearer_token: bool = False
+    context_window: int = Field(ge=2048, default=32768)
+    max_output_tokens: int = Field(ge=256, le=16000, default=1800)
+    runtime_preset: str = ""
     execution_intent: Literal["local_first", "api_first", "blended"] = "local_first"
     routing_policy: dict[str, Literal["local", "api"]] = Field(default_factory=dict)
     concurrency_policy: dict[str, int] = Field(default_factory=dict)
@@ -378,11 +414,32 @@ class TelemetrySettingsUpdateRequest(BaseModel):
     capture_parsed_results: bool = True
 
 
+class DataOwnershipSettingsUpdateRequest(BaseModel):
+    telemetry_retention_days: int | None = Field(default=None, ge=1)
+    telemetry_body_retention_days: int | None = Field(default=None, ge=1)
+    research_retention_days: int | None = Field(default=None, ge=1)
+    assistant_retention_days: int | None = Field(default=None, ge=1)
+    exports_retention_days: int | None = Field(default=None, ge=1)
+
+
+class DiagnosticsExportRequest(BaseModel):
+    include_logs: bool = True
+    include_recent_errors: bool = True
+    include_traces: bool = True
+    log_line_limit: int = Field(ge=1, le=1000, default=400)
+    redaction_profile: str = "standard"
+
+
 class SetupCompleteRequest(BaseModel):
     llama_base_url: str = "http://127.0.0.1:8080"
     model_name: str = "local-model"
     embeddings_enabled: bool = True
     embeddings_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    bearer_token: str = ""
+    clear_bearer_token: bool = False
+    context_window: int = Field(ge=2048, default=32768)
+    max_output_tokens: int = Field(ge=256, le=16000, default=1800)
+    runtime_preset: str = ""
 
 
 class AssistantConversationCreateRequest(BaseModel):
@@ -440,7 +497,12 @@ class AppConfigResponse(BaseModel):
     exports_dir: str
     default_model_alias: str | None
     embeddings_model_name: str
+    has_bearer_token: bool = False
+    context_window: int = Field(ge=2048, default=32768)
+    max_output_tokens: int = Field(ge=256, le=16000, default=1800)
     embedding_model_presets: list[str] = Field(default_factory=list)
+    provider_readiness: dict[str, Any] = Field(default_factory=dict)
+    runtime_presets: list[dict[str, Any]] = Field(default_factory=list)
     model_profiles: list[ModelProfileResponse]
     execution_intent: Literal["local_first", "api_first", "blended"] = "local_first"
     routing_policy: dict[str, Literal["local", "api"]] = Field(default_factory=dict)

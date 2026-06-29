@@ -117,6 +117,10 @@ class AssistantDatabaseMixin:
                 self._dump_json({}), None, now, now,
             ),
         )
+        self._execute(
+            f"UPDATE assistant_conversations SET updated_at = {self.param} WHERE id = {self.param}",
+            (now, conversation_id),
+        )
         if request_id:
             existing = self.get_assistant_message_by_request(conversation_id, request_id, role)
             if existing is not None:

@@ -9,9 +9,15 @@ from pydantic import ValidationError
 from strata.llm import LLMError
 from strata.models import (
     CapabilityDesignResponse,
+    CapabilityCompetitiveAnalysisResponse,
     CapabilityPressureTestResponse,
 )
-from strata.prompts import build_layer3_capability_prompt, build_layer3_coverage_gap_prompt, build_layer3_pressure_test_prompt
+from strata.prompts import (
+    build_layer3_capability_prompt,
+    build_layer3_competitive_analysis_prompt,
+    build_layer3_coverage_gap_prompt,
+    build_layer3_pressure_test_prompt,
+)
 
 
 LAYER3_CARD_SECTIONS = [
@@ -198,6 +204,7 @@ class Layer3ServiceMixin:
                 edge_cases=merged["edge_cases"],
                 product_risks=merged["product_risks"],
                 pressure_test=pressure_payload,
+                competitive_analysis=existing.competitive_analysis if existing is not None else {},
                 downstream_readiness_score=readiness,
                 readiness_rationale=pressure_payload["readiness_rationale"],
                 review_state="draft",
@@ -349,6 +356,82 @@ class Layer3ServiceMixin:
         )
         return updated
 
+    def analyze_capability_competitive_positioning(
+        self,
+        project_id: str,
+        card_id: str,
+        *,
+        thinking_enabled: bool = False,
+    ) -> Any:
+        """Generate optional cited Layer 3 competitor-aware analysis separate from coverage gaps."""
+        self._ensure_layer3_competitive_intelligence_enabled(project_id)
+        card = self.db.get_layer3_card(card_id)
+        if card.project_id != project_id:
+            raise ValueError("Layer 3 card belongs to another project.")
+        runtime_profile = self._project_llm_runtime(project_id, "layer3_generation")
+        self._ensure_profile_loaded(runtime_profile, thinking_enabled=thinking_enabled)
+        brief = self.db.get_project_brief(project_id)
+        settings = self.db.get_layer2_competitive_settings(project_id)
+        siblings = [
+            self._layer3_feature_context(item)
+            for item in self.db.list_layer2_features(project_id)
+            if item.id != card.feature_id
+            and item.owner_pillar_id == card.parent_pillar_id
+            and item.status in {"kept", "approved"}
+        ]
+        evidence_rows = self.db.list_layer2_feature_evidence(project_id, feature_id=card.feature_id)
+        latest_evidence = self._latest_layer2_feature_evidence(evidence_rows)
+        prompt = build_layer3_competitive_analysis_prompt(
+            project_context={
+                "product_idea": brief.product_idea if brief else self.db.get_project(project_id).idea,
+                "target_users": brief.target_users if brief else "",
+                "goals": brief.goals if brief else [],
+                "constraints": brief.constraints if brief else "",
+            },
+            card=card.model_dump(mode="json"),
+            sibling_features=siblings,
+            latest_feature_evidence=latest_evidence,
+            known_competitors=settings.known_competitors,
+            prompt_catalog=self._prompt_catalog(project_id),
+        )
+        _, analysis = self._call_structured_json_pass(
+            project_id=project_id,
+            node_id=card.parent_pillar_id,
+            prompt=prompt,
+            runtime_profile=runtime_profile,
+            max_tokens=1100,
+            temperature=0.1,
+            validator=self._validate_competitive_analysis,
+            schema_label="layer3_competitive_analysis",
+            schema_instructions="Return {'competitive_analysis': {summary, evidence_strength, evidence_limitations, parity_requirements, differentiation_opportunities, patterns_to_avoid, positioning_decisions}}.",
+            telemetry_layer="layer3",
+            telemetry_workflow="competitive_analysis",
+        )
+        updated = self.db.update_layer3_card(
+            card.id,
+            competitive_analysis={
+                **analysis,
+                "citations": latest_evidence,
+                "provenance": {
+                    "source_layer2_feature_id": card.feature_id,
+                    "source_layer2_evidence_ids": [item["id"] for item in latest_evidence],
+                    "known_competitors": settings.known_competitors,
+                    "source_model": self._runtime_model_name(runtime_profile),
+                    "thinking_enabled": thinking_enabled,
+                },
+            },
+        )
+        self.db.record_layer3_review_action(
+            project_id=project_id,
+            card_id=card.id,
+            action_type="competitive_analysis",
+            payload={
+                "evidence_strength": analysis["evidence_strength"],
+                "citation_count": len(latest_evidence),
+            },
+        )
+        return updated
+
     @staticmethod
     def _validate_coverage_gap_analysis(payload: dict[str, Any]) -> dict[str, Any]:
         """Normalize Layer 3 completeness findings into a bounded inspector shape."""
@@ -374,6 +457,56 @@ class Layer3ServiceMixin:
             "recommended_next_actions": [
                 str(item).strip() for item in raw.get("recommended_next_actions", []) if str(item).strip()
             ][:8],
+        }
+
+    @staticmethod
+    def _validate_competitive_analysis(payload: dict[str, Any]) -> dict[str, Any]:
+        """Normalize the cited competitor-aware analysis while keeping citations out of model-authored text."""
+        try:
+            raw = CapabilityCompetitiveAnalysisResponse.model_validate(payload).competitive_analysis
+        except ValidationError as exc:
+            raise LLMError(f"Invalid Layer 3 competitive analysis: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise LLMError("Layer 3 competitive analysis is missing.")
+
+        def normalize_items(key: str, title_key: str, detail_key: str) -> list[dict[str, str]]:
+            normalized = []
+            values = raw.get(key, [])
+            for item in values if isinstance(values, list) else []:
+                if isinstance(item, str):
+                    title = item.strip()
+                    detail = ""
+                elif isinstance(item, dict):
+                    title = str(item.get(title_key, "")).strip()
+                    detail = str(item.get(detail_key, "")).strip()
+                else:
+                    continue
+                if not title:
+                    continue
+                try:
+                    validate_product_level_content({"title": title, "detail": detail})
+                except ValueError as exc:
+                    raise LLMError(str(exc)) from exc
+                normalized.append({title_key: title, detail_key: detail})
+            return normalized[:6]
+
+        summary = str(raw.get("summary", "")).strip()
+        limitations = [str(item).strip() for item in raw.get("evidence_limitations", []) if str(item).strip()][:4]
+        strength = str(raw.get("evidence_strength", "limited")).strip().lower()
+        if strength not in {"none", "limited", "grounded"}:
+            strength = "limited"
+        try:
+            validate_product_level_content({"summary": summary, "evidence_limitations": limitations})
+        except ValueError as exc:
+            raise LLMError(str(exc)) from exc
+        return {
+            "summary": summary,
+            "evidence_strength": strength,
+            "evidence_limitations": limitations,
+            "parity_requirements": normalize_items("parity_requirements", "capability", "rationale"),
+            "differentiation_opportunities": normalize_items("differentiation_opportunities", "opportunity", "rationale"),
+            "patterns_to_avoid": normalize_items("patterns_to_avoid", "pattern", "why_to_avoid"),
+            "positioning_decisions": normalize_items("positioning_decisions", "decision", "rationale"),
         }
 
     @staticmethod
@@ -517,6 +650,26 @@ class Layer3ServiceMixin:
                 "Implementation-level detail was detected in the card review."
             ]
         return cleaned
+
+    def _ensure_layer3_competitive_intelligence_enabled(self, project_id: str) -> None:
+        """Respect the project-wide competitive intelligence master switch."""
+        settings = self.db.get_project_model_settings(project_id)
+        if settings is not None and not settings.competitive_intelligence_enabled:
+            raise ValueError("Competitive intelligence is disabled for this project.")
+
+    @staticmethod
+    def _latest_layer2_feature_evidence(evidence_rows: list[Any]) -> list[dict[str, Any]]:
+        """Keep only the latest stored evidence row per competitor for one Layer 2 feature."""
+        latest_by_competitor: dict[str, dict[str, Any]] = {}
+        for item in evidence_rows:
+            payload = item.model_dump(mode="json")
+            key = str(payload.get("competitor_name", "")).strip().casefold()
+            if not key:
+                continue
+            prior = latest_by_competitor.get(key)
+            if prior is None or str(payload.get("updated_at", "")) >= str(prior.get("updated_at", "")):
+                latest_by_competitor[key] = payload
+        return sorted(latest_by_competitor.values(), key=lambda item: str(item.get("competitor_name", "")).casefold())
 
     @staticmethod
     def _validate_capability_design(payload: dict[str, Any]) -> CapabilityDesignResponse:

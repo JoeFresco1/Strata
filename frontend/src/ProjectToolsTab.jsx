@@ -19,6 +19,7 @@ export default function ProjectToolsTab({
   onProjectSettingsChange,
   onProjectSettingsSave,
   onResearchLayer2,
+  onProjectArchiveExport,
 }) {
   return (
     <section className="tab-content">
@@ -40,6 +41,9 @@ export default function ProjectToolsTab({
           </button>
           <button type="button" onClick={onLayer2Export}>
             Create Layer 2 Export
+          </button>
+          <button type="button" onClick={onProjectArchiveExport}>
+            Export Project Archive
           </button>
         </div>
         <p className="muted">Exports are written to the configured local exports folder.</p>

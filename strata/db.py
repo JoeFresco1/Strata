@@ -18,7 +18,9 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from strata.db_embeddings import DatabaseEmbeddingMixin
+from strata.db_data_ownership import DataOwnershipDatabaseMixin
 from strata.db_jobs import PlatformJobDatabaseMixin
+from strata.db_lifecycle import ProjectLifecycleDatabaseMixin
 from strata.assistant_db import AssistantDatabaseMixin
 from strata.db_rows import DatabaseRowMixin
 from strata.db_research import ResearchDatabaseMixin
@@ -50,7 +52,7 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class Database(TelemetryDatabaseMixin, PlatformJobDatabaseMixin, AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin, ResearchDatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
+class Database(ProjectLifecycleDatabaseMixin, DataOwnershipDatabaseMixin, TelemetryDatabaseMixin, PlatformJobDatabaseMixin, AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin, ResearchDatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
     """Store SpecForge state in either PostgreSQL or SQLite through one stable API."""
 
     def __init__(self, target: str | Path, *, postgres_admin_url: str | None = None):
@@ -96,38 +98,71 @@ class Database(TelemetryDatabaseMixin, PlatformJobDatabaseMixin, AssistantDataba
         project_id = str(uuid.uuid4())
         created_at = utc_now()
         query = f"""
-            INSERT INTO projects (id, name, idea, created_at)
-            VALUES ({self.param}, {self.param}, {self.param}, {self.param})
+            INSERT INTO projects (id, name, idea, created_at, updated_at, lifecycle_state)
+            VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
         """
-        self._execute(query, (project_id, name, idea, created_at))
+        self._execute(query, (project_id, name, idea, created_at, created_at, "active"))
         return self.get_project(project_id)
 
-    def list_projects(self) -> list[Project]:
+    def list_projects(self, *, state: str = "active", query: str = "", sort: str = "updated") -> list[Project]:
         """Return projects in reverse creation order with lightweight workspace metadata."""
+        filters = []
+        params: list[Any] = []
+        if state != "all":
+            filters.append(f"projects.lifecycle_state = {self.param}")
+            params.append("archived" if state == "archived" else "active")
+        if query.strip():
+            filters.append(f"(LOWER(projects.name) LIKE {self.param} OR LOWER(projects.idea) LIKE {self.param})")
+            search = f"%{query.strip().lower()}%"
+            params.extend([search, search])
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        order_by = {
+            "oldest": "projects.created_at ASC",
+            "newest": "projects.created_at DESC",
+            "name": "LOWER(projects.name) ASC",
+            "updated": "projects.updated_at DESC",
+            "last_opened": "projects.last_opened_at DESC NULLS LAST, projects.updated_at DESC" if self.is_postgres else "projects.last_opened_at IS NULL ASC, projects.last_opened_at DESC, projects.updated_at DESC",
+        }.get(sort, "projects.updated_at DESC")
         rows = self._fetchall(
-            """
+            f"""
             SELECT
                 projects.id,
                 projects.name,
                 projects.idea,
                 projects.created_at,
+                projects.updated_at,
+                projects.last_opened_at,
+                projects.archived_at,
+                projects.lifecycle_state,
+                projects.source_project_id,
+                source.name AS source_project_name,
                 COALESCE(project_briefs.status, 'draft') AS brief_status,
                 project_briefs.updated_at AS brief_updated_at,
                 COALESCE(COUNT(DISTINCT nodes.id), 0) AS node_count,
                 COALESCE(SUM(CASE WHEN nodes.node_type = 'pillar' THEN 1 ELSE 0 END), 0) AS pillar_count
             FROM projects
             LEFT JOIN project_briefs ON project_briefs.project_id = projects.id
+            LEFT JOIN projects source ON source.id = projects.source_project_id
             LEFT JOIN nodes ON nodes.project_id = projects.id
-            GROUP BY projects.id, projects.name, projects.idea, projects.created_at, project_briefs.status, project_briefs.updated_at
-            ORDER BY projects.created_at DESC
-            """
+            {where}
+            GROUP BY projects.id, projects.name, projects.idea, projects.created_at, projects.updated_at,
+                projects.last_opened_at, projects.archived_at, projects.lifecycle_state,
+                projects.source_project_id, source.name, project_briefs.status, project_briefs.updated_at
+            ORDER BY {order_by}
+            """,
+            tuple(params),
         )
         return [self._row_to_project_summary(row) for row in rows]
 
     def get_project(self, project_id: str) -> Project:
         """Look up a single project by id."""
         row = self._fetchone(
-            f"SELECT id, name, idea, created_at FROM projects WHERE id = {self.param}",
+            f"""
+            SELECT id, name, idea, created_at, updated_at, last_opened_at,
+                   archived_at, lifecycle_state, source_project_id
+            FROM projects
+            WHERE id = {self.param}
+            """,
             (project_id,),
         )
         if row is None:

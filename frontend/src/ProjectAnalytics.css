@@ -16,6 +16,12 @@
 .button-row.compact { gap: 6px; justify-content: flex-end; }
 .button-row.compact button { min-height: 32px; padding: 6px 10px; }
 .run-inspector pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diagnostics-panel { display: grid; gap: 14px; }
+.diagnostics-options { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: center; }
+.diagnostics-options label { color: var(--muted); font-size: .92rem; }
+.diagnostics-options input[type="number"], .diagnostics-options select { width: 100%; min-height: 38px; margin-top: 4px; }
+.diagnostics-preview { display: grid; gap: 10px; }
+.diagnostics-preview pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 1050px) {
   .analytics-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .analytics-grid, .analytics-lower-grid { grid-template-columns: 1fr; }
@@ -24,9 +30,11 @@
   .job-row { grid-template-columns: 86px 1fr 64px; }
   .job-row > span:nth-of-type(2), .job-row > span:nth-of-type(3), .job-row > span:nth-of-type(5) { display: none; }
   .job-row .button-row { grid-column: 1 / -1; justify-content: flex-start; }
+  .diagnostics-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 680px) {
   .analytics-hero { align-items: flex-start; flex-direction: column; }
   .analytics-metrics { grid-template-columns: 1fr; }
   .analytics-row { grid-template-columns: 1fr 1fr; }
+  .diagnostics-options { grid-template-columns: 1fr; }
 }

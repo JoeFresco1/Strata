@@ -8,7 +8,7 @@ Strata keeps PostgreSQL as the production source of truth and uses bounded memor
 - `pgvector` stores semantic representations used by overlap checks and retrieval.
 - Core project records include projects, briefs, conversations, Layer 1 nodes, generations, research, and project memory.
 - Layer 2 uses dedicated graph, provenance, coverage, review, rejection-memory, and competitor-evidence tables.
-- Layer 3 uses dedicated card, relationship, open-decision, and review-action tables; readiness and provenance live on the card rather than in raw chat history.
+- Layer 3 uses dedicated card, relationship, open-decision, and review-action tables; readiness, optional competitive analysis, and provenance live on the card rather than in raw chat history.
 - The project assistant persists conversations, messages, runs, specialist runs, documents, and action proposals.
 
 SQLite is not a production runtime. It remains available for isolated tests and one-time import of older local data.

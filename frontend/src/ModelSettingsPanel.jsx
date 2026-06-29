@@ -1,4 +1,5 @@
 import { ModalFrame } from "./ProjectShell";
+import { applyRuntimePreset, providerFormErrors, readinessTone, runtimePresets } from "./setupRuntime";
 
 const EXECUTION_INTENT_OPTIONS = [
   { value: "local_first", label: "Local-first", description: "Prefer managed local models and keep assistant orchestration conservative around local concurrency." },
@@ -105,6 +106,15 @@ function ModelSettingsEditor({
   const routingPolicy = settings.routing_policy || defaultRoutingPolicy(executionIntent);
   const concurrencyPolicy = settings.concurrency_policy || { managed_local_parallelism: 1, remote_parallelism: 4 };
   const selectedIntent = EXECUTION_INTENT_OPTIONS.find((option) => option.value === executionIntent) || EXECUTION_INTENT_OPTIONS[0];
+  const runtimeFieldErrors = showRuntimeFields ? providerFormErrors({
+    llama_base_url: settings.llama_base_url,
+    llm_model_name: settings.llm_model_name,
+    embeddings_model_name: settings.embeddings_model_name,
+    context_window: settings.context_window,
+    max_output_tokens: settings.max_output_tokens,
+  }) : {};
+  const runtimeReadiness = settings.provider_readiness || config?.provider_readiness || {};
+  const runtimePresetOptions = runtimePresets(config?.runtime_presets);
 
   // Updates scalar runtime defaults, such as active base URL/model name.
   function updateRootField(field, value) {
@@ -230,6 +240,11 @@ function ModelSettingsEditor({
         {showRuntimeFields ? (
           <div className="settings-block">
             <h3>Runtime Defaults</h3>
+            <div className="button-row compact" aria-label="Runtime presets">
+              {runtimePresetOptions.map((preset) => (
+                <button key={preset.id || preset.label} type="button" className="secondary-button" onClick={() => onChange(applyRuntimePreset(settings, preset))}>{preset.label}</button>
+              ))}
+            </div>
             <div className="brief-grid">
               <label>
                 Chat API Base URL
@@ -248,6 +263,16 @@ function ModelSettingsEditor({
                 />
               </label>
               <label>
+                Bearer Token
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={settings.bearer_token || ""}
+                  placeholder={settings.has_bearer_token ? "Token saved on server" : "Optional"}
+                  onChange={(event) => updateRootField("bearer_token", event.target.value)}
+                />
+              </label>
+              <label>
                 Default Local GGUF Path
                 <input
                   value={settings.preferred_model_path || ""}
@@ -263,7 +288,40 @@ function ModelSettingsEditor({
                   placeholder="sentence-transformers/all-MiniLM-L6-v2"
                 />
               </label>
+              <label>
+                Context Window
+                <input
+                  type="number"
+                  min="2048"
+                  value={settings.context_window || 32768}
+                  onChange={(event) => updateRootField("context_window", Number(event.target.value))}
+                />
+              </label>
+              <label>
+                Max Output Tokens
+                <input
+                  type="number"
+                  min="256"
+                  max="16000"
+                  value={settings.max_output_tokens || 1800}
+                  onChange={(event) => updateRootField("max_output_tokens", Number(event.target.value))}
+                />
+              </label>
             </div>
+            <label className="checkbox-item">
+              <input
+                type="checkbox"
+                checked={settings.clear_bearer_token || false}
+                onChange={(event) => onChange({ ...settings, clear_bearer_token: event.target.checked, bearer_token: event.target.checked ? "" : settings.bearer_token || "" })}
+              />
+              Remove saved bearer token
+            </label>
+            {runtimeFieldErrors.llama_base_url ? <div className="error-banner">{runtimeFieldErrors.llama_base_url}</div> : null}
+            {runtimeFieldErrors.model_name ? <div className="error-banner">{runtimeFieldErrors.model_name}</div> : null}
+            {runtimeFieldErrors.embeddings_model_name ? <div className="error-banner">{runtimeFieldErrors.embeddings_model_name}</div> : null}
+            {runtimeFieldErrors.context_window ? <div className="error-banner">{runtimeFieldErrors.context_window}</div> : null}
+            {runtimeFieldErrors.max_output_tokens ? <div className="error-banner">{runtimeFieldErrors.max_output_tokens}</div> : null}
+            {runtimeReadiness?.message ? <div className={`status-card ${readinessTone(runtimeReadiness)}`}>{runtimeReadiness.message}</div> : null}
             <div className="preset-grid">
               {(config.embedding_model_presets || []).map((preset) => (
                 <button key={preset} type="button" className="preset-chip" onClick={() => updateRootField("embeddings_model_name", preset)}>

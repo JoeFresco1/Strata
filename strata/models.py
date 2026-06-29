@@ -86,6 +86,11 @@ class Project(BaseModel):
     name: str
     idea: str
     created_at: datetime
+    updated_at: datetime | None = None
+    last_opened_at: datetime | None = None
+    archived_at: datetime | None = None
+    lifecycle_state: Literal["active", "archived"] = "active"
+    source_project_id: str | None = None
 
 
 class ProjectLLMProfile(BaseModel):
@@ -457,6 +462,7 @@ class CapabilityDesignCard(BaseModel):
     edge_cases: list[str] = Field(default_factory=list)
     product_risks: list[str] = Field(default_factory=list)
     pressure_test: dict[str, Any] = Field(default_factory=dict)
+    competitive_analysis: dict[str, Any] = Field(default_factory=dict)
     downstream_readiness_score: int = Field(ge=0, le=100, default=0)
     readiness_rationale: str = ""
     review_state: Layer3ReviewState = "draft"
@@ -779,6 +785,10 @@ class CapabilityDesignResponse(BaseModel):
 
 class CapabilityPressureTestResponse(BaseModel):
     pressure_test: CapabilityPressureTest
+
+
+class CapabilityCompetitiveAnalysisResponse(BaseModel):
+    competitive_analysis: dict[str, Any]
 
 
 class CoverageGap(BaseModel):

@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiFetch, subscribeApiActivity } from "./apiClient";
 import { TABS, applyAssistantNavigation, assistantScopeFor, findWorkspaceEntity, sortProjects } from "./appUtils";
-import PromptCatalogEditor from "./PromptCatalogEditor";
+import AppModals from "./AppModals";
 import BriefWorkspace from "./BriefWorkspace";
 import AssistantDrawer from "./AssistantDrawer";
 import LivingWorkspace from "./LivingWorkspace";
@@ -9,9 +9,9 @@ import Layer3Workspace from "./Layer3Workspace";
 import ProjectAnalytics from "./ProjectAnalytics";
 import ProjectToolsTab from "./ProjectToolsTab";
 import SetupWizard from "./SetupWizard";
+import { useProjectLifecycle } from "./useProjectLifecycle";
 import { buildWorkspaceTree } from "./projectWorkspaceData";
-import { AppSettingsModal } from "./ModelSettingsPanel";
-import { CreateProjectModal, GuideModal, ModalFrame, ProjectHub } from "./ProjectShell";
+import { ProjectHub } from "./ProjectShell";
 import { GenerationSummary, MarketPanel, ResearchStatus } from "./ReviewPanels";
 
 function parseOptionalPositiveInt(value) {
@@ -62,6 +62,39 @@ export default function App() {
   const [pendingMutations, setPendingMutations] = useState(0);
   const savedWorkspaceStates = useRef(new Map());
   const workspaceSaveQueue = useRef(Promise.resolve());
+  const {
+    projectLifecycleState,
+    setProjectLifecycleState,
+    projectSearchQuery,
+    setProjectSearchQuery,
+    editingProject,
+    setEditingProject,
+    editProjectName,
+    setEditProjectName,
+    editProjectIdea,
+    setEditProjectIdea,
+    showImportProject,
+    setShowImportProject,
+    importArchivePath,
+    setImportArchivePath,
+    beginEditProject,
+    handleEditProject,
+    handleCloneProject,
+    handleArchiveProject,
+    handleUnarchiveProject,
+    handleImportProject,
+    handleProjectArchiveExport,
+  } = useProjectLifecycle({
+    apiFetch,
+    activeProjectId,
+    snapshot,
+    applySnapshot,
+    refreshProjects,
+    setActiveProjectId,
+    setActiveTab,
+    setError,
+    setStatusMessage,
+  });
   useEffect(() => subscribeApiActivity(setPendingMutations), []);
   useEffect(() => {
     let active = true;
@@ -70,7 +103,7 @@ export default function App() {
       try {
         const [configPayload, projectsPayload, healthPayload, setupPayload] = await Promise.all([
           apiFetch("/config"),
-          apiFetch("/projects"),
+          apiFetch(`/projects?state=${projectLifecycleState}&query=${encodeURIComponent(projectSearchQuery)}&sort=${sortOrder}`),
           apiFetch("/health"),
           apiFetch("/setup/status"),
         ]);
@@ -131,6 +164,7 @@ export default function App() {
   }, [activeProjectId]);
   useEffect(() => {
     if (!activeProjectId || !workspaceState) return undefined;
+    if (snapshot?.project?.lifecycle_state === "archived") return undefined;
     const serializedState = JSON.stringify(workspaceState);
     if (serializedState === savedWorkspaceStates.current.get(activeProjectId)) return undefined;
     const timer = window.setTimeout(async () => {
@@ -152,7 +186,7 @@ export default function App() {
       });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [activeProjectId, workspaceState]);
+  }, [activeProjectId, workspaceState, snapshot?.project?.lifecycle_state]);
   useEffect(() => {
     const hasActiveResearch = (snapshot?.research_jobs || []).some((job) => ["queued", "running"].includes(job.status));
     if (!activeProjectId || !hasActiveResearch) return undefined;
@@ -177,10 +211,17 @@ export default function App() {
       window.clearTimeout(timer);
     };
   }, [activeProjectId, snapshot?.research_jobs]);
-  async function refreshProjects() {
-    const payload = await apiFetch("/projects");
+  async function refreshProjects(next = {}) {
+    const state = next.state || projectLifecycleState;
+    const query = next.query ?? projectSearchQuery;
+    const sort = next.sort || sortOrder;
+    const payload = await apiFetch(`/projects?state=${state}&query=${encodeURIComponent(query)}&sort=${sort}`, { force: true });
     setProjects(payload);
   }
+  useEffect(() => {
+    if (!config) return;
+    refreshProjects().catch((loadError) => setError(loadError.message));
+  }, [projectLifecycleState, projectSearchQuery, sortOrder]);
   // Replace the local snapshot after an API action.
   function applySnapshot(nextSnapshot) {
     setSnapshot(nextSnapshot);
@@ -623,6 +664,13 @@ export default function App() {
     );
   }
 
+  async function handleLayer3CompetitiveAnalysis(cardId) {
+    return runLayer3Mutation(
+      () => apiFetch(`/projects/${activeProjectId}/layer3/cards/${cardId}/competitive-analysis`, { method: "POST", body: JSON.stringify({ thinking_enabled: layer3Thinking }) }),
+      "Layer 3 competitive analysis queued.",
+    );
+  }
+
   async function handleLayer3Decision(decisionId, status, resolution) {
     // Resolve or reopen one downstream product decision.
     return runLayer3Mutation(
@@ -714,6 +762,8 @@ export default function App() {
   function navigateFromAssistant(layer, citation = {}) {
     applyAssistantNavigation({ layer, citation, setActiveTab, setWorkspaceState });
   }
+  const modalState = { appSettings, config, editProjectIdea, editProjectName, editingProject, importArchivePath, modelSettingsSaveState, newProjectIdea, newProjectName, showCreateProject, showGuide, showImportProject, showPrompts, showSettings };
+  const modalActions = { handleCreateProject, handleEditProject, handleImportProject, handleSaveModelSettings, setAppSettings, setEditProjectIdea, setEditProjectName, setEditingProject, setImportArchivePath, setNewProjectIdea, setNewProjectName, setShowCreateProject, setShowGuide, setShowImportProject, setShowPrompts, setShowSettings };
 
   return (
     <div className={navOpen ? "app-shell nav-open" : "app-shell"}>
@@ -781,17 +831,35 @@ export default function App() {
             {error ? <div className="error-banner">{error}</div> : null}
           </div>
         ) : error ? <div className="error-banner">{error}</div> : null}
+        {project?.lifecycle_state === "archived" ? (
+          <div className="status-banner">
+            <strong>Archived project.</strong> This project is read-only until it is unarchived.
+            <div className="button-row compact">
+              <button type="button" onClick={() => handleUnarchiveProject(project)}>Unarchive</button>
+              <button type="button" className="secondary-button" onClick={handleProjectArchiveExport}>Export Archive</button>
+            </div>
+          </div>
+        ) : null}
         {!activeProjectId ? (
           <ProjectHub
             projects={sortedProjects}
             loading={bootstrapLoading}
             sortOrder={sortOrder}
             onSortOrderChange={setSortOrder}
+            lifecycleState={projectLifecycleState}
+            onLifecycleStateChange={setProjectLifecycleState}
+            searchQuery={projectSearchQuery}
+            onSearchQueryChange={setProjectSearchQuery}
             onCreateProject={() => setShowCreateProject(true)}
             onOpenProject={(projectId) => {
               setActiveTab("Workspace");
               setActiveProjectId(projectId);
             }}
+            onEditProject={beginEditProject}
+            onCloneProject={handleCloneProject}
+            onArchiveProject={handleArchiveProject}
+            onUnarchiveProject={handleUnarchiveProject}
+            onImportProject={() => setShowImportProject(true)}
           />
         ) : projectLoading ? (
           <div className="project-loading-state" aria-live="polite">
@@ -891,6 +959,7 @@ export default function App() {
                   onReview={handleLayer3Review}
                   onPressureTest={handleLayer3PressureTest}
                   onCoverageGaps={handleLayer3CoverageGaps}
+                  onCompetitiveAnalysis={handleLayer3CompetitiveAnalysis}
                   onDecision={handleLayer3Decision}
                   onExport={handleLayer3Export}
                 />
@@ -921,6 +990,7 @@ export default function App() {
                 onProjectSettingsChange={setProjectModelSettings}
                 onProjectSettingsSave={handleSaveProjectModelSettings}
                 onResearchLayer2={handleLayer2Research}
+                onProjectArchiveExport={handleProjectArchiveExport}
               />
             ) : null}
           </>
@@ -953,42 +1023,7 @@ export default function App() {
           onNavigate={navigateFromAssistant}
         />
       ) : null}
-      {showCreateProject ? (
-        <CreateProjectModal
-          name={newProjectName}
-          idea={newProjectIdea}
-          onNameChange={setNewProjectName}
-          onIdeaChange={setNewProjectIdea}
-          onSubmit={handleCreateProject}
-          onClose={() => setShowCreateProject(false)}
-        />
-      ) : null}
-      {showSettings ? (
-        <AppSettingsModal
-          settings={appSettings}
-          config={config}
-          saveState={modelSettingsSaveState}
-          onChange={setAppSettings}
-          onSave={handleSaveModelSettings}
-          onClose={() => setShowSettings(false)}
-        />
-      ) : null}
-      {showPrompts ? (
-        <ModalFrame
-          title="System Prompts"
-          subtitle="Edit the shared prompt templates here. These edits apply to new projects created after you save."
-          onClose={() => setShowPrompts(false)}
-          className="prompts-modal"
-        >
-          <PromptCatalogEditor
-            settings={appSettings}
-            onChange={setAppSettings}
-            onSave={handleSaveModelSettings}
-            saveState={modelSettingsSaveState}
-          />
-        </ModalFrame>
-      ) : null}
-      {showGuide ? <GuideModal onClose={() => setShowGuide(false)} /> : null}
+      <AppModals {...modalState} {...modalActions} />
     </div>
   );
 }

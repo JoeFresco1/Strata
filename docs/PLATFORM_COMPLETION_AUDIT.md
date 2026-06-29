@@ -34,30 +34,48 @@ Current behavior:
 
 ### 2. Project lifecycle management
 
-The application can create and work projects, but it lacks complete lifecycle
-operations.
+Implemented on 2026-06-28. Strata now has active/archived project library
+filters, project metadata editing, archive/unarchive, read-only archived
+inspection, deep clone, portable project archive export/import, and an
+admin-only irreversible purge command.
 
-Completion requires:
+Current behavior:
 
-- rename and edit project metadata;
-- delete with explicit confirmation;
-- duplicate or create from a project template;
-- portable project archive export and import;
-- clear handling for imported schema versions and missing model profiles.
+- `GET /api/projects` supports lifecycle state, search, and server-backed sort;
+- project metadata edits update library name and summary without rewriting the
+  canonical Layer 0 brief;
+- archived projects remain readable/exportable/cloneable but reject canonical
+  project writes until unarchived;
+- clone creates a working copy with clone lineage while excluding telemetry,
+  assistant history, active job state, workspace selection, and disk exports;
+- portable archive export/import creates a new project ID and preserves
+  project-scoped product state, telemetry, assistant history, research, Layer 2,
+  and Layer 3 state;
+- imported unavailable local model paths are normalized with warnings;
+- irreversible purge is restricted to the admin CLI with an explicit
+  confirmation token.
 
 ### 3. Backup, restore, and data ownership
 
 JSON exports are not a complete database backup.
 
-PostgreSQL backup and restore commands are now documented for Docker Compose
-and native installs, with a restore verification step.
+PostgreSQL backup and restore commands are documented for Docker Compose and
+native installs. Docker installations now have scripted backup and restore
+wrappers, timestamped backup metadata sidecars, backup inspection, and a live
+restore verification command.
 
-Completion requires:
+Current behavior:
 
-- one-click or scripted backup for Docker installations;
-- retention and deletion behavior for telemetry, research content, exports, and
-  assistant history;
-- project-level purge tools.
+- Docker backup scripts create compressed PostgreSQL dumps under `backups/`;
+- restore scripts require an explicit `RESTORE-<backup filename>` token before
+  replacing the database;
+- `python -m strata.backup verify-live` checks migration status, project
+  readability, pgvector, telemetry, research, assistant tables, and exports;
+- project data ownership settings default to retain-until-explicit-deletion;
+- admin cleanup can redact/delete telemetry, research content, assistant
+  history, and matching export artifacts by configured or explicit retention;
+- project purge has dry-run table/artifact previews and still requires the
+  admin confirmation token for destructive deletion.
 
 ### 4. Full background-work visibility
 
@@ -69,25 +87,30 @@ parser, and application categories, plus cancel/retry actions.
 
 ### 5. Diagnostics completeness
 
-The diagnostics bundle now runs as a durable job and contains a deterministic
-manifest, schema or migration status, dependency-health snapshots, project model
-settings, telemetry, platform jobs, and research jobs. It is closer to the
-intended one-click support bundle, but still not complete.
+Implemented on 2026-06-28. The diagnostics bundle now runs as a durable job and
+contains a version-2 deterministic manifest, schema or migration status,
+dependency-health snapshots, project model settings, telemetry, platform jobs,
+research jobs, sanitized runtime logs, recent errors, and recent traces.
 
-Completion requires:
+Current behavior:
 
-- sanitized application and worker logs;
-- recent errors and traces;
-- configurable redaction preview;
-- fuller deterministic bundle versioning.
+- diagnostics export accepts request-scoped inclusion and line-limit options;
+- preview returns included sections, counts, warning metadata, redaction counts,
+  and sample snippets without writing an export file;
+- logs and support payloads redact bearer/basic tokens, API keys, database URLs,
+  emails, local paths, and long secret-like values with stable labels;
+- manifest includes `strata.diagnostics.bundle.v2`, generator version, sorted
+  sections, warnings, redaction metadata, and a deterministic content hash.
 
 ### 6. Layer 3 competitive intelligence
 
-Competitive intelligence can now be disabled project-wide. When enabled, Layer
-3 generation still does not consume feature-level competitor evidence or
-produce cited competitive positioning.
+Implemented on 2026-06-28. Competitive intelligence can be disabled
+project-wide, and when enabled Layer 3 now supports a separate optional cited
+competitive-analysis pass that reuses latest Layer 2 feature evidence instead
+of blending competitor interpretation into the noncompetitive coverage-gap
+audit.
 
-Completion requires an optional, evidence-grounded Layer 3 analysis covering:
+Current behavior:
 
 - parity requirements;
 - differentiation opportunities;
@@ -118,6 +141,15 @@ surfaces after telemetry, self-hosting, first-run setup, competitive-intelligenc
 controls, and Layer 3 coverage-gap analysis landed. What remains incomplete is
 the full release matrix rather than basic post-change coverage.
 
+As of 2026-06-28, the repo now includes a reusable release matrix runbook in
+`docs/RELEASE_QA_MATRIX.md`, a disposable native runner in
+`scripts/run_release_qa_native.ps1`, and dedicated browser/API evidence probes
+under `.tmp-playwright/`. A fresh native disposable run now exists in
+`docs/QA_2026-06-28_release-matrix.md` and
+`.runtime/release-qa/20260628-082739`. This blocker remains open until the
+same report also includes native PostgreSQL backup/restore proof and a
+separate Docker-capable run report.
+
 Completion requires:
 
 - a fresh disposable install;
@@ -126,7 +158,7 @@ Completion requires:
 - restart during active work;
 - cancel/retry paths;
 - backup/restore;
-- archive export/import;
+- archive export/import release validation;
 - Docker and native installation checks;
 - desktop and mobile browser QA.
 

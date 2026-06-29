@@ -1,4 +1,5 @@
 from tests.core_database_cases import DatabaseTests
+from tests.core_data_ownership_cases import DataOwnershipTests
 from tests.core_generation_cases import GenerationHelperTests
 from tests.core_layer3_api_cases import Layer3ApiTests
 from tests.core_runtime_cases import AssistantIndexTests, AssistantServiceTests, ConfigTests, PromptTests, ResearchServiceTests
@@ -11,6 +12,7 @@ __all__ = [
     "BriefServiceTests",
     "ConfigTests",
     "DatabaseTests",
+    "DataOwnershipTests",
     "EmbeddingServiceTests",
     "GenerationHelperTests",
     "Layer3ApiTests",

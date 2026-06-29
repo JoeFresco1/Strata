@@ -443,6 +443,31 @@ def build_layer3_coverage_gap_prompt(
     )
 
 
+def build_layer3_competitive_analysis_prompt(
+    *,
+    project_context: dict[str, Any],
+    card: dict[str, Any],
+    sibling_features: list[dict[str, Any]],
+    latest_feature_evidence: list[dict[str, Any]],
+    known_competitors: list[str],
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    """Render the optional Layer 3 competitor-aware positioning pass."""
+    return render_prompt(
+        "layer3_competitive_analysis",
+        {
+            "project_context": json.dumps(project_context, ensure_ascii=True, indent=2),
+            "card": json.dumps(card, ensure_ascii=True, indent=2),
+            "sibling_features": json.dumps(sibling_features, ensure_ascii=True, indent=2),
+            "latest_feature_evidence": json.dumps(latest_feature_evidence, ensure_ascii=True, indent=2),
+            "known_competitors": json.dumps(known_competitors, ensure_ascii=True, indent=2),
+        },
+        prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
+    )
+
+
 def build_json_repair_prompt(
     *,
     schema_label: str,

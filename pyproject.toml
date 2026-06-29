@@ -26,6 +26,7 @@ dependencies = [
 [project.scripts]
 strata = "run_strata:main"
 strata-migrate = "strata.migrations:main"
+strata-admin = "strata.lifecycle_admin:main"
 
 [tool.setuptools]
 packages = ["strata"]

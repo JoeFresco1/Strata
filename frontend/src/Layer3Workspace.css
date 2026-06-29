@@ -25,10 +25,12 @@
 .readiness-medium { background: #fff4d6; color: #795b00; }
 .readiness-low { background: #fee9e7; color: #8b2d24; }
 .layer3-edge-list, .layer3-decision, .pressure-group { display: grid; gap: .45rem; }
-.layer3-edge-list > div, .layer3-decision { border: 1px solid var(--border-color, #e2e5ec); border-radius: 12px; padding: .8rem; }
+.layer3-edge-list > div, .layer3-decision, .layer3-citation { border: 1px solid var(--border-color, #e2e5ec); border-radius: 12px; padding: .8rem; }
 .layer3-edge-list > div { grid-template-columns: auto 1fr; }
 .layer3-edge-list p { grid-column: 1 / -1; margin: 0; }
 .layer3-decision > div:first-child { display: flex; justify-content: space-between; gap: 1rem; }
+.layer3-citation { display: grid; gap: .35rem; }
+.layer3-citation > div:first-child { display: flex; justify-content: space-between; gap: 1rem; }
 .inline-check { display: inline-flex; gap: .4rem; align-items: center; }
 
 @media (max-width: 900px) {

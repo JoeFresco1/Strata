@@ -7,6 +7,7 @@ from strata.db import Database
 from strata.execution_policy import resolve_llm_profile, resolved_runtime_request
 from strata.llm import LLMError, LlamaCppClient
 from strata.models import ProjectBrief
+from strata.provider_onboarding import assert_provider_ready
 from strata.prompts import (
     build_layer0_brief_extraction_prompt,
     build_layer0_plan_reply_prompt,
@@ -90,6 +91,7 @@ class BriefService:
         clean_message = message.strip()
         if not clean_message:
             raise ValueError("Plan-mode message cannot be empty.")
+        assert_provider_ready(self.db, "Layer 0 planning and extraction")
         current = self.ensure_brief(project_id)
         if request_id:
             existing = self.db.get_brief_conversation_by_request(project_id, request_id, "assistant")

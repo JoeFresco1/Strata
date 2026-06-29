@@ -51,6 +51,10 @@ class LlamaCppClient:
             raise ValueError("LLM model name cannot be empty.")
         self.model_name = cleaned
 
+    def set_api_key(self, api_key: str) -> None:
+        """Switch the bearer token used for OpenAI-compatible requests."""
+        self.api_key = api_key.strip()
+
     @staticmethod
     def _strip_reasoning_wrappers(content: str) -> str:
         cleaned = re.sub(r"(?is)<think>\s*</think>\s*", "", content).strip()
@@ -105,18 +109,26 @@ class LlamaCppClient:
 
     def healthcheck(self) -> tuple[bool, str]:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
-        for path in ("/health", "/v1/models"):
+        for path in ("/v1/models", "/health"):
             try:
                 response = requests.get(
                     f"{self.base_url}{path}",
                     timeout=10,
                     headers=headers,
                 )
+                if response.status_code in {401, 403}:
+                    return False, "Provider rejected the configured bearer token."
+                if response.status_code == 404 and path == "/v1/models":
+                    return False, "Provider is reachable, but `/v1/models` is missing."
                 if response.ok:
                     return True, f"Reachable via {path}"
+            except requests.Timeout:
+                return False, "Provider health check timed out."
+            except requests.ConnectionError:
+                continue
             except requests.RequestException:
                 continue
-        return False, "Unable to reach llama.cpp server."
+        return False, "Unable to reach the configured provider."
 
     def generate_json(
         self,

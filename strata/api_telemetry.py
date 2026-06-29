@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException
 
-from strata.api_models import TelemetrySettingsUpdateRequest
+from strata.api_models import DataOwnershipSettingsUpdateRequest, DiagnosticsExportRequest, TelemetrySettingsUpdateRequest
 from strata.api_support import AppServices
+from strata.diagnostics import DiagnosticsOptions, diagnostics_preview
 from strata.execution_policy import resolved_runtime_request
 
 
@@ -24,6 +25,19 @@ def register_telemetry_routes(app: FastAPI, services: AppServices) -> None:
     ) -> dict[str, bool]:
         services.db.get_project(project_id)
         return services.db.upsert_telemetry_settings(project_id, request.model_dump())
+
+    @app.get("/api/projects/{project_id}/data-ownership")
+    def get_project_data_ownership(project_id: str) -> dict[str, object]:
+        services.db.get_project(project_id)
+        return services.db.data_ownership_summary(project_id, exports_dir=services.config.exports_dir)
+
+    @app.patch("/api/projects/{project_id}/data-ownership/settings")
+    def update_project_data_ownership_settings(
+        project_id: str,
+        request: DataOwnershipSettingsUpdateRequest,
+    ) -> dict[str, int | None]:
+        services.db.get_project(project_id)
+        return services.db.upsert_data_ownership_settings(project_id, request.model_dump())
 
     @app.get("/api/projects/{project_id}/analytics/runs/{call_id}")
     def inspect_project_run(project_id: str, call_id: str) -> dict[str, object]:
@@ -52,18 +66,45 @@ def register_telemetry_routes(app: FastAPI, services: AppServices) -> None:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"job": job.model_dump(mode="json")}
 
-    @app.post("/api/projects/{project_id}/diagnostics/export")
-    def export_project_diagnostics(project_id: str, background_tasks: BackgroundTasks) -> dict[str, object]:
+    @app.get("/api/projects/{project_id}/diagnostics/preview")
+    def preview_project_diagnostics(
+        project_id: str,
+        include_logs: bool = True,
+        include_recent_errors: bool = True,
+        include_traces: bool = True,
+        log_line_limit: int = 400,
+        redaction_profile: str = "standard",
+    ) -> dict[str, object]:
         services.db.get_project(project_id)
-        job = services.job_service.enqueue(
-            project_id=project_id,
-            kind="diagnostics",
-            workflow="diagnostics_export",
-            scope="project",
-            request_payload={},
-            dedupe_key=f"diagnostics:{project_id}",
-        )
-        background_tasks.add_task(services.job_service.run_job, job.id)
+        options = DiagnosticsOptions.from_payload({
+            "include_logs": include_logs,
+            "include_recent_errors": include_recent_errors,
+            "include_traces": include_traces,
+            "log_line_limit": log_line_limit,
+            "redaction_profile": redaction_profile,
+        })
+        return diagnostics_preview(services, project_id, options)
+
+    @app.post("/api/projects/{project_id}/diagnostics/export")
+    def export_project_diagnostics(
+        project_id: str,
+        background_tasks: BackgroundTasks,
+        request: DiagnosticsExportRequest = Body(default_factory=DiagnosticsExportRequest),
+    ) -> dict[str, object]:
+        services.db.get_project(project_id)
+        payload = request.model_dump()
+        try:
+            job = services.job_service.enqueue(
+                project_id=project_id,
+                kind="diagnostics",
+                workflow="diagnostics_export",
+                scope="project",
+                request_payload=payload,
+                dedupe_key=f"diagnostics:{project_id}:{payload}",
+            )
+            background_tasks.add_task(services.job_service.run_job, job.id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"job": job.model_dump(mode="json")}
 
     @app.get("/api/projects/{project_id}/admin-health")

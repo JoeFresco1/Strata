@@ -37,6 +37,7 @@ from strata.models import (
     SimilarityMatch,
 )
 from strata.project_settings import default_project_model_settings, normalize_model_settings
+from strata.provider_onboarding import ProviderValidator, default_provider_readiness
 from strata.prompts import (
     build_pillar_prompt,
     build_pillar_research_assessment_prompt,
@@ -173,6 +174,53 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(cleaned, '{"ok": true}')
 
 
+class ProviderValidatorTests(unittest.TestCase):
+    def test_invalid_url_is_rejected(self) -> None:
+        validator = ProviderValidator()
+
+        with self.assertRaisesRegex(ValueError, "full http:// or https:// URL"):
+            validator.validate({
+                "llama_base_url": "localhost:8080",
+                "model_name": "local-model",
+                "effective_bearer_token": "",
+                "runtime_preset": "llama_cpp",
+                "max_output_tokens": 1800,
+            })
+
+    @patch("strata.provider_onboarding.requests.get")
+    def test_missing_model_is_reported(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = MagicMock(ok=True, json=MagicMock(return_value={"data": [{"id": "other-model"}]}))
+        validator = ProviderValidator()
+
+        with self.assertRaisesRegex(ValueError, "was not returned by `/v1/models`"):
+            validator.validate({
+                "llama_base_url": "http://127.0.0.1:8080",
+                "model_name": "local-model",
+                "effective_bearer_token": "",
+                "runtime_preset": "llama_cpp",
+                "max_output_tokens": 1800,
+            })
+
+    @patch("strata.provider_onboarding.requests.post")
+    @patch("strata.provider_onboarding.requests.get")
+    def test_successful_validation_marks_provider_ready(self, mock_get: MagicMock, mock_post: MagicMock) -> None:
+        mock_get.return_value = MagicMock(ok=True, json=MagicMock(return_value={"data": [{"id": "local-model"}]}))
+        mock_post.return_value = MagicMock(ok=True, status_code=200, json=MagicMock(return_value={"choices": [{"message": {"content": "OK"}}]}))
+        validator = ProviderValidator()
+
+        result = validator.validate({
+            "llama_base_url": "http://127.0.0.1:8080",
+            "model_name": "local-model",
+            "effective_bearer_token": "",
+            "runtime_preset": "llama_cpp",
+            "max_output_tokens": 1800,
+        })
+
+        self.assertTrue(result.readiness["ready"])
+        self.assertTrue(result.readiness["capability_ok"])
+        self.assertEqual(result.readiness["preset"], "llama_cpp")
+
+
 class BriefServiceTests(unittest.TestCase):
     def test_plan_turn_updates_same_canonical_brief(self) -> None:
         class StubClient:
@@ -187,6 +235,7 @@ class BriefServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "specforge.db")
             project = db.create_project("Test", "A useful product")
+            db.set_app_setting("provider_readiness", json.dumps({"ready": True, "message": "Ready for tests."}))
             service = BriefService(db, StubClient())  # type: ignore[arg-type]
 
             reply, brief, guidance = service.append_plan_turn(project.id, "Competitor is Acme.")
@@ -215,6 +264,7 @@ class BriefServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "specforge.db")
             project = db.create_project("Test", "A useful product")
+            db.set_app_setting("provider_readiness", json.dumps({"ready": True, "message": "Ready for tests."}))
             client = StubClient()
             service = BriefService(db, client)  # type: ignore[arg-type]
 

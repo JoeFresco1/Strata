@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import requests
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -16,6 +17,7 @@ from strata.assistant_index import AssistantIndexService
 from strata.assistant_service import AssistantService
 from strata.api_models import Layer2FeatureCreateRequest, Layer2FeatureEvidenceRequest
 from strata.db import Database
+from strata.diagnostics import Redactor, diagnostics_content_hash
 from strata.embeddings import EmbeddingService
 from strata.export import export_layer2_markdown, export_layer3_manifest
 from strata.generation import LAYER2_EXHAUSTION_FAMILIES, LAYER2_LENSES, LAYER2_SURVEY_BUILDER_FAMILIES, GenerationService
@@ -148,15 +150,89 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(summary["cancelled"], 1)
             self.assertEqual(summary["recent"][0]["id"], job.id)
 
+    def test_project_archive_import_roundtrip_warns_and_remaps_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Archive Source", "Portable archive test")
+            db.upsert_project_brief(
+                project_id=project.id,
+                product_idea=project.idea,
+                known_competitors=["Qualtrics"],
+                constraints="",
+                status="published",
+            )
+            settings = default_project_model_settings(
+                AppConfig(database_backend="sqlite", db_path=Path(tmpdir) / "specforge.db", embeddings_enabled=False),
+            )
+            settings["llm_profiles"][0]["local_path"] = str(Path(tmpdir) / "missing-model.gguf")
+            db.upsert_project_model_settings(project_id=project.id, **settings)
+            job = db.create_platform_job(
+                project_id=project.id,
+                kind="diagnostics",
+                workflow="diagnostics_export",
+                scope="project",
+            )
+            db.update_platform_job(job.id, status="completed", result_payload={"json_path": "diagnostics.json"})
+
+            archive_path = db.export_project_archive(project.id, Path(tmpdir) / "exports")
+            result = db.import_project_archive(archive_path)
+
+            self.assertNotEqual(result["project"].id, project.id)
+            self.assertTrue(result["lifecycle_warnings"])
+            imported_settings = db.get_project_model_settings(result["project"].id)
+            self.assertIsNotNone(imported_settings)
+            self.assertEqual(imported_settings.llm_profiles[0].local_path, "")
+            imported_jobs = db.list_platform_jobs(result["project"].id)
+            self.assertEqual(len(imported_jobs), 1)
+            self.assertEqual(imported_jobs[0].workflow, "diagnostics_export")
+
+    def test_archived_project_blocks_metadata_writes_until_unarchived(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "api.db"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, embeddings_enabled=False)
+            with patch("strata.api.AppConfig", return_value=config), TestClient(create_app()) as client:
+                created = client.post("/api/projects", json={"name": "Archive Guard", "idea": "Lifecycle test"})
+                self.assertEqual(created.status_code, 200)
+                project_id = created.json()["id"]
+
+                archived = client.post(f"/api/projects/{project_id}/archive")
+                self.assertEqual(archived.status_code, 200)
+                self.assertEqual(archived.json()["lifecycle_state"], "archived")
+
+                blocked = client.patch(
+                    f"/api/projects/{project_id}",
+                    json={"name": "Archive Guard", "idea": "Lifecycle test"},
+                )
+                self.assertEqual(blocked.status_code, 409)
+
+                unarchived = client.post(f"/api/projects/{project_id}/unarchive")
+                self.assertEqual(unarchived.status_code, 200)
+                allowed = client.patch(
+                    f"/api/projects/{project_id}",
+                    json={"name": "Archive Guard Restored", "idea": "Lifecycle test"},
+                )
+                self.assertEqual(allowed.status_code, 200)
+                self.assertEqual(allowed.json()["name"], "Archive Guard Restored")
+
     def test_diagnostics_export_uses_unified_platform_job_routes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "api.db"
             exports_dir = Path(tmpdir) / "exports"
+            runtime_logs = Path(tmpdir) / ".runtime" / "logs"
+            runtime_logs.mkdir(parents=True)
+            (runtime_logs / "strata-api.log").write_text(
+                "Bearer abcdefghijklmnopqrstuvwxyz123456\n"
+                "database=postgresql://user:secret@localhost:5432/db\n"
+                "path=C:\\Users\\Fresc\\secret.txt email=test@example.com\n",
+                encoding="utf-8",
+            )
             config = AppConfig(database_backend="sqlite", db_path=db_path, exports_dir=exports_dir, embeddings_enabled=False)
-            with patch("strata.api.AppConfig", return_value=config), TestClient(create_app()) as client:
+            with patch("strata.api.AppConfig", return_value=config), patch("strata.diagnostics.ROOT_DIR", Path(tmpdir)), TestClient(create_app()) as client:
                 created = client.post("/api/projects", json={"name": "Queued", "idea": "Durable diagnostics"})
                 self.assertEqual(created.status_code, 200)
                 project_id = created.json()["id"]
+                db = Database(db_path)
+                db.set_app_setting("provider_readiness", json.dumps({"ready": True, "message": "Ready for tests."}))
 
                 queued = client.post(f"/api/projects/{project_id}/diagnostics/export")
                 self.assertEqual(queued.status_code, 200)
@@ -169,10 +245,252 @@ class DatabaseTests(unittest.TestCase):
                 output_path = Path(matching["result_payload"]["json_path"])
                 self.assertTrue(output_path.exists())
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
-                self.assertEqual(payload["manifest"]["bundle_version"], 1)
+                self.assertEqual(payload["manifest"]["bundle_version"], 2)
+                self.assertEqual(payload["manifest"]["bundle_schema_id"], "strata.diagnostics.bundle.v2")
+                self.assertRegex(payload["manifest"]["content_hash"], r"^[a-f0-9]{64}$")
                 self.assertIn("dependency_health", payload["manifest"]["included_sections"])
-                self.assertIn("database", payload["dependency_health"])
-                self.assertIn("model_server", payload["dependency_health"])
+
+    @patch("strata.provider_onboarding.requests.post")
+    @patch("strata.provider_onboarding.requests.get")
+    def test_setup_complete_persists_server_side_token_without_returning_it(self, mock_get: MagicMock, mock_post: MagicMock) -> None:
+        mock_get.return_value = MagicMock(ok=True, json=MagicMock(return_value={"data": [{"id": "local-model"}]}))
+        mock_post.return_value = MagicMock(ok=True, status_code=200, json=MagicMock(return_value={"choices": [{"message": {"content": "OK"}}]}))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "setup.db"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, embeddings_enabled=False)
+            with patch("strata.api.AppConfig", return_value=config), TestClient(create_app()) as client:
+                response = client.post("/api/setup/complete", json={
+                    "llama_base_url": "http://127.0.0.1:8080",
+                    "model_name": "local-model",
+                    "embeddings_enabled": False,
+                    "embeddings_model_name": "sentence-transformers/all-MiniLM-L6-v2",
+                    "bearer_token": "super-secret-token",
+                    "context_window": 4096,
+                    "max_output_tokens": 512,
+                    "runtime_preset": "llama_cpp",
+                })
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertNotIn("bearer_token", payload)
+                self.assertNotIn("super-secret-token", json.dumps(payload))
+                self.assertTrue(payload["has_bearer_token"])
+                self.assertTrue(payload["provider_readiness"]["ready"])
+                db = Database(db_path)
+                self.assertEqual(db.get_app_setting("model_api_key"), "super-secret-token")
+                status = client.get("/api/setup/status").json()
+                self.assertTrue(status["defaults"]["has_bearer_token"])
+                self.assertNotIn("super-secret-token", json.dumps(status))
+                config_payload = client.get("/api/config").json()
+                self.assertTrue(config_payload["has_bearer_token"])
+                self.assertNotIn("super-secret-token", json.dumps(config_payload))
+
+    @patch("strata.provider_onboarding.requests.get")
+    def test_setup_complete_allows_offline_provider_but_marks_not_ready(self, mock_get: MagicMock) -> None:
+        mock_get.side_effect = requests.ConnectionError("offline")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "setup-offline.db"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, embeddings_enabled=False)
+            with patch("strata.api.AppConfig", return_value=config), TestClient(create_app()) as client:
+                response = client.post("/api/setup/complete", json={
+                    "llama_base_url": "http://127.0.0.1:8080",
+                    "model_name": "local-model",
+                    "embeddings_enabled": False,
+                    "embeddings_model_name": "sentence-transformers/all-MiniLM-L6-v2",
+                    "context_window": 4096,
+                    "max_output_tokens": 512,
+                    "runtime_preset": "llama_cpp",
+                })
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(payload["completed"])
+                self.assertFalse(payload["model_ok"])
+                self.assertIn("Could not reach", payload["provider_readiness"]["message"])
+                status = client.get("/api/setup/status").json()
+                self.assertTrue(status["completed"])
+                self.assertFalse(status["provider_readiness"]["ready"])
+
+    def test_diagnostics_export_is_blocked_when_setup_completed_but_provider_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "blocked.db"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, embeddings_enabled=False)
+            db = Database(db_path)
+            db.set_app_setting("setup_completed", "true")
+            db.set_app_setting("provider_readiness", json.dumps({
+                "ready": False,
+                "reachable": True,
+                "auth_ok": True,
+                "model_listed": False,
+                "capability_ok": False,
+                "message": "Model-backed workflows are blocked until validation passes.",
+                "error_code": "model_missing",
+            }))
+            with patch("strata.api.AppConfig", return_value=config), TestClient(create_app()) as client:
+                created = client.post("/api/projects", json={"name": "Blocked", "idea": "Diagnostics gate"})
+                self.assertEqual(created.status_code, 200)
+                project_id = created.json()["id"]
+
+                blocked = client.post(f"/api/projects/{project_id}/diagnostics/export", json={})
+
+                self.assertEqual(blocked.status_code, 400)
+                self.assertIn("blocked", blocked.json()["detail"])
+
+    def test_existing_project_without_setup_flag_still_blocks_unverified_provider_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "upgraded.db"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, embeddings_enabled=False)
+            db = Database(db_path)
+            project = db.create_project("Upgraded", "Existing install")
+            with patch("strata.api.AppConfig", return_value=config), TestClient(create_app()) as client:
+                blocked = client.post(f"/api/projects/{project.id}/diagnostics/export", json={})
+
+                self.assertEqual(blocked.status_code, 400)
+                self.assertIn("blocked", blocked.json()["detail"])
+
+    def test_diagnostics_preview_does_not_write_export_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "api.db"
+            exports_dir = Path(tmpdir) / "exports"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, exports_dir=exports_dir, embeddings_enabled=False)
+            with patch("strata.api.AppConfig", return_value=config), patch("strata.diagnostics.ROOT_DIR", Path(tmpdir)), TestClient(create_app()) as client:
+                created = client.post("/api/projects", json={"name": "Preview", "idea": "Redaction preview"})
+                self.assertEqual(created.status_code, 200)
+                project_id = created.json()["id"]
+
+                preview = client.get(
+                    f"/api/projects/{project_id}/diagnostics/preview",
+                    params={"include_logs": "false", "include_recent_errors": "true", "include_traces": "false"},
+                )
+                self.assertEqual(preview.status_code, 200)
+                payload = preview.json()
+                self.assertEqual(payload["manifest"]["bundle_version"], 2)
+                self.assertIn("recent_errors", payload["manifest"]["included_sections"])
+                self.assertNotIn("logs", payload["manifest"]["included_sections"])
+                self.assertFalse((exports_dir / f"{project_id}-diagnostics.json").exists())
+
+    def test_diagnostics_redaction_and_hash_are_deterministic(self) -> None:
+        redactor = Redactor()
+        value = redactor.redact(
+            "api_key=sk-test-secret Bearer abcdefghijklmnopqrstuvwxyz123456 "
+            "postgresql://user:pass@localhost/db C:\\Users\\Fresc\\file.txt person@example.com"
+        )
+        self.assertIn("[REDACTED:api_key]", value)
+        self.assertIn("[REDACTED:bearer_token]", value)
+        self.assertIn("[REDACTED:database_url]", value)
+        self.assertIn("[REDACTED:windows_path]", value)
+        self.assertIn("[REDACTED:email]", value)
+
+        first = {
+            "manifest": {"generated_at": "2026-01-01T00:00:00Z", "content_hash": ""},
+            "exported_at": "2026-01-01T00:00:00Z",
+            "logs": {"files": [{"lines": ["same"]}]},
+        }
+        second = {
+            "manifest": {"generated_at": "2026-01-02T00:00:00Z", "content_hash": "old"},
+            "exported_at": "2026-01-02T00:00:00Z",
+            "logs": {"files": [{"lines": ["same"]}]},
+        }
+        changed = {
+            "manifest": {"generated_at": "2026-01-02T00:00:00Z", "content_hash": ""},
+            "exported_at": "2026-01-02T00:00:00Z",
+            "logs": {"files": [{"lines": ["different"]}]},
+        }
+        self.assertEqual(diagnostics_content_hash(first), diagnostics_content_hash(second))
+        self.assertNotEqual(diagnostics_content_hash(first), diagnostics_content_hash(changed))
+
+    def test_project_lifecycle_routes_filter_edit_archive_and_guard_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "api.db"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, embeddings_enabled=False)
+            with patch("strata.api.AppConfig", return_value=config), TestClient(create_app()) as client:
+                created = client.post("/api/projects", json={"name": "Lifecycle", "idea": "Original summary"})
+                self.assertEqual(created.status_code, 200)
+                project_id = created.json()["id"]
+
+                edited = client.patch(f"/api/projects/{project_id}", json={"name": "Lifecycle Edited", "idea": "Library summary"})
+                self.assertEqual(edited.status_code, 200)
+                self.assertEqual(edited.json()["name"], "Lifecycle Edited")
+
+                self.assertEqual(len(client.get("/api/projects?state=active").json()), 1)
+                archived = client.post(f"/api/projects/{project_id}/archive")
+                self.assertEqual(archived.status_code, 200)
+                self.assertEqual(archived.json()["lifecycle_state"], "archived")
+                self.assertEqual(client.get("/api/projects?state=active").json(), [])
+                self.assertEqual(client.get("/api/projects?state=archived").json()[0]["id"], project_id)
+
+                snapshot = client.get(f"/api/projects/{project_id}")
+                self.assertEqual(snapshot.status_code, 200)
+                blocked = client.patch(f"/api/projects/{project_id}/brief", json={
+                    "product_idea": "Changed",
+                    "known_competitors": [],
+                    "constraints": "",
+                })
+                self.assertEqual(blocked.status_code, 409)
+                self.assertIn("Archived projects are read-only", blocked.json()["detail"])
+
+                clone = client.post(f"/api/projects/{project_id}/clone", json={})
+                self.assertEqual(clone.status_code, 200)
+                self.assertEqual(clone.json()["source_project_id"], project_id)
+
+                unarchived = client.post(f"/api/projects/{project_id}/unarchive")
+                self.assertEqual(unarchived.status_code, 200)
+                self.assertEqual(unarchived.json()["lifecycle_state"], "active")
+
+    def test_project_clone_archive_import_and_purge_preserve_expected_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Clone Source", "Original library summary")
+            db.upsert_project_brief(
+                project_id=project.id,
+                product_idea="Published product",
+                known_competitors=["Acme"],
+                constraints="Local",
+                status="published",
+            )
+            pillar = db.create_node(
+                project_id=project.id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title="Pillar",
+                description="Pillar description",
+                status="kept",
+            )
+            db.upsert_project_workspace_state(
+                project_id=project.id,
+                view_mode="table",
+                selected_entity_type="pillar",
+                selected_entity_id=pillar.id,
+                table_scope="project",
+                map_state={"zoom": 2},
+                table_state={"q": "pillar"},
+            )
+            db.record_model_call({"project_id": project.id, "layer": "layer1", "workflow": "test", "status": "completed"})
+
+            clone = db.clone_project(project.id)
+            self.assertNotEqual(clone.id, project.id)
+            self.assertEqual(clone.source_project_id, project.id)
+            self.assertEqual(db.get_project_brief(clone.id).product_idea, "Published product")
+            self.assertEqual(len(db.list_nodes(clone.id)), 1)
+            self.assertIsNone(db.get_project_workspace_state(clone.id))
+            self.assertEqual(db.telemetry_summary(clone.id)["totals"]["calls"], 0)
+
+            archive_path = db.export_project_archive(project.id, Path(tmpdir) / "exports")
+            self.assertTrue(archive_path.exists())
+            imported = db.import_project_archive(archive_path)
+            imported_project = imported["project"]
+            self.assertNotEqual(imported_project.id, project.id)
+            self.assertEqual(db.get_project_brief(imported_project.id).product_idea, "Published product")
+            self.assertEqual(len(db.list_nodes(imported_project.id)), 1)
+            self.assertEqual(db.telemetry_summary(imported_project.id)["totals"]["calls"], 1)
+
+            with self.assertRaises(ValueError):
+                db.purge_project(project.id, confirmation_token="wrong")
+            result = db.purge_project(project.id, confirmation_token=f"PURGE-{project.id[:8]}")
+            self.assertEqual(result["purged_project_id"], project.id)
+            with self.assertRaises(ValueError):
+                db.get_project(project.id)
 
     def test_manual_layer1_pillar_route_requires_published_brief(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -148,6 +148,7 @@ class ResearchServiceTests(unittest.TestCase):
     def _layer2_fixture(tmpdir: str, *, feature_count: int = 2) -> tuple[Database, object, list[object]]:
         """Create a small active/cut feature graph for Layer 2 research tests."""
         db = Database(Path(tmpdir) / "specforge.db")
+        db.set_app_setting("provider_readiness", json.dumps({"ready": True, "message": "Ready for tests."}))
         project = db.create_project("Test", "Survey software")
         pillar = db.create_node(
             project_id=project.id,
@@ -343,6 +344,7 @@ class AssistantServiceTests(unittest.TestCase):
     def _database(self, tmpdir: str) -> tuple[Database, str]:
         """Create a project with the model assignments required by the assistant."""
         db = Database(Path(tmpdir) / "assistant.db")
+        db.set_app_setting("provider_readiness", json.dumps({"ready": True, "message": "Ready for tests."}))
         project = db.create_project("Assistant test", "Map a complex product")
         settings = default_project_model_settings(AppConfig(embeddings_enabled=False))
         db.upsert_project_model_settings(project_id=project.id, **settings)

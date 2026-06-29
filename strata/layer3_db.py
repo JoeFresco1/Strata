@@ -29,15 +29,16 @@ class Layer3DatabaseMixin:
             "parent_pillar_id", "parent_pillar_title", "feature_name", "feature_description",
             "product_purpose", "feature_archetype", "supported_variants", "configurable_options",
             "product_behaviors", "validation_constraints", "lifecycle_states", "dependencies",
-            "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test",
+            "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "competitive_analysis",
             "downstream_readiness_score", "readiness_rationale", "review_state", "provenance",
         ]
+        values.setdefault("competitive_analysis", {})
         encoded = {
             key: self._dump_json(values[key])
             if key in {
                 "supported_variants", "configurable_options", "product_behaviors",
                 "validation_constraints", "lifecycle_states", "dependencies",
-                "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "provenance",
+                "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "competitive_analysis", "provenance",
             }
             else values[key]
             for key in columns
@@ -97,7 +98,7 @@ class Layer3DatabaseMixin:
         json_fields = {
             "supported_variants", "configurable_options", "product_behaviors",
             "validation_constraints", "lifecycle_states", "dependencies",
-            "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "provenance",
+            "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "competitive_analysis", "provenance",
         }
         assignments = [f"{key} = {self.param}" for key in updates]
         values = [self._dump_json(value) if key in json_fields else value for key, value in updates.items()]
@@ -293,7 +294,7 @@ class Layer3DatabaseMixin:
         json_fields = {
             "supported_variants", "configurable_options", "product_behaviors",
             "validation_constraints", "lifecycle_states", "dependencies",
-            "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "provenance",
+            "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "competitive_analysis", "provenance",
         }
         values = {
             key: self._load_layer3_json(self._row_value(row, key)) if key in json_fields else self._row_value(row, key)
