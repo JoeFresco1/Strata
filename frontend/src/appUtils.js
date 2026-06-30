@@ -3,14 +3,18 @@ export const TABS = [
   { id: "Layer 0", label: "Brief" },
   { id: "Specs", label: "Capability Design" },
   { id: "Analytics", label: "Analytics" },
-  { id: "Project", label: "Project" },
+  { id: "Project", label: "Project Settings" },
 ];
 
 export function sortProjects(projects, sortOrder) {
   // Keep project library ordering deterministic after refreshes.
   return [...projects].sort((left, right) => {
-    const leftTime = new Date(left.created_at).getTime();
-    const rightTime = new Date(right.created_at).getTime();
+    if (sortOrder === "name") {
+      return String(left.name || "").localeCompare(String(right.name || ""), undefined, { sensitivity: "base" });
+    }
+    const field = sortOrder === "last_opened" ? "last_opened_at" : sortOrder === "newest" || sortOrder === "oldest" ? "created_at" : "updated_at";
+    const leftTime = left[field] ? new Date(left[field]).getTime() : 0;
+    const rightTime = right[field] ? new Date(right[field]).getTime() : 0;
     return sortOrder === "oldest" ? leftTime - rightTime : rightTime - leftTime;
   });
 }

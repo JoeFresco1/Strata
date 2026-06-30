@@ -733,7 +733,11 @@ export default function App() {
   const competitiveIntelligenceEnabled = projectModelSettings?.competitive_intelligence_enabled ?? true;
   const quarantine = memories.find((item) => item.scope === "layer1" && item.memory_type === "quarantine");
   const layer1Enabled = brief?.status === "published";
-  const sortedProjects = sortProjects(projects, sortOrder);
+  const normalizedProjectQuery = projectSearchQuery.trim().toLowerCase();
+  const visibleProjects = normalizedProjectQuery
+    ? projects.filter((item) => `${item.name || ""} ${item.idea || ""}`.toLowerCase().includes(normalizedProjectQuery))
+    : projects;
+  const sortedProjects = sortProjects(visibleProjects, sortOrder);
   const workspaceTree = useMemo(
     () => buildWorkspaceTree(project, brief, nodes, layer2Graph),
     [project, brief, nodes, layer2Graph],
@@ -804,7 +808,7 @@ export default function App() {
                 System Prompts
               </button>
               <button type="button" className="rail-action" onClick={() => setShowSettings(true)}>
-                Settings
+                App Settings
               </button>
             </div>
             <div className="nav-rail-footer muted">

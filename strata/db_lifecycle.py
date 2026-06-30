@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from pgvector import Vector
+
 from strata.data_ownership import matching_project_artifacts, project_slug
 
 
@@ -343,7 +345,7 @@ class ProjectLifecycleDatabaseMixin:
         if not insert_columns:
             return
         placeholders = ", ".join([self.param] * len(insert_columns))
-        values = tuple(self._prepare_import_value(payload[column]) for column in insert_columns)
+        values = tuple(self._prepare_lifecycle_import_value(column, payload[column]) for column in insert_columns)
         self._execute(
             f"INSERT INTO {table} ({', '.join(insert_columns)}) VALUES ({placeholders})",
             values,
@@ -450,7 +452,9 @@ class ProjectLifecycleDatabaseMixin:
                 return fallback
         return value if value is not None else fallback
 
-    def _prepare_import_value(self, value: Any) -> Any:
+    def _prepare_lifecycle_import_value(self, column: str, value: Any) -> Any:
+        if self.is_postgres and column == "embedding" and isinstance(value, list):
+            return Vector(value)
         if isinstance(value, (dict, list)):
             return self._dump_json(value)
         return value

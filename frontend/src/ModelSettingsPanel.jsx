@@ -89,6 +89,7 @@ function ModelSettingsEditor({
   saveLabel,
   showRuntimeFields = false,
   showCompetitiveControl = false,
+  savePlacement = "header",
 }) {
   // Shared editor for app defaults and project-level model overrides.
   if (!settings) {
@@ -185,9 +186,11 @@ function ModelSettingsEditor({
       <div className="panel">
         <div className="panel-header">
           <h3>{title}</h3>
-          <button type="button" onClick={onSave} disabled={saveState === "saving"}>
-            {saveState === "saving" ? "Saving..." : saveLabel}
-          </button>
+          {savePlacement === "header" ? (
+            <button type="button" onClick={onSave} disabled={saveState === "saving"}>
+              {saveState === "saving" ? "Saving..." : saveLabel}
+            </button>
+          ) : null}
         </div>
         <p className="muted">{description}</p>
       </div>
@@ -532,6 +535,18 @@ function ModelSettingsEditor({
         </div>
         </div>
       </details>
+
+      {savePlacement === "footer" ? (
+        <div className="panel settings-save-bar">
+          <div>
+            <strong>Ready to apply project-specific behavior?</strong>
+            <p className="muted">Save after reviewing compute mode, routing, and research behavior for this project.</p>
+          </div>
+          <button type="button" onClick={onSave} disabled={saveState === "saving"}>
+            {saveState === "saving" ? "Saving..." : saveLabel}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -540,7 +555,7 @@ export function AppSettingsModal({ settings, config, saveState, onChange, onSave
   // Modal wrapper for global defaults that seed future projects.
   return (
     <ModalFrame
-      title="Settings"
+      title="App Settings"
       subtitle="Manage reusable app defaults, model profiles, embeddings, and assignment routing for new projects."
       onClose={onClose}
       className="settings-modal"
@@ -586,6 +601,7 @@ export function ProjectSettingsTab({ settings, config, saveState, onChange, onSa
         description="These settings override the reusable app defaults only for this project."
         saveLabel="Save Project Overrides"
         showCompetitiveControl
+        savePlacement="footer"
       />
     </section>
   );

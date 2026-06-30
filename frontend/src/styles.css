@@ -426,15 +426,14 @@ pre {
 }
 
 .hub-actions {
-  flex-direction: column;
-  align-items: stretch;
+  align-items: flex-start;
   gap: 0.6rem;
-  min-width: 220px;
+  max-width: 520px;
   padding-top: 0.1rem;
 }
 
 .hub-actions button {
-  align-self: end;
+  align-self: auto;
 }
 
 .checkbox-grid {
@@ -913,6 +912,15 @@ pre {
   .hub-actions,
   .hub-actions button {
     width: 100%;
+  }
+
+  .hub-actions {
+    max-width: none;
+  }
+
+  .project-tool-section-header {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .tree-toolbar-row,

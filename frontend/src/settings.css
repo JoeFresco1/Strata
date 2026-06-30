@@ -69,6 +69,7 @@
 .assignment-group,
 .guide-grid,
 .guide-stack,
+.guide-group,
 .guide-card,
 .modal-form {
   display: grid;
@@ -113,9 +114,37 @@
   grid-template-columns: 1fr;
 }
 
+.settings-save-bar {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-save-bar p,
+.settings-save-bar strong {
+  margin: 0;
+}
+
+@media (max-width: 720px) {
+  .settings-save-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+.guide-group {
+  gap: 0.75rem;
+}
+
+.guide-group h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
 .guide-card {
   padding: 1rem;
-  border-radius: 16px;
+  border-radius: 8px;
   border: 1px solid #d9e0e6;
   background: linear-gradient(180deg, #ffffff 0%, #f7fafb 100%);
   box-shadow:
@@ -145,7 +174,8 @@
   width: min(1100px, 100%);
   max-height: calc(100vh - 2.5rem);
   overflow: auto;
-  padding: 1.4rem;
+  padding: 1.4rem 1rem 1.4rem 1.4rem;
+  scrollbar-gutter: stable;
   border-radius: 24px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.985) 0%, rgba(247, 249, 251, 0.985) 100%);
   border: 1px solid rgba(255, 255, 255, 0.6);
@@ -156,6 +186,10 @@
 
 .compact-modal {
   width: min(680px, 100%);
+}
+
+.guide-modal {
+  width: min(980px, 100%);
 }
 
 .prompts-modal {
@@ -175,6 +209,28 @@
   box-shadow:
     0 10px 24px rgba(23, 32, 38, 0.05),
     inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+.modal-shell::-webkit-scrollbar {
+  width: 14px;
+}
+
+.modal-shell::-webkit-scrollbar-track {
+  margin: 1.05rem 0;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.modal-shell::-webkit-scrollbar-thumb {
+  border: 4px solid transparent;
+  border-radius: 999px;
+  background: rgba(92, 112, 122, 0.55);
+  background-clip: content-box;
+}
+
+.modal-shell::-webkit-scrollbar-thumb:hover {
+  background: rgba(54, 74, 84, 0.72);
+  background-clip: content-box;
 }
 
 .modal-shell .guide-card {

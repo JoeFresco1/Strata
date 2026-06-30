@@ -2,6 +2,18 @@ import { CompetitiveIntelligencePanel } from "./Layer2GraphPanel";
 import { ProjectSettingsTab } from "./ModelSettingsPanel";
 import { approvedNodes } from "./appUtils";
 
+function computeModeLabel(value) {
+  return {
+    local_first: "Local-first",
+    api_first: "API-first",
+    blended: "Blended",
+  }[value] || "Local-first";
+}
+
+function routingLabel(value) {
+  return value === "api" ? "Cloud/API" : "Local";
+}
+
 export default function ProjectToolsTab({
   config,
   competitiveIntelligenceEnabled,
@@ -21,10 +33,61 @@ export default function ProjectToolsTab({
   onResearchLayer2,
   onProjectArchiveExport,
 }) {
+  const settings = projectModelSettings || {};
+  const routingPolicy = settings.routing_policy || {};
+  const exportCount = [lastExport?.markdown_path, lastExport?.json_path].filter(Boolean).length;
+
   return (
     <section className="tab-content">
-      <details className="panel project-tool-section" open>
-        <summary>Project settings</summary>
+      <div className="panel project-settings-summary-card">
+        <div className="panel-header">
+          <div>
+            <h3>Project behavior</h3>
+            <p className="muted">Confirm how this project will run before you change anything deeper.</p>
+          </div>
+          <span className={`status-pill ${projectSettingsSaveState === "saved" ? "published" : "draft"}`}>
+            {projectSettingsSaveState === "saving"
+              ? "Saving"
+              : projectSettingsSaveState === "saved"
+                ? "Saved"
+                : "Ready"}
+          </span>
+        </div>
+        <div className="project-settings-summary-grid">
+          <div className="project-settings-summary-item">
+            <span>Compute mode</span>
+            <strong>{computeModeLabel(settings.execution_intent)}</strong>
+          </div>
+          <div className="project-settings-summary-item">
+            <span>Layer 0</span>
+            <strong>{routingLabel(routingPolicy.layer0)}</strong>
+          </div>
+          <div className="project-settings-summary-item">
+            <span>Generation</span>
+            <strong>{routingLabel(routingPolicy.generation)}</strong>
+          </div>
+          <div className="project-settings-summary-item">
+            <span>Research</span>
+            <strong>{routingLabel(routingPolicy.research)}</strong>
+          </div>
+          <div className="project-settings-summary-item">
+            <span>Assistant</span>
+            <strong>{routingLabel(routingPolicy.assistant)}</strong>
+          </div>
+          <div className="project-settings-summary-item">
+            <span>Competitive intel</span>
+            <strong>{competitiveIntelligenceEnabled ? "On" : "Off"}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel project-tool-section">
+        <div className="project-tool-section-header">
+          <div>
+            <h3>Project settings</h3>
+            <p className="muted">Decide how this one project should run without changing global defaults.</p>
+          </div>
+        </div>
         <ProjectSettingsTab
           settings={projectModelSettings}
           config={config}
@@ -32,9 +95,16 @@ export default function ProjectToolsTab({
           onChange={onProjectSettingsChange}
           onSave={onProjectSettingsSave}
         />
-      </details>
-      <details className="panel project-tool-section">
-        <summary>Export</summary>
+      </div>
+
+      <div className="panel project-tool-section">
+        <div className="project-tool-section-header">
+          <div>
+            <h3>Exports and handoff</h3>
+            <p className="muted">Create portable outputs once the project state is where you want it.</p>
+          </div>
+          {exportCount ? <span className="project-tool-inline-meta">{exportCount} saved path{exportCount === 1 ? "" : "s"}</span> : null}
+        </div>
         <div className="button-row">
           <button type="button" onClick={onExport}>
             Create Full Project Export
@@ -57,10 +127,16 @@ export default function ProjectToolsTab({
         {layer2Graph.review_open ? (
           <p className="warning">Layer 2 export includes unresolved review state. Layer 3 still requires approved features.</p>
         ) : null}
-      </details>
+      </div>
+
       {competitiveIntelligenceEnabled ? (
-        <details className="panel project-tool-section">
-          <summary>Competitive intelligence</summary>
+        <div className="panel project-tool-section">
+          <div className="project-tool-section-header">
+            <div>
+              <h3>Competitive intelligence</h3>
+              <p className="muted">Tune the competitor set and rerun feature-level evidence without leaving project controls.</p>
+            </div>
+          </div>
           <CompetitiveIntelligencePanel
             graph={layer2Graph}
             pillars={approvedNodes(nodes, "pillar")}
@@ -68,10 +144,11 @@ export default function ProjectToolsTab({
             onResearch={onResearchLayer2}
             researchJobs={researchJobs}
           />
-        </details>
+        </div>
       ) : null}
+
       <details className="panel export-diagnostics">
-        <summary>Advanced diagnostics and generation memory</summary>
+        <summary>Diagnostics and generation memory</summary>
         <p className="muted">{memories.length} memory records{quarantine ? " including Layer 1 quarantine data" : ""}.</p>
         <details>
           <summary>Generation memory</summary>
