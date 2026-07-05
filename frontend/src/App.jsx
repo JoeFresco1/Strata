@@ -1,24 +1,43 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiFetch, subscribeApiActivity } from "./apiClient";
-import { TABS, applyAssistantNavigation, assistantScopeFor, findWorkspaceEntity, sortProjects } from "./appUtils";
+import { HAMBURGER_ACTIONS, applyAssistantNavigation, assistantScopeFor, findWorkspaceEntity, sortProjects } from "./appUtils";
 import AppModals from "./AppModals";
-import BriefWorkspace from "./BriefWorkspace";
 import AssistantDrawer from "./AssistantDrawer";
-import LivingWorkspace from "./LivingWorkspace";
-import Layer3Workspace from "./Layer3Workspace";
 import ProjectAnalytics from "./ProjectAnalytics";
 import ProjectToolsTab from "./ProjectToolsTab";
+import ProductTreeTab from "./ProductTreeTab";
 import SetupWizard from "./SetupWizard";
 import { useProjectLifecycle } from "./useProjectLifecycle";
 import { buildWorkspaceTree } from "./projectWorkspaceData";
 import { ProjectHub } from "./ProjectShell";
-import { GenerationSummary, MarketPanel, ResearchStatus } from "./ReviewPanels";
 
 function parseOptionalPositiveInt(value) {
   const trimmed = String(value).trim();
   if (!trimmed) return null;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function HeaderIcon({ kind }) {
+  if (kind === "analytics") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+        <path d="M5 19V9h3v10H5Zm5.5 0V5h3v14h-3Zm5.5 0v-7h3v7h-3Z" />
+      </svg>
+    );
+  }
+  if (kind === "assistant") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+        <path d="M12 3a7 7 0 0 0-7 7v3.8L3.7 17A1 1 0 0 0 4.6 18H9l2.2 2.2a1.1 1.1 0 0 0 1.6 0L15 18h4.4a1 1 0 0 0 .9-1.4L19 13.8V10a7 7 0 0 0-7-7Zm-3 8a1.2 1.2 0 1 1 0-2.4A1.2 1.2 0 0 1 9 11Zm6 0a1.2 1.2 0 1 1 0-2.4A1.2 1.2 0 0 1 15 11Zm-5 3h4v1.6h-4V14Z" />
+      </svg>
+    );
+  }
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M19.4 13.5c.1-.5.1-1 .1-1.5s0-1-.1-1.5l2-1.5-2-3.5-2.4 1a7.8 7.8 0 0 0-2.6-1.5L14 2h-4l-.4 2.5A7.8 7.8 0 0 0 7 6L4.6 5l-2 3.5 2 1.5c-.1.5-.1 1-.1 1.5s0 1 .1 1.5l-2 1.5 2 3.5 2.4-1a7.8 7.8 0 0 0 2.6 1.5L10 22h4l.4-2.5A7.8 7.8 0 0 0 17 18l2.4 1 2-3.5-2-1.5ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
+    </svg>
+  );
 }
 
 export default function App() {
@@ -53,7 +72,6 @@ export default function App() {
   const [layer2TargetPerRound, setLayer2TargetPerRound] = useState(10);
   const [layer2TotalCap, setLayer2TotalCap] = useState(null);
   const [layer2MinNew, setLayer2MinNew] = useState(2);
-  const [layer3Thinking, setLayer3Thinking] = useState(false);
   const [lastExport, setLastExport] = useState(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
@@ -527,7 +545,13 @@ export default function App() {
   }
 
   async function handleBulkFeatureStatus(featureIds, status) {
-    const action_type = status === "prioritized" ? "prioritize" : status === "kept" ? "keep" : status;
+    const action_type = status === "prioritized"
+      ? "prioritize"
+      : status === "kept"
+        ? "keep"
+        : status === "approved"
+          ? "approve_for_layer3"
+          : status;
     await Promise.all(featureIds.map((featureId) => apiFetch(`/projects/${activeProjectId}/layer2/review`, {
       method: "POST",
       body: JSON.stringify({
@@ -536,6 +560,19 @@ export default function App() {
         payload: action_type === "prioritize" ? { priority: "high" } : {},
       }),
     })));
+    applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
+  }
+
+  async function handleMergeFeature(featureId, targetFeatureId) {
+    await apiFetch(`/projects/${activeProjectId}/layer2/review`, {
+      method: "POST",
+      body: JSON.stringify({
+        action_type: "merge",
+        feature_id: featureId,
+        target_feature_id: targetFeatureId,
+        payload: { rationale: "Reviewer combined this feature into the selected winner." },
+      }),
+    });
     applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
   }
 
@@ -574,6 +611,39 @@ export default function App() {
     }
   }
 
+  async function handleGenerateLayer3(featureIds = []) {
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/generate/layer3`, {
+        method: "POST",
+        body: JSON.stringify({
+          feature_ids: featureIds,
+          thinking_enabled: false,
+        }),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage("Layer 3 generation queued.");
+    } catch (generationError) {
+      setError(generationError.message);
+      throw generationError;
+    }
+  }
+
+  async function handleLayer3ExpansionReview(expansionId, action) {
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}/review`, {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage(`Layer 3 expansion marked ${action}.`);
+    } catch (reviewError) {
+      setError(reviewError.message);
+      throw reviewError;
+    }
+  }
+
   async function handleCompetitiveSettings(payload) {
     // Saves the competitor set used by the Layer 2 matrix.
     setError("");
@@ -588,108 +658,6 @@ export default function App() {
       setError(settingsError.message);
       throw settingsError;
     }
-  }
-
-  // Generate complete or selectively refreshed Capability Design Cards.
-  async function handleGenerateLayer3(featureIds, selectedSections = []) {
-    setError("");
-    try {
-      const payload = await apiFetch(`/projects/${activeProjectId}/generate/layer3`, {
-        method: "POST",
-        body: JSON.stringify({
-          feature_ids: featureIds,
-          thinking_enabled: layer3Thinking,
-          selected_sections: selectedSections,
-        }),
-      });
-      applySnapshot(payload.snapshot);
-      setStatusMessage(`Layer 3 generation queued as job ${payload.job?.id?.slice(0, 8) || ""}.`);
-    } catch (generationError) {
-      setError(generationError.message);
-      throw generationError;
-    }
-  }
-
-  async function runLayer3Mutation(request, successMessage) {
-    // Route Layer 3 mutations through the shared app error banner and snapshot refresh.
-    setError("");
-    try {
-      const response = await request();
-      if (response.snapshot) applySnapshot(response.snapshot);
-      setStatusMessage(successMessage);
-      return response;
-    } catch (mutationError) {
-      setError(mutationError.message);
-      throw mutationError;
-    }
-  }
-
-  async function handleLayer3Save(cardId, payload) {
-    // Persist human edits without replacing untouched card sections.
-    return runLayer3Mutation(
-      () => apiFetch(`/projects/${activeProjectId}/layer3/cards/${cardId}`, {
-        method: "PATCH",
-        body: JSON.stringify(payload),
-      }),
-      "Capability Design Card saved.",
-    );
-  }
-
-  async function handleLayer3Review(cardId, action) {
-    // Apply the explicit Layer 3 human review gate.
-    return runLayer3Mutation(
-      () => apiFetch(`/projects/${activeProjectId}/layer3/cards/${cardId}/review`, {
-        method: "POST",
-        body: JSON.stringify({ action }),
-      }),
-      `Capability Design Card marked ${action}.`,
-    );
-  }
-
-  async function handleLayer3PressureTest(cardId) {
-    // Refresh readiness after human edits without regenerating card content.
-    return runLayer3Mutation(
-      () => apiFetch(`/projects/${activeProjectId}/layer3/cards/${cardId}/pressure-test`, {
-        method: "POST",
-        body: JSON.stringify({ thinking_enabled: layer3Thinking }),
-      }),
-      "Capability Design pressure test queued.",
-    );
-  }
-
-  async function handleLayer3CoverageGaps(cardId) {
-    return runLayer3Mutation(
-      () => apiFetch(`/projects/${activeProjectId}/layer3/cards/${cardId}/coverage-gaps`, { method: "POST", body: JSON.stringify({ thinking_enabled: layer3Thinking }) }),
-      "Layer 3 coverage-gap audit queued.",
-    );
-  }
-
-  async function handleLayer3CompetitiveAnalysis(cardId) {
-    return runLayer3Mutation(
-      () => apiFetch(`/projects/${activeProjectId}/layer3/cards/${cardId}/competitive-analysis`, { method: "POST", body: JSON.stringify({ thinking_enabled: layer3Thinking }) }),
-      "Layer 3 competitive analysis queued.",
-    );
-  }
-
-  async function handleLayer3Decision(decisionId, status, resolution) {
-    // Resolve or reopen one downstream product decision.
-    return runLayer3Mutation(
-      () => apiFetch(`/projects/${activeProjectId}/layer3/decisions/${decisionId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status, resolution }),
-      }),
-      `Layer 3 decision marked ${status}.`,
-    );
-  }
-
-  async function handleLayer3Export() {
-    // Write approved cards as a structured downstream agent manifest.
-    const payload = await runLayer3Mutation(
-      () => apiFetch(`/projects/${activeProjectId}/export/layer3`, { method: "POST" }),
-      "Layer 3 manifest exported.",
-    );
-    setLastExport({ kind: "Layer 3", markdown_path: "", ...payload });
-    setStatusMessage(`Layer 3 manifest exported to ${payload.json_path}`);
   }
 
   // Trigger a project export and show the saved file paths.
@@ -728,7 +696,6 @@ export default function App() {
   const researchJobs = snapshot?.research_jobs || [];
   const researchFindings = snapshot?.research_findings || [];
   const layer2Graph = snapshot?.layer2_graph || {};
-  const layer3 = snapshot?.layer3 || {};
   const project = snapshot?.project || null;
   const competitiveIntelligenceEnabled = projectModelSettings?.competitive_intelligence_enabled ?? true;
   const quarantine = memories.find((item) => item.scope === "layer1" && item.memory_type === "quarantine");
@@ -747,6 +714,7 @@ export default function App() {
     [workspaceTree, workspaceState?.selected_entity_id],
   );
   const assistantScope = assistantScopeFor(activeTab, selectedWorkspaceEntity);
+  const currentTabLabel = activeTab === "Analytics" ? "Analytics" : activeTab === "Project" ? "Project Settings" : "Product Tree";
 
   if (bootstrapLoading && !config) {
     return <div className="app-loading-screen"><div className="loading-spinner" /><strong>Loading Strata</strong><span>Connecting to the local workspace...</span></div>;
@@ -765,6 +733,19 @@ export default function App() {
 
   function navigateFromAssistant(layer, citation = {}) {
     applyAssistantNavigation({ layer, citation, setActiveTab, setWorkspaceState });
+  }
+  const assistantBubbleHidden = Boolean(workspaceState?.map_state?.layout?.assistant_bubble_hidden);
+  function setAssistantBubbleHidden(hidden) {
+    setWorkspaceState((current) => ({
+      ...(current || {}),
+      map_state: {
+        ...((current || {}).map_state || {}),
+        layout: {
+          ...(((current || {}).map_state || {}).layout || {}),
+          assistant_bubble_hidden: hidden,
+        },
+      },
+    }));
   }
   const modalState = { appSettings, config, editProjectIdea, editProjectName, editingProject, importArchivePath, modelSettingsSaveState, newProjectIdea, newProjectName, showCreateProject, showGuide, showImportProject, showPrompts, showSettings };
   const modalActions = { handleCreateProject, handleEditProject, handleImportProject, handleSaveModelSettings, setAppSettings, setEditProjectIdea, setEditProjectName, setEditingProject, setImportArchivePath, setNewProjectIdea, setNewProjectName, setShowCreateProject, setShowGuide, setShowImportProject, setShowPrompts, setShowSettings };
@@ -801,19 +782,30 @@ export default function App() {
         {navOpen ? (
           <>
             <div className="nav-rail-actions">
-              <button type="button" className="rail-action" onClick={() => setShowGuide(true)}>
-                Guide
-              </button>
-              <button type="button" className="rail-action" onClick={() => setShowPrompts(true)}>
-                System Prompts
-              </button>
-              <button type="button" className="rail-action" onClick={() => setShowSettings(true)}>
-                App Settings
-              </button>
+              {HAMBURGER_ACTIONS.map((action) => (
+                <button
+                  key={action.id}
+                  type="button"
+                  className="rail-action"
+                  onClick={() => {
+                    if (action.id === "guide") setShowGuide(true);
+                    if (action.id === "prompts") setShowPrompts(true);
+                    if (action.id === "settings") setShowSettings(true);
+                  }}
+                >
+                  <span className="rail-action-label">{action.label}</span>
+                </button>
+              ))}
             </div>
-            <div className="nav-rail-footer muted">
-              <p>API: {API_BASE}</p>
-              <p>DB: {config.database_backend}</p>
+            <div className="nav-rail-footer">
+              <div className="rail-runtime-card">
+                <span className="rail-runtime-kicker">Local runtime</span>
+                <strong>{statusMessage}</strong>
+                <div className="rail-runtime-meta muted">
+                  <span>API {API_BASE}</span>
+                  <span>DB {config.database_backend}</span>
+                </div>
+              </div>
             </div>
           </>
         ) : null}
@@ -822,16 +814,58 @@ export default function App() {
       <main className="main-content">
         {project ? (
           <div className="page-header">
-            <div>
-              <button type="button" className="ghost-button" onClick={() => setActiveProjectId("")}>
-                Back To Library
+            <div className="project-header-main">
+              <button
+                type="button"
+                className="secondary-button project-header-back-button"
+                onClick={() => setActiveProjectId("")}
+              >
+                Back to library
               </button>
               <h2>{project.name}</h2>
               <p>{project.idea}</p>
+              <div className="project-header-meta" aria-label="Project state">
+                <span className={`status-pill ${project.lifecycle_state || "active"}`}>{project.lifecycle_state || "active"}</span>
+                <span className={`status-pill ${brief?.status || "draft"}`}>Brief {brief?.status || "draft"}</span>
+                <span className="status-pill">Tab {currentTabLabel}</span>
+              </div>
             </div>
-            <button type="button" className="assistant-open-button" onClick={() => setAssistantOpen(true)}>
-              Assistant
-            </button>
+            <div className="project-header-actions">
+              <button
+                type="button"
+                className={activeTab === "Workspace" ? "secondary-button project-content-button active" : "secondary-button project-content-button"}
+                onClick={() => setActiveTab("Workspace")}
+              >
+                Product Tree
+              </button>
+              <button
+                type="button"
+                className={activeTab === "Analytics" ? "icon-button project-header-icon active" : "icon-button project-header-icon"}
+                onClick={() => setActiveTab("Analytics")}
+                aria-label="Open runtime analytics"
+                title="Runtime Analytics"
+              >
+                <HeaderIcon kind="analytics" />
+              </button>
+              <button
+                type="button"
+                className={activeTab === "Project" ? "icon-button project-header-icon active" : "icon-button project-header-icon"}
+                onClick={() => setActiveTab("Project")}
+                aria-label="Open project settings"
+                title="Project Settings"
+              >
+                <HeaderIcon kind="settings" />
+              </button>
+              <button
+                type="button"
+                className="icon-button project-header-icon assistant-open-button"
+                onClick={() => setAssistantOpen(true)}
+                aria-label="Open assistant"
+                title="Assistant"
+              >
+                <HeaderIcon kind="assistant" />
+              </button>
+            </div>
             {error ? <div className="error-banner">{error}</div> : null}
           </div>
         ) : error ? <div className="error-banner">{error}</div> : null}
@@ -875,128 +909,62 @@ export default function App() {
           </div>
         ) : project && snapshot ? (
           <>
-            <div className="tabs">
-              {TABS.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  className={tab.id === activeTab ? "tab active" : "tab"}
-                  onClick={() => setActiveTab(tab.id)}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-
-            {activeTab === "Layer 0" && brief ? (
-              <section className="tab-content">
-                <BriefWorkspace
+            <section className="tab-content">
+              {activeTab === "Analytics" ? (
+                <ProjectAnalytics projectId={activeProjectId} apiFetch={apiFetch} />
+              ) : activeTab === "Project" ? (
+                <ProjectToolsTab
+                  config={config}
+                  competitiveIntelligenceEnabled={competitiveIntelligenceEnabled}
+                  layer2Graph={layer2Graph}
+                  lastExport={lastExport}
+                  memories={memories}
+                  nodes={nodes}
+                  projectModelSettings={projectModelSettings}
+                  projectSettingsSaveState={projectSettingsSaveState}
+                  quarantine={quarantine}
+                  researchJobs={researchJobs}
+                  onCompetitiveSettings={handleCompetitiveSettings}
+                  onExport={handleExport}
+                  onLayer2Export={handleLayer2Export}
+                  onProjectSettingsChange={setProjectModelSettings}
+                  onProjectSettingsSave={handleSaveProjectModelSettings}
+                  onResearchLayer2={handleLayer2Research}
+                  onProjectArchiveExport={handleProjectArchiveExport}
+                />
+              ) : (
+                <ProductTreeTab
+                  activeProjectId={activeProjectId}
                   brief={brief}
                   conversation={conversation}
-                  onSave={handleBriefSave}
-                  onChat={handlePlanChat}
-                  onPublish={handlePublishBrief}
-                />
-                {competitiveIntelligenceEnabled ? <details className="panel quiet-details">
-                  <summary>Research and market evidence</summary>
-                  <ResearchStatus
-                    jobs={researchJobs}
-                    onRerunLayer0={handleRerunLayer0Research}
-                    onRerunLayer1={handleRerunLayer1Research}
-                  />
-                  <MarketPanel findings={researchFindings} />
-                </details> : <div className="panel"><p className="muted">Competitive intelligence is disabled for this project.</p></div>}
-              </section>
-            ) : null}
-
-            {activeTab === "Workspace" ? (
-              <section className="tab-content">
-                <LivingWorkspace
-                  project={project}
-                  brief={brief}
-                  tree={workspaceTree}
+                  handleBriefSave={handleBriefSave}
+                  handleExport={handleExport}
+                  handleGenerateLayer1={handleGenerateLayer1}
+                  handleGenerateLayer2={handleGenerateLayer2}
+                  handleGenerateLayer3={handleGenerateLayer3}
+                  handleLayer1PillarCreate={handleLayer1PillarCreate}
+                  handleLayer2Export={handleLayer2Export}
+                  handleLayer2FeatureCreate={handleLayer2FeatureCreate}
+                  handleLayer2Research={handleLayer2Research}
+                  handleLayer2Review={handleLayer2Review}
+                  handleLayer3ExpansionReview={handleLayer3ExpansionReview}
+                  handleNodeSave={handleNodeSave}
+                  handleProjectArchiveExport={handleProjectArchiveExport}
+                  handlePlanChat={handlePlanChat}
+                  handlePublishBrief={handlePublishBrief}
+                  handleRerunLayer0Research={handleRerunLayer0Research}
+                  handleRerunLayer1Research={handleRerunLayer1Research}
+                  lastExport={lastExport}
                   layer2Graph={layer2Graph}
-                  findings={competitiveIntelligenceEnabled ? researchFindings : []}
-                  researchJobs={competitiveIntelligenceEnabled ? researchJobs : []}
+                  project={project}
+                  researchFindings={researchFindings}
+                  researchJobs={researchJobs}
+                  setWorkspaceState={setWorkspaceState}
+                  snapshot={snapshot}
                   workspaceState={workspaceState}
-                  onWorkspaceStateChange={setWorkspaceState}
-                  onSaveBrief={handleBriefSave}
-                  onPublishBrief={handlePublishBrief}
-                  onSaveNode={handleNodeSave}
-                  onCreatePillar={handleLayer1PillarCreate}
-                  onUpdateFeature={handleLayer2FeatureUpdate}
-                  onCreateFeature={handleLayer2FeatureCreate}
-                  onReviewFeature={handleLayer2Review}
-                  onAddEvidence={handleLayer2Evidence}
-                  onResearchLayer1={competitiveIntelligenceEnabled ? handleRerunLayer1Research : null}
-                  onResearchLayer2={competitiveIntelligenceEnabled ? handleLayer2Research : null}
-                  onGenerateLayer1={handleGenerateLayer1}
-                  onGenerateLayer2={handleGenerateLayer2}
-                  onBulkFeatureStatus={handleBulkFeatureStatus}
-                  onBulkNodeStatus={handleBulkNodeStatus}
-                  generationControls={{
-                    layer1Thinking, setLayer1Thinking,
-                    layer1MaxRounds, setLayer1MaxRounds,
-                    layer1TargetPerRound, setLayer1TargetPerRound,
-                    layer1TotalCap, setLayer1TotalCap: (value) => setLayer1TotalCap(parseOptionalPositiveInt(value)),
-                    layer1MinNew, setLayer1MinNew,
-                    layer2Thinking, setLayer2Thinking,
-                    layer2MaxRounds, setLayer2MaxRounds,
-                    layer2TargetPerRound, setLayer2TargetPerRound,
-                    layer2TotalCap, setLayer2TotalCap: (value) => setLayer2TotalCap(parseOptionalPositiveInt(value)),
-                    layer2MinNew, setLayer2MinNew,
-                  }}
                 />
-                <GenerationSummary summary={lastSummary} />
-              </section>
-            ) : null}
-
-            {activeTab === "Specs" ? (
-              <section className="tab-content">
-                <Layer3Workspace
-                  projectId={activeProjectId}
-                  layer3={layer3}
-                  thinkingEnabled={layer3Thinking}
-                  onThinkingChange={setLayer3Thinking}
-                  onGenerate={handleGenerateLayer3}
-                  onSave={handleLayer3Save}
-                  onReview={handleLayer3Review}
-                  onPressureTest={handleLayer3PressureTest}
-                  onCoverageGaps={handleLayer3CoverageGaps}
-                  onCompetitiveAnalysis={handleLayer3CompetitiveAnalysis}
-                  onDecision={handleLayer3Decision}
-                  onExport={handleLayer3Export}
-                />
-              </section>
-            ) : null}
-
-            {activeTab === "Analytics" ? (
-              <section className="tab-content">
-                <ProjectAnalytics projectId={activeProjectId} apiFetch={apiFetch} />
-              </section>
-            ) : null}
-
-            {activeTab === "Project" ? (
-              <ProjectToolsTab
-                config={config}
-                competitiveIntelligenceEnabled={competitiveIntelligenceEnabled}
-                layer2Graph={layer2Graph}
-                lastExport={lastExport}
-                memories={memories}
-                nodes={nodes}
-                projectModelSettings={projectModelSettings}
-                projectSettingsSaveState={projectSettingsSaveState}
-                quarantine={quarantine}
-                researchJobs={researchJobs}
-                onCompetitiveSettings={handleCompetitiveSettings}
-                onExport={handleExport}
-                onLayer2Export={handleLayer2Export}
-                onProjectSettingsChange={setProjectModelSettings}
-                onProjectSettingsSave={handleSaveProjectModelSettings}
-                onResearchLayer2={handleLayer2Research}
-                onProjectArchiveExport={handleProjectArchiveExport}
-              />
-            ) : null}
+              )}
+            </section>
           </>
         ) : (
           <div className="project-loading-state">
@@ -1007,6 +975,23 @@ export default function App() {
         )}
       </main>
 
+      {project ? (
+        !assistantBubbleHidden ? (
+          <button
+            type="button"
+            className="floating-assistant-button"
+            onClick={() => setAssistantOpen(true)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setAssistantBubbleHidden(true);
+            }}
+            aria-label="Open assistant"
+            title="Open assistant. Right-click to hide."
+          >
+            <HeaderIcon kind="assistant" />
+          </button>
+        ) : null
+      ) : null}
       {project ? (
         <AssistantDrawer
           open={assistantOpen}
