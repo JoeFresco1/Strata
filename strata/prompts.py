@@ -355,113 +355,27 @@ def build_pillar_research_assessment_prompt(
     )
 
 
-def build_layer3_capability_prompt(
+def build_layer3_feature_expansion_prompt(
     *,
     project_context: dict[str, Any],
     pillar_context: dict[str, Any],
     feature_context: dict[str, Any],
     sibling_features: list[dict[str, Any]],
     graph_relationships: list[dict[str, Any]],
-    existing_card: dict[str, Any] | None,
-    selected_sections: list[str],
+    existing_expansion: dict[str, Any] | None,
     prompts_path: Path | None = None,
     prompt_catalog: dict[str, str] | None = None,
 ) -> str:
-    """Render a bounded product-level Capability Design Card generation pass."""
-    rendered = render_prompt(
-        "layer3_capability_design_generation",
+    """Render a bounded product-level Feature Expansion generation pass."""
+    return render_prompt(
+        "layer3_feature_expansion_generation",
         {
             "project_context": json.dumps(project_context, ensure_ascii=True, indent=2),
             "pillar_context": json.dumps(pillar_context, ensure_ascii=True, indent=2),
             "feature_context": json.dumps(feature_context, ensure_ascii=True, indent=2),
             "sibling_features": json.dumps(sibling_features, ensure_ascii=True, indent=2),
             "graph_relationships": json.dumps(graph_relationships, ensure_ascii=True, indent=2),
-            "existing_card": json.dumps(existing_card or {}, ensure_ascii=True, indent=2),
-            "selected_sections": json.dumps(selected_sections, ensure_ascii=True),
-        },
-        prompts_path=prompts_path,
-        prompt_catalog=prompt_catalog,
-    )
-    section_examples = {
-        "product_purpose": "...",
-        "feature_archetype": "...",
-        "relationships": [{"target_feature_id": "...", "relationship_type": "depends_on", "rationale": "..."}],
-        "open_decisions": [{"question": "...", "context": "...", "options": ["..."]}],
-    }
-    compact_schema = {section: section_examples.get(section, []) for section in selected_sections}
-    base_instructions = rendered.split("Return format:", 1)[0].strip()
-    return (
-        f"{base_instructions}\n\nReturn only the requested sections in this exact compact shape:\n"
-        f"{json.dumps({'card': compact_schema}, indent=2)}\n\n"
-        "Keep every description to one sentence, use at most 2 items per list, and finish within 350 tokens. "
-        "The variants, options, behaviors, constraints, and lifecycle arrays may contain concise strings."
-    )
-
-
-def build_layer3_pressure_test_prompt(
-    *,
-    card: dict[str, Any],
-    relationships: list[dict[str, Any]],
-    open_decisions: list[dict[str, Any]],
-    prompts_path: Path | None = None,
-    prompt_catalog: dict[str, str] | None = None,
-) -> str:
-    """Render the independent Layer 3 pressure-test and readiness pass."""
-    rendered = render_prompt(
-        "layer3_capability_pressure_test",
-        {
-            "card": json.dumps(card, ensure_ascii=True, indent=2),
-            "relationships": json.dumps(relationships, ensure_ascii=True, indent=2),
-            "open_decisions": json.dumps(open_decisions, ensure_ascii=True, indent=2),
-        },
-        prompts_path=prompts_path,
-        prompt_catalog=prompt_catalog,
-    )
-    return f"{rendered}\n\nOutput budget: use at most 1 concise item per issue list and complete the JSON object within 220 tokens."
-
-
-def build_layer3_coverage_gap_prompt(
-    *,
-    project_context: dict[str, Any],
-    card: dict[str, Any],
-    sibling_features: list[dict[str, Any]],
-    relationships: list[dict[str, Any]],
-    prompts_path: Path | None = None,
-    prompt_catalog: dict[str, str] | None = None,
-) -> str:
-    """Render an explicit Layer 3 product-definition completeness review."""
-    return render_prompt(
-        "layer3_coverage_gap_analysis",
-        {
-            "project_context": json.dumps(project_context, ensure_ascii=True, indent=2),
-            "card": json.dumps(card, ensure_ascii=True, indent=2),
-            "sibling_features": json.dumps(sibling_features, ensure_ascii=True, indent=2),
-            "relationships": json.dumps(relationships, ensure_ascii=True, indent=2),
-        },
-        prompts_path=prompts_path,
-        prompt_catalog=prompt_catalog,
-    )
-
-
-def build_layer3_competitive_analysis_prompt(
-    *,
-    project_context: dict[str, Any],
-    card: dict[str, Any],
-    sibling_features: list[dict[str, Any]],
-    latest_feature_evidence: list[dict[str, Any]],
-    known_competitors: list[str],
-    prompts_path: Path | None = None,
-    prompt_catalog: dict[str, str] | None = None,
-) -> str:
-    """Render the optional Layer 3 competitor-aware positioning pass."""
-    return render_prompt(
-        "layer3_competitive_analysis",
-        {
-            "project_context": json.dumps(project_context, ensure_ascii=True, indent=2),
-            "card": json.dumps(card, ensure_ascii=True, indent=2),
-            "sibling_features": json.dumps(sibling_features, ensure_ascii=True, indent=2),
-            "latest_feature_evidence": json.dumps(latest_feature_evidence, ensure_ascii=True, indent=2),
-            "known_competitors": json.dumps(known_competitors, ensure_ascii=True, indent=2),
+            "existing_expansion": json.dumps(existing_expansion or {}, ensure_ascii=True, indent=2),
         },
         prompts_path=prompts_path,
         prompt_catalog=prompt_catalog,

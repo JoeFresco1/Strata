@@ -70,7 +70,7 @@ class AssistantIndexService:
         relationships = self.db.list_layer2_relationships(project_id)
         coverage = self.db.list_layer2_coverage_matrix(project_id)
         concerns = self.db.list_layer2_shared_concern_clusters(project_id)
-        cards = self.db.list_layer3_cards(project_id)
+        expansions = self.db.list_layer3_expansions(project_id)
         node_counts = Counter(f"layer{node.layer}" for node in nodes)
         feature_statuses = Counter(feature.status for feature in features)
         return {
@@ -82,8 +82,8 @@ class AssistantIndexService:
             "layer2_relationships": len(relationships),
             "coverage_missing_or_partial": sum(1 for row in coverage if row.status in {"missing", "partial"}),
             "shared_concerns": len(concerns),
-            "layer3_capability_cards": len(cards),
-            "layer3_approved_cards": sum(1 for card in cards if card.review_state == "approved"),
+            "layer3_feature_expansions": len(expansions),
+            "layer3_approved_expansions": sum(1 for expansion in expansions if expansion.review_state == "approved"),
         }
 
     def execute_tool(self, project_id: str, tool: dict[str, Any], active_scope: str, question: str) -> dict[str, Any]:
@@ -124,18 +124,18 @@ class AssistantIndexService:
             content = json.dumps(node.model_dump(mode="json"), ensure_ascii=True, default=str)
             documents.append(self._document(scope, node.node_type, node.id, node.title, content, {"status": node.status, "parent_id": node.parent_id}))
         documents.extend(self._layer2_documents(project_id))
-        for card in self.db.layer3_snapshot(project_id).get("cards", []):
-            content = json.dumps(card, ensure_ascii=True, default=str)
+        for expansion in self.db.layer3_snapshot(project_id).get("expansions", []):
+            content = json.dumps(expansion, ensure_ascii=True, default=str)
             documents.append(self._document(
                 "layer3",
-                "capability_design_card",
-                card["id"],
-                card["feature_name"],
+                "feature_expansion",
+                expansion["id"],
+                expansion["feature_name"],
                 content,
                 {
-                    "status": card["review_state"],
-                    "feature_id": card["feature_id"],
-                    "owner_pillar_id": card["parent_pillar_id"],
+                    "status": expansion["review_state"],
+                    "feature_id": expansion["feature_id"],
+                    "owner_pillar_id": expansion["parent_pillar_id"],
                 },
             ))
         for finding in self.db.list_research_findings(project_id):

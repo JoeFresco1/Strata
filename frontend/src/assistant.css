@@ -8,19 +8,20 @@
   inset: 0 0 0 auto;
   z-index: 80;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
-  width: min(460px, 100vw);
-  background: #f8fafb;
-  border-left: 1px solid #cbd5dc;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto;
+  width: min(480px, 100vw);
+  background: var(--panel-soft);
+  border-left: 1px solid var(--border-strong);
   box-shadow: -12px 0 32px rgb(24 39 49 / 16%);
 }
 
 .assistant-header,
+.assistant-context-card,
 .assistant-thread-controls,
 .assistant-options,
 .assistant-composer {
   padding: 12px 16px;
-  border-bottom: 1px solid #dbe3e8;
+  border-bottom: 1px solid var(--border);
 }
 
 .assistant-header,
@@ -35,6 +36,7 @@
 
 .assistant-header {
   justify-content: space-between;
+  background: var(--panel);
 }
 
 .assistant-header div {
@@ -45,16 +47,18 @@
 .assistant-header span,
 .assistant-message-meta,
 .assistant-action span {
-  color: #5c6c75;
+  color: var(--muted);
   font-size: 12px;
 }
 
-.icon-button {
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  font-size: 20px;
-  line-height: 1;
+.assistant-close-button {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 700;
 }
 
 .assistant-thread-controls select,
@@ -67,6 +71,33 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px 16px;
+  background: color-mix(in srgb, var(--panel-soft) 82%, var(--panel));
+}
+
+.assistant-context-card {
+  display: grid;
+  gap: 5px;
+  background: color-mix(in srgb, var(--accent-soft) 48%, var(--panel));
+}
+
+.assistant-context-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.assistant-context-card strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.assistant-context-card p {
+  max-width: 48ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .assistant-advanced-options {
@@ -82,9 +113,9 @@
 
 .assistant-advanced-options[open] {
   padding: 0.75rem;
-  border: 1px solid #dce4e9;
-  border-radius: 8px;
-  background: #f7fafb;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
 }
 
 .assistant-options > label:first-child {
@@ -117,15 +148,19 @@
 }
 
 .assistant-empty {
-  color: #667781;
+  display: grid;
+  gap: 12px;
+  color: var(--muted);
   max-width: 34ch;
+  margin: 24px auto;
+  text-align: center;
 }
 
 .assistant-loading {
   display: flex;
   gap: 0.75rem;
   align-items: center;
-  color: #667781;
+  color: var(--muted);
 }
 
 .assistant-loading .loading-spinner {
@@ -136,7 +171,6 @@
 .assistant-starter-prompts {
   display: grid;
   gap: 0.5rem;
-  margin-top: 0.8rem;
 }
 
 .assistant-starter-prompts button {
@@ -144,12 +178,16 @@
 }
 
 .assistant-message {
-  padding: 12px 0;
-  border-bottom: 1px solid #dde5e9;
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
 }
 
 .assistant-message.user {
   padding-left: 28px;
+  background: color-mix(in srgb, var(--accent-soft) 58%, var(--panel));
 }
 
 .assistant-message-meta {
@@ -178,9 +216,9 @@
   justify-content: space-between;
   margin-top: 10px;
   padding: 10px;
-  border: 1px solid #b8c8d1;
-  border-radius: 6px;
-  background: #fff;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--panel);
 }
 
 .assistant-action div {
@@ -191,21 +229,25 @@
 
 .assistant-error {
   padding: 8px 16px;
-  color: #8d2430;
-  background: #fff0f1;
-  border-top: 1px solid #e8b8bd;
+  color: var(--error-ink);
+  background: var(--error-bg);
+  border-top: 1px solid color-mix(in srgb, var(--error-ink) 24%, var(--border));
 }
 
 .assistant-composer {
   align-items: flex-end;
-  border-top: 1px solid #cbd5dc;
+  border-top: 1px solid var(--border-strong);
   border-bottom: 0;
-  background: #fff;
+  background: var(--panel);
 }
 
 @media (max-width: 620px) {
   .assistant-drawer {
     width: 100vw;
     border-left: 0;
+  }
+
+  .assistant-composer {
+    display: grid;
   }
 }

@@ -417,7 +417,7 @@ class PostgresSchemaMixin:
                 )
                 cursor.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS layer3_capability_cards (
+                    CREATE TABLE IF NOT EXISTS layer3_feature_expansions (
                         id TEXT PRIMARY KEY,
                         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                         feature_id TEXT NOT NULL,
@@ -425,21 +425,10 @@ class PostgresSchemaMixin:
                         parent_pillar_title TEXT NOT NULL,
                         feature_name TEXT NOT NULL,
                         feature_description TEXT NOT NULL DEFAULT '',
-                        product_purpose TEXT NOT NULL,
-                        feature_archetype TEXT NOT NULL,
-                        supported_variants JSONB NOT NULL,
-                        configurable_options JSONB NOT NULL,
-                        product_behaviors JSONB NOT NULL,
-                        validation_constraints JSONB NOT NULL,
-                        lifecycle_states JSONB NOT NULL,
-                        dependencies JSONB NOT NULL,
-                        overlaps_conflicts JSONB NOT NULL,
-                        edge_cases JSONB NOT NULL,
-                        product_risks JSONB NOT NULL,
-                        pressure_test JSONB NOT NULL,
-                        competitive_analysis JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        downstream_readiness_score INTEGER NOT NULL,
-                        readiness_rationale TEXT NOT NULL,
+                        feature_intent TEXT NOT NULL,
+                        expansion_groups JSONB NOT NULL,
+                        overlap_review JSONB NOT NULL,
+                        open_questions JSONB NOT NULL,
                         review_state TEXT NOT NULL,
                         provenance JSONB NOT NULL,
                         created_at TIMESTAMPTZ NOT NULL,
@@ -449,44 +438,11 @@ class PostgresSchemaMixin:
                     """
                 )
                 cursor.execute(
-                    "ALTER TABLE layer3_capability_cards ADD COLUMN IF NOT EXISTS competitive_analysis JSONB NOT NULL DEFAULT '{}'::jsonb"
-                )
-                cursor.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS layer3_relationships (
+                    CREATE TABLE IF NOT EXISTS layer3_expansion_actions (
                         id TEXT PRIMARY KEY,
                         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        card_id TEXT NOT NULL REFERENCES layer3_capability_cards(id) ON DELETE CASCADE,
-                        source_feature_id TEXT NOT NULL,
-                        target_feature_id TEXT NOT NULL,
-                        relationship_type TEXT NOT NULL,
-                        rationale TEXT NOT NULL DEFAULT '',
-                        created_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS layer3_open_decisions (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        card_id TEXT NOT NULL REFERENCES layer3_capability_cards(id) ON DELETE CASCADE,
-                        question TEXT NOT NULL,
-                        context TEXT NOT NULL DEFAULT '',
-                        options JSONB NOT NULL,
-                        status TEXT NOT NULL,
-                        resolution TEXT NOT NULL DEFAULT '',
-                        created_at TIMESTAMPTZ NOT NULL,
-                        updated_at TIMESTAMPTZ NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS layer3_review_actions (
-                        id TEXT PRIMARY KEY,
-                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        card_id TEXT NOT NULL REFERENCES layer3_capability_cards(id) ON DELETE CASCADE,
+                        expansion_id TEXT NOT NULL REFERENCES layer3_feature_expansions(id) ON DELETE CASCADE,
                         action_type TEXT NOT NULL,
                         payload JSONB NOT NULL,
                         created_at TIMESTAMPTZ NOT NULL
@@ -884,20 +840,14 @@ class PostgresSchemaMixin:
                 )
                 cursor.execute(
                     """
-                    CREATE INDEX IF NOT EXISTS idx_layer3_cards_project_review
-                    ON layer3_capability_cards(project_id, review_state, feature_name)
+                    CREATE INDEX IF NOT EXISTS idx_layer3_expansions_project_review
+                    ON layer3_feature_expansions(project_id, review_state, feature_name)
                     """
                 )
                 cursor.execute(
                     """
-                    CREATE INDEX IF NOT EXISTS idx_layer3_relationships_card
-                    ON layer3_relationships(card_id, relationship_type)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_layer3_decisions_card
-                    ON layer3_open_decisions(card_id, status)
+                    CREATE INDEX IF NOT EXISTS idx_layer3_expansion_actions_expansion
+                    ON layer3_expansion_actions(expansion_id, action_type)
                     """
                 )
                 cursor.execute(

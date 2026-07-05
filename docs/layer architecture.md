@@ -14,8 +14,8 @@ Strata works as one bounded, layered architecture rather than one freeform auton
 4. Human review decides which pillars are worth keeping and descending into.
 5. Layer 2 turns approved pillars into a graph of concrete product capabilities.
 6. Layer 2 research adds cited competitor evidence to active features.
-7. Layer 3 expands approved Layer 2 features into product-level Capability Design Cards.
-8. Human review resolves decisions and approves cards for downstream export.
+7. Layer 3 expands approved Layer 2 features into product-level Feature Expansions.
+8. Human review includes, excludes, edits, and approves expansion options for downstream export.
 9. The assistant operates across the project as a bounded reader, synthesizer, and action proposer rather than as a separate layer owner.
 
 The important architecture rule is that each layer narrows uncertainty differently:
@@ -333,39 +333,37 @@ This is what keeps Layer 2 from collapsing into repeated rediscovery or unfocuse
 
 ### What Layer 3 does
 
-Layer 3 is the Capability Design Layer. It defines what an approved Layer 2 feature means as a product capability before any implementation-spec system takes over.
+Layer 3 is the Feature Expansion Layer. It defines what can go inside an approved Layer 2 feature before any implementation-spec system takes over.
 
-Each card includes product purpose, archetype, variants, configurable options, observable behaviors, product-level constraints, lifecycle states, relationships, dependencies, overlaps or conflicts, edge cases, risks, open decisions, readiness score, review state, optional cited competitive analysis, and provenance.
+Each expansion includes feature intent, grouped subfeatures, configuration choices, validation rules, limits, dependencies, overlap notes, open questions, review state, and provenance.
 
 Layer 3 does not generate target-product APIs, database schemas, components, regex patterns, test cases, user stories, wireframes, architecture diagrams, or coding tasks.
 
 ### Overall agentic process
 
 1. Load only approved Layer 2 features.
-2. Generate a draft card from bounded Layer 0, parent-pillar, sibling-feature, and graph-edge context.
-3. Detect typed product relationships to existing Layer 2 features.
-4. Run a separate pressure-test pass for ambiguity, risk, overreach, missing decisions, blockers, and implementation leakage.
-5. Score downstream readiness.
-6. Optionally run a cited competitor-aware analysis for parity, differentiation, avoid-patterns, and positioning.
-7. Let the user edit sections, rerun selected sections, resolve decisions, and approve or reject.
-8. Export approved cards with full Layer 0/1/2 lineage.
+2. Generate a draft expansion from bounded Layer 0, parent-pillar, sibling-feature, and graph-edge context.
+3. Group the next-level possibilities into options such as response type, validation rules, limits, display behavior, admin controls, integrations, or workflow variants.
+4. Default options to undecided so the user can explicitly include, exclude, edit, add, or remove them.
+5. Let the user mark option overlap with active Layer 2 features.
+6. Let the user approve, reject, or return an expansion to review.
+7. Export approved expansions with full Layer 0/1/2 lineage.
 
 ### How users can interact
 
-The Capability Design workspace shows eligible features and existing cards. Users can:
+The Feature Expansion workspace shows eligible features and existing expansions. Users can:
 
-- generate one or more cards
-- inspect and edit every section
-- review typed relationship edges
-- resolve or reopen explicit product decisions
-- run a separate cited competitive-analysis pass when competitive intelligence is enabled
-- rerun selected sections without replacing the entire card
-- approve, reject, or return a card to review
-- export approved cards as structured JSON
+- generate one or more expansions
+- inspect and edit feature intent
+- include, exclude, add, remove, or rewrite grouped options
+- mark overlap with active Layer 2 features
+- capture open product questions
+- approve, reject, or return an expansion to review
+- export approved expansions as structured JSON
 
 ### How memory is handled
 
-Cards, relationships, open decisions, review actions, readiness scores, and provenance are canonical database records. Raw chat history is not the source of truth.
+Feature expansions, option state, review actions, and provenance are canonical database records. Raw chat history is not the source of truth.
 
 Generation context is bounded to:
 

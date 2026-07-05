@@ -57,15 +57,19 @@ CompetitiveResearchMode = Literal["known_only", "expand_from_known"]
 ExecutionIntent = Literal["local_first", "api_first", "blended"]
 ExecutionProviderPreference = Literal["local", "api"]
 Layer3ReviewState = Literal["draft", "approved", "rejected", "needs_review"]
-Layer3RelationshipType = Literal[
-    "depends_on",
-    "feeds",
-    "overlaps_with",
-    "conflicts_with",
-    "optionally_uses",
-    "shared_concern",
+Layer3SelectionState = Literal["include", "exclude", "undecided"]
+Layer3ConfigurationKind = Literal[
+    "boolean",
+    "single_select",
+    "multi_select",
+    "numeric",
+    "text",
+    "rule",
+    "workflow",
+    "content",
+    "integration",
+    "other",
 ]
-Layer3DecisionStatus = Literal["unresolved", "resolved"]
 
 
 class FeatureGranularity(str, Enum):
@@ -412,36 +416,31 @@ class Layer2ReviewAction(BaseModel):
     created_at: datetime
 
 
-class Layer3Relationship(BaseModel):
-    """One product-level relationship discovered while defining a capability."""
+class FeatureExpansionOption(BaseModel):
+    """One possible subfeature, setting, rule, or variant under an approved Layer 2 feature."""
 
-    id: str
-    project_id: str
-    card_id: str
-    source_feature_id: str
-    target_feature_id: str
-    relationship_type: Layer3RelationshipType
+    id: str = ""
+    name: str
+    description: str = ""
+    selection_state: Layer3SelectionState = "undecided"
+    configuration_kind: Layer3ConfigurationKind = "other"
+    default_recommendation: str = ""
     rationale: str = ""
-    created_at: datetime
+    dependencies: list[str] = Field(default_factory=list)
+    overlaps_feature_ids: list[str] = Field(default_factory=list)
 
 
-class Layer3OpenDecision(BaseModel):
-    """A product decision that must be resolved before downstream specification work."""
+class FeatureExpansionGroup(BaseModel):
+    """A named group of Layer 3 options for one feature."""
 
-    id: str
-    project_id: str
-    card_id: str
-    question: str
-    context: str = ""
-    options: list[str] = Field(default_factory=list)
-    status: Layer3DecisionStatus = "unresolved"
-    resolution: str = ""
-    created_at: datetime
-    updated_at: datetime
+    id: str = ""
+    name: str
+    description: str = ""
+    options: list[FeatureExpansionOption] = Field(default_factory=list)
 
 
-class CapabilityDesignCard(BaseModel):
-    """Persistent Layer 3 product-definition artifact for one approved Layer 2 feature."""
+class FeatureExpansion(BaseModel):
+    """Persistent Layer 3 feature-expansion artifact for one approved Layer 2 feature."""
 
     id: str
     project_id: str
@@ -450,21 +449,10 @@ class CapabilityDesignCard(BaseModel):
     parent_pillar_title: str
     feature_name: str
     feature_description: str = ""
-    product_purpose: str
-    feature_archetype: str
-    supported_variants: list[dict[str, Any]] = Field(default_factory=list)
-    configurable_options: list[dict[str, Any]] = Field(default_factory=list)
-    product_behaviors: list[dict[str, Any]] = Field(default_factory=list)
-    validation_constraints: list[dict[str, Any]] = Field(default_factory=list)
-    lifecycle_states: list[dict[str, Any]] = Field(default_factory=list)
-    dependencies: list[str] = Field(default_factory=list)
-    overlaps_conflicts: list[str] = Field(default_factory=list)
-    edge_cases: list[str] = Field(default_factory=list)
-    product_risks: list[str] = Field(default_factory=list)
-    pressure_test: dict[str, Any] = Field(default_factory=dict)
-    competitive_analysis: dict[str, Any] = Field(default_factory=dict)
-    downstream_readiness_score: int = Field(ge=0, le=100, default=0)
-    readiness_rationale: str = ""
+    feature_intent: str = ""
+    expansion_groups: list[FeatureExpansionGroup] = Field(default_factory=list)
+    overlap_review: list[dict[str, Any] | str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
     review_state: Layer3ReviewState = "draft"
     provenance: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
@@ -736,59 +724,19 @@ class Layer2CoverageAssessmentResponse(BaseModel):
     reasoning: str
 
 
-class CapabilityRelationshipDraft(BaseModel):
-    target_feature_id: str
-    relationship_type: Layer3RelationshipType
-    rationale: str = ""
-
-
-class CapabilityDecisionDraft(BaseModel):
-    question: str
-    context: str = ""
-    options: list[str] = Field(default_factory=list)
-
-
-class CapabilityDesignPayload(BaseModel):
-    product_purpose: str
-    feature_archetype: str
-    supported_variants: list[dict[str, Any] | str] = Field(default_factory=list)
-    configurable_options: list[dict[str, Any] | str] = Field(default_factory=list)
-    product_behaviors: list[dict[str, Any] | str] = Field(default_factory=list)
-    validation_constraints: list[dict[str, Any] | str] = Field(default_factory=list)
-    lifecycle_states: list[dict[str, Any] | str] = Field(default_factory=list)
-    relationships: list[CapabilityRelationshipDraft] = Field(default_factory=list)
-    dependencies: list[str] = Field(default_factory=list)
-    overlaps_conflicts: list[str] = Field(default_factory=list)
-    edge_cases: list[str] = Field(default_factory=list)
-    product_risks: list[str] = Field(default_factory=list)
-    open_decisions: list[CapabilityDecisionDraft] = Field(default_factory=list)
-
-
-class CapabilityPressureTest(BaseModel):
-    ambiguity: list[str] = Field(default_factory=list)
-    product_risk: list[str] = Field(default_factory=list)
-    overreach: list[str] = Field(default_factory=list)
-    missing_decisions: list[str] = Field(default_factory=list)
-    downstream_blockers: list[str] = Field(default_factory=list)
-    implementation_leakage: list[str] = Field(default_factory=list)
-    downstream_readiness_score: int = Field(ge=0, le=100)
-    readiness_rationale: str
-
-
 class PillarResponse(BaseModel):
     pillars: list[PillarCandidate]
 
 
-class CapabilityDesignResponse(BaseModel):
-    card: CapabilityDesignPayload
+class FeatureExpansionPayload(BaseModel):
+    feature_intent: str
+    expansion_groups: list[FeatureExpansionGroup] = Field(default_factory=list)
+    overlap_review: list[dict[str, Any] | str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
 
 
-class CapabilityPressureTestResponse(BaseModel):
-    pressure_test: CapabilityPressureTest
-
-
-class CapabilityCompetitiveAnalysisResponse(BaseModel):
-    competitive_analysis: dict[str, Any]
+class FeatureExpansionResponse(BaseModel):
+    expansion: FeatureExpansionPayload
 
 
 class CoverageGap(BaseModel):

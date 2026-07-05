@@ -512,46 +512,23 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     FOREIGN KEY(message_id) REFERENCES assistant_messages(id)
                 );
 
-                CREATE TABLE IF NOT EXISTS layer3_capability_cards (
+                CREATE TABLE IF NOT EXISTS layer3_feature_expansions (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL, feature_id TEXT NOT NULL,
                     parent_pillar_id TEXT NOT NULL, parent_pillar_title TEXT NOT NULL,
                     feature_name TEXT NOT NULL, feature_description TEXT NOT NULL DEFAULT '',
-                    product_purpose TEXT NOT NULL, feature_archetype TEXT NOT NULL,
-                    supported_variants TEXT NOT NULL, configurable_options TEXT NOT NULL,
-                    product_behaviors TEXT NOT NULL, validation_constraints TEXT NOT NULL,
-                    lifecycle_states TEXT NOT NULL, dependencies TEXT NOT NULL,
-                    overlaps_conflicts TEXT NOT NULL, edge_cases TEXT NOT NULL,
-                    product_risks TEXT NOT NULL, pressure_test TEXT NOT NULL, competitive_analysis TEXT NOT NULL DEFAULT '{}',
-                    downstream_readiness_score INTEGER NOT NULL, readiness_rationale TEXT NOT NULL,
+                    feature_intent TEXT NOT NULL, expansion_groups TEXT NOT NULL,
+                    overlap_review TEXT NOT NULL, open_questions TEXT NOT NULL,
                     review_state TEXT NOT NULL, provenance TEXT NOT NULL,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                     FOREIGN KEY(project_id) REFERENCES projects(id),
                     UNIQUE(project_id, feature_id)
                 );
 
-                CREATE TABLE IF NOT EXISTS layer3_relationships (
-                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, card_id TEXT NOT NULL,
-                    source_feature_id TEXT NOT NULL, target_feature_id TEXT NOT NULL,
-                    relationship_type TEXT NOT NULL, rationale TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id),
-                    FOREIGN KEY(card_id) REFERENCES layer3_capability_cards(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS layer3_open_decisions (
-                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, card_id TEXT NOT NULL,
-                    question TEXT NOT NULL, context TEXT NOT NULL DEFAULT '', options TEXT NOT NULL,
-                    status TEXT NOT NULL, resolution TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id),
-                    FOREIGN KEY(card_id) REFERENCES layer3_capability_cards(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS layer3_review_actions (
-                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, card_id TEXT NOT NULL,
+                CREATE TABLE IF NOT EXISTS layer3_expansion_actions (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, expansion_id TEXT NOT NULL,
                     action_type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,
                     FOREIGN KEY(project_id) REFERENCES projects(id),
-                    FOREIGN KEY(card_id) REFERENCES layer3_capability_cards(id)
+                    FOREIGN KEY(expansion_id) REFERENCES layer3_feature_expansions(id)
                 );
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_project_memory_scope
@@ -624,14 +601,11 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                 CREATE INDEX IF NOT EXISTS idx_assistant_documents_project_scope
                 ON assistant_documents(project_id, layer_scope, source_type);
 
-                CREATE INDEX IF NOT EXISTS idx_layer3_cards_project_review
-                ON layer3_capability_cards(project_id, review_state, feature_name);
+                CREATE INDEX IF NOT EXISTS idx_layer3_expansions_project_review
+                ON layer3_feature_expansions(project_id, review_state, feature_name);
 
-                CREATE INDEX IF NOT EXISTS idx_layer3_relationships_card
-                ON layer3_relationships(card_id, relationship_type);
-
-                CREATE INDEX IF NOT EXISTS idx_layer3_decisions_card
-                ON layer3_open_decisions(card_id, status);
+                CREATE INDEX IF NOT EXISTS idx_layer3_expansion_actions_expansion
+                ON layer3_expansion_actions(expansion_id, action_type);
 
                 CREATE INDEX IF NOT EXISTS idx_model_call_events_project_started
                 ON model_call_events(project_id, started_at);
@@ -682,13 +656,49 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
             "ALTER TABLE layer2_feature_evidence ADD COLUMN rationale TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE layer2_feature_evidence ADD COLUMN research_job_id TEXT",
             "ALTER TABLE brief_conversations ADD COLUMN request_id TEXT",
-            "ALTER TABLE layer3_capability_cards ADD COLUMN competitive_analysis TEXT NOT NULL DEFAULT '{}'",
         ):
             try:
                 self._execute(statement)
             except Exception as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+        self._execute(
+            """
+            CREATE TABLE IF NOT EXISTS layer3_feature_expansions (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, feature_id TEXT NOT NULL,
+                parent_pillar_id TEXT NOT NULL, parent_pillar_title TEXT NOT NULL,
+                feature_name TEXT NOT NULL, feature_description TEXT NOT NULL DEFAULT '',
+                feature_intent TEXT NOT NULL, expansion_groups TEXT NOT NULL,
+                overlap_review TEXT NOT NULL, open_questions TEXT NOT NULL,
+                review_state TEXT NOT NULL, provenance TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id),
+                UNIQUE(project_id, feature_id)
+            )
+            """
+        )
+        self._execute(
+            """
+            CREATE TABLE IF NOT EXISTS layer3_expansion_actions (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, expansion_id TEXT NOT NULL,
+                action_type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id),
+                FOREIGN KEY(expansion_id) REFERENCES layer3_feature_expansions(id)
+            )
+            """
+        )
+        self._execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_layer3_expansions_project_review
+            ON layer3_feature_expansions(project_id, review_state, feature_name)
+            """
+        )
+        self._execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_layer3_expansion_actions_expansion
+            ON layer3_expansion_actions(expansion_id, action_type)
+            """
+        )
         self._execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_brief_conversations_request_role

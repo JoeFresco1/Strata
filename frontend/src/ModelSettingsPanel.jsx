@@ -18,7 +18,6 @@ const LLM_ASSIGNMENT_LABELS = {
   layer0_extraction: "Layer 0 Brief Extraction",
   layer1_generation: "Layer 1 Generation",
   layer2_generation: "Layer 2 Generation",
-  layer3_generation: "Layer 3 Capability Design",
   layer0_research: "Layer 0 Research Discovery",
   layer1_research: "Layer 1 Research Discovery",
   layer2_research: "Layer 2 Feature Research",
@@ -37,7 +36,6 @@ const ASSIGNMENT_HELP = {
   layer0_extraction: "Use this model to turn Plan mode messages into structured brief fields.",
   layer1_generation: "Use one or more models to brainstorm and broaden the Layer 1 pillar set.",
   layer2_generation: "Use this model to expand selected pillars into Layer 2 subfeatures.",
-  layer3_generation: "Use this model to draft and pressure-test product-level Capability Design Cards.",
   layer0_research: "Use this model to discover and summarize competitor evidence for Layer 0.",
   layer1_research: "Use this model to score how each Layer 1 pillar shows up across competitors.",
   layer2_research: "Use this model to classify competitor evidence across Layer 2 feature batches.",
@@ -62,6 +60,34 @@ function defaultRoutingPolicy(intent) {
 
 function providerLabel(value) {
   return value === "api" ? "Cloud/API" : "Local";
+}
+
+function SettingsOverview({ settings, config, saveState, onSave }) {
+  const llmCount = settings?.llm_profiles?.length || 0;
+  const embeddingCount = settings?.embedding_profiles?.length || 0;
+  const assignmentCount = Object.keys(settings?.assignments || {}).length;
+  const readiness = settings?.provider_readiness?.message || config?.provider_readiness?.message || "Runtime defaults are available for local or API-backed startup.";
+
+  return (
+    <section className="panel settings-overview">
+      <div>
+        <span className="guide-eyebrow">Global defaults</span>
+        <h3>Defaults for new projects.</h3>
+        <p className="muted">
+          Set the compute mode, model routing, profiles, and assignments new projects inherit. Existing projects keep their overrides.
+        </p>
+      </div>
+      <button type="button" onClick={onSave} disabled={saveState === "saving"}>
+        {saveState === "saving" ? "Saving..." : "Save App Settings"}
+      </button>
+      <div className="settings-overview-facts" aria-label="Current app settings summary">
+        <span><strong>{llmCount}</strong> LLM profile{llmCount === 1 ? "" : "s"}</span>
+        <span><strong>{embeddingCount}</strong> embedding profile{embeddingCount === 1 ? "" : "s"}</span>
+        <span><strong>{assignmentCount}</strong> assignments</span>
+        <span>{readiness}</span>
+      </div>
+    </section>
+  );
 }
 
 // Wraps one model assignment control with consistent help text.
@@ -90,6 +116,7 @@ function ModelSettingsEditor({
   showRuntimeFields = false,
   showCompetitiveControl = false,
   savePlacement = "header",
+  showIntroPanel = true,
 }) {
   // Shared editor for app defaults and project-level model overrides.
   if (!settings) {
@@ -183,21 +210,25 @@ function ModelSettingsEditor({
 
   return (
     <div className="settings-editor">
-      <div className="panel">
-        <div className="panel-header">
-          <h3>{title}</h3>
-          {savePlacement === "header" ? (
-            <button type="button" onClick={onSave} disabled={saveState === "saving"}>
-              {saveState === "saving" ? "Saving..." : saveLabel}
-            </button>
-          ) : null}
+      {showIntroPanel ? (
+        <div className="panel">
+          <div className="panel-header">
+            <h3>{title}</h3>
+            {savePlacement === "header" ? (
+              <button type="button" onClick={onSave} disabled={saveState === "saving"}>
+                {saveState === "saving" ? "Saving..." : saveLabel}
+              </button>
+            ) : null}
+          </div>
+          <p className="muted">{description}</p>
         </div>
-        <p className="muted">{description}</p>
-      </div>
+      ) : null}
 
-      <div className="panel">
-        <h3>Compute Mode</h3>
-        <p className="muted">Pick how Strata should spend model work. Local protects cost and privacy; Cloud/API can support more parallel assistant work; Blended keeps generation local while using API flexibility for the assistant.</p>
+      <div className="panel settings-section">
+        <div className="settings-section-head">
+          <h3>Compute Mode</h3>
+          <p className="muted">Pick how Strata should spend model work. Local protects cost and privacy; Cloud/API supports more parallel assistant work; Blended keeps generation local and gives the assistant API flexibility.</p>
+        </div>
         <div className="execution-option-grid">
           {EXECUTION_INTENT_OPTIONS.map((option) => (
             <label key={option.value} className={executionIntent === option.value ? "execution-option active" : "execution-option"}>
@@ -239,7 +270,7 @@ function ModelSettingsEditor({
       ) : null}
 
       <details className="panel advanced-settings">
-        <summary>Advanced runtime and routing controls</summary>
+        <summary>Advanced setup</summary>
         {showRuntimeFields ? (
           <div className="settings-block">
             <h3>Runtime Defaults</h3>
@@ -485,7 +516,7 @@ function ModelSettingsEditor({
         <div className="assignment-groups">
           {[
             { title: "Layer 0", fields: ["layer0_plan", "layer0_extraction", "layer0_research"] },
-            { title: "Generation", fields: ["layer1_generation", "layer2_generation", "layer3_generation"] },
+            { title: "Generation", fields: ["layer1_generation", "layer2_generation"] },
             { title: "Research And Embeddings", fields: ["layer1_research", "layer2_research", "layer1_similarity_embeddings", "research_embeddings"] },
             { title: "Project Assistant", fields: ["assistant_orchestration", "assistant_synthesis", "assistant_compaction", "assistant_specialists", "assistant_embeddings"] },
           ].map((group) => (
@@ -560,7 +591,8 @@ export function AppSettingsModal({ settings, config, saveState, onChange, onSave
       onClose={onClose}
       className="settings-modal"
     >
-      <div className="tab-content">
+      <div className="tab-content settings-modal-stack">
+        <SettingsOverview settings={settings} config={config} saveState={saveState} onSave={onSave} />
         <ModelSettingsEditor
           settings={settings}
           config={config}
@@ -571,6 +603,7 @@ export function AppSettingsModal({ settings, config, saveState, onChange, onSave
           description="These defaults seed new projects and act as the reusable baseline. Existing project overrides stay untouched unless you edit that project."
           saveLabel="Save App Settings"
           showRuntimeFields
+          showIntroPanel={false}
         />
       </div>
     </ModalFrame>
@@ -597,11 +630,12 @@ export function ProjectSettingsTab({ settings, config, saveState, onChange, onSa
         saveState={saveState}
         onChange={onChange}
         onSave={onSave}
-        title="Project Model Overrides"
-        description="These settings override the reusable app defaults only for this project."
+        title="Project behavior controls"
+        description="These controls set how this project behaves by default. The advanced section below is only for project-specific model setup."
         saveLabel="Save Project Overrides"
         showCompetitiveControl
         savePlacement="footer"
+        showIntroPanel={false}
       />
     </section>
   );

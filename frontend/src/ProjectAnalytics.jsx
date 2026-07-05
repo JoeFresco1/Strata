@@ -28,10 +28,10 @@ function Breakdown({ title, rows }) {
           {rows.map((row) => (
             <div className="analytics-row" key={row.name}>
               <strong>{row.name}</strong>
-              <span>{formatNumber(row.total_tokens)} tokens</span>
-              <span>{formatNumber(row.calls)} calls</span>
-              <span>{formatCost(row.estimated_cost_usd)}</span>
-              <span>{Number(row.generation_seconds || 0).toFixed(1)}s</span>
+              <span data-label="Tokens">{formatNumber(row.total_tokens)} tokens</span>
+              <span data-label="Calls">{formatNumber(row.calls)} calls</span>
+              <span data-label="Cost">{formatCost(row.estimated_cost_usd)}</span>
+              <span data-label="Time">{Number(row.generation_seconds || 0).toFixed(1)}s</span>
             </div>
           ))}
         </div>
@@ -59,13 +59,13 @@ function JobQueue({ jobs, onCancel, onRetry, busy }) {
         <div className="job-table">
           {rows.map((job) => (
             <div className="job-row" key={job.id}>
-              {failureCategory(job) ? <span className="status-pill failed">{failureCategory(job)}</span> : null}
-              <span className={`status-pill ${job.status}`}>{job.status}</span>
+              {failureCategory(job) ? <span className="status-pill failed" data-label="Failure category">{failureCategory(job)}</span> : null}
+              <span className={`status-pill ${job.status}`} data-label="Status">{job.status}</span>
               <strong>{job.workflow}</strong>
-              <span>{job.kind}</span>
-              <span>{job.current_step || "Queued"}</span>
-              <span>{formatNumber(job.progress)}%</span>
-              {job.error_message ? <span className="warning">{job.error_message}</span> : <span>{job.scope}</span>}
+              <span data-label="Kind">{job.kind}</span>
+              <span data-label="Step">{job.current_step || "Queued"}</span>
+              <span data-label="Progress">{formatNumber(job.progress)}%</span>
+              {job.error_message ? <span className="warning" data-label="Error">{job.error_message}</span> : <span data-label="Scope">{job.scope}</span>}
               <div className="button-row compact">
                 <button type="button" className="secondary-button" onClick={() => onCancel(job.id)} disabled={busy || !["queued", "running"].includes(job.status)}>Cancel</button>
                 <button type="button" onClick={() => onRetry(job.id)} disabled={busy || !["failed", "cancelled", "interrupted"].includes(job.status)}>Retry</button>
@@ -213,19 +213,26 @@ export default function ProjectAnalytics({ projectId, apiFetch }) {
     }
   }
 
-  if (!analytics) return <div className="project-loading-state"><strong>Loading project analytics…</strong></div>;
+  if (!analytics) return <div className="project-loading-state"><strong>Loading project analytics...</strong></div>;
   const totals = analytics.totals || {};
   const mostExpensive = analytics.by_workflow?.[0];
+  const recentJobs = health?.jobs?.recent || [];
+  const recentRuns = analytics.recent_runs || [];
+  const hasModelActivity = Number(totals.calls || 0) > 0;
+  const hasRecentJobs = recentJobs.length > 0;
+  const hasRecentRuns = recentRuns.length > 0;
+  const hasFailures = Number(totals.failures || 0) > 0 || Number(totals.timeouts || 0) > 0 || Boolean(health?.jobs?.last_error);
+  const quietState = !hasModelActivity && !hasRecentJobs && !hasRecentRuns && !hasFailures;
 
   return (
     <div className="analytics-workspace">
-      <div className="analytics-hero panel">
+      <div className={`analytics-hero panel${quietState ? " analytics-hero-quiet" : ""}`}>
         <div>
-          <p className="eyebrow">Project telemetry</p>
-          <h2>{formatNumber(totals.total_tokens)} tokens across {formatNumber(totals.calls)} model calls</h2>
+          <h2>{quietState ? "Local stack healthy and quiet" : `${formatNumber(totals.total_tokens)} tokens across ${formatNumber(totals.calls)} model calls`}</h2>
           <p className="muted">
-            {Number(totals.generation_seconds || 0).toFixed(1)} seconds of generation.
-            {mostExpensive ? ` Highest-usage workflow: ${mostExpensive.name}.` : ""}
+            {quietState
+              ? "No recent model calls or queued jobs for this project. Use Analytics when you need to inspect runtime health, failures, or diagnostics."
+              : `${Number(totals.generation_seconds || 0).toFixed(1)} seconds of generation.${mostExpensive ? ` Highest-usage workflow: ${mostExpensive.name}.` : ""}`}
           </p>
         </div>
         <div className="button-row">
@@ -236,19 +243,23 @@ export default function ProjectAnalytics({ projectId, apiFetch }) {
 
       {message ? <div className="status-banner">{message}</div> : null}
 
-      <div className="analytics-metrics">
-        <Metric label="Estimated cost" value={formatCost(totals.estimated_cost_usd)} detail="Local calls remain $0" />
-        <Metric label="Local / remote" value={`${formatNumber(totals.local_calls)} / ${formatNumber(totals.remote_calls)}`} />
-        <Metric label="Failures / timeouts" value={`${formatNumber(totals.failures)} / ${formatNumber(totals.timeouts)}`} />
-        <Metric label="Average latency" value={`${formatNumber(totals.average_latency_ms)} ms`} />
-        <Metric label="Retries" value={formatNumber(totals.retries)} />
-      </div>
+      {hasModelActivity ? (
+        <>
+          <div className="analytics-metrics">
+            <Metric label="Estimated cost" value={formatCost(totals.estimated_cost_usd)} detail="Local calls remain $0" />
+            <Metric label="Local / remote" value={`${formatNumber(totals.local_calls)} / ${formatNumber(totals.remote_calls)}`} />
+            <Metric label="Failures / timeouts" value={`${formatNumber(totals.failures)} / ${formatNumber(totals.timeouts)}`} />
+            <Metric label="Average latency" value={`${formatNumber(totals.average_latency_ms)} ms`} />
+            <Metric label="Retries" value={formatNumber(totals.retries)} />
+          </div>
 
-      <div className="analytics-grid">
-        <Breakdown title="By layer" rows={analytics.by_layer} />
-        <Breakdown title="By model" rows={analytics.by_model} />
-        <Breakdown title="By workflow" rows={analytics.by_workflow} />
-      </div>
+          <div className="analytics-grid">
+            <Breakdown title="By layer" rows={analytics.by_layer} />
+            <Breakdown title="By model" rows={analytics.by_model} />
+            <Breakdown title="By workflow" rows={analytics.by_workflow} />
+          </div>
+        </>
+      ) : null}
 
       <div className="analytics-grid analytics-lower-grid">
         <div className="panel">
@@ -262,79 +273,91 @@ export default function ProjectAnalytics({ projectId, apiFetch }) {
           </div>
         </div>
 
-        <div className="panel">
-          <h3>Privacy and retention</h3>
-          <label className="checkbox-item"><input type="checkbox" checked={analytics.settings.enabled} onChange={(event) => savePrivacy("enabled", event.target.checked)} /> Capture telemetry</label>
-          <label className="checkbox-item"><input type="checkbox" checked={analytics.settings.capture_prompt_bodies} onChange={(event) => savePrivacy("capture_prompt_bodies", event.target.checked)} /> Retain prompt bodies</label>
-          <label className="checkbox-item"><input type="checkbox" checked={analytics.settings.capture_response_bodies} onChange={(event) => savePrivacy("capture_response_bodies", event.target.checked)} /> Retain raw responses</label>
-          <label className="checkbox-item"><input type="checkbox" checked={analytics.settings.capture_parsed_results} onChange={(event) => savePrivacy("capture_parsed_results", event.target.checked)} /> Retain parsed results</label>
-          <p className="muted">Changes affect future calls. Existing retained content is not rewritten.</p>
-        </div>
+        <details className="panel analytics-collapsible">
+          <summary>Privacy and retention</summary>
+          <div className="analytics-collapsible-body">
+            <label className="checkbox-item"><input type="checkbox" checked={analytics.settings.enabled} onChange={(event) => savePrivacy("enabled", event.target.checked)} /> Capture telemetry</label>
+            <label className="checkbox-item"><input type="checkbox" checked={analytics.settings.capture_prompt_bodies} onChange={(event) => savePrivacy("capture_prompt_bodies", event.target.checked)} /> Retain prompt bodies</label>
+            <label className="checkbox-item"><input type="checkbox" checked={analytics.settings.capture_response_bodies} onChange={(event) => savePrivacy("capture_response_bodies", event.target.checked)} /> Retain raw responses</label>
+            <label className="checkbox-item"><input type="checkbox" checked={analytics.settings.capture_parsed_results} onChange={(event) => savePrivacy("capture_parsed_results", event.target.checked)} /> Retain parsed results</label>
+            <p className="muted">Changes affect future calls. Existing retained content is not rewritten.</p>
+          </div>
+        </details>
       </div>
 
-      <JobQueue jobs={health?.jobs?.recent} onCancel={cancelJob} onRetry={retryJob} busy={busy} />
+      {hasRecentJobs || hasFailures ? (
+        <JobQueue jobs={recentJobs} onCancel={cancelJob} onRetry={retryJob} busy={busy} />
+      ) : (
+        <div className="panel analytics-empty-panel">
+          <h3>Unified job queue</h3>
+          <p className="muted">No queued, running, or failed jobs for this project right now.</p>
+        </div>
+      )}
 
-      <div className="panel diagnostics-panel">
-        <div className="panel-header">
-          <div>
-            <h3>Diagnostics bundle</h3>
-            <p className="muted">Preview redaction before creating a support export.</p>
-          </div>
-          <div className="button-row">
-            <button type="button" className="secondary-button" onClick={previewDiagnostics} disabled={busy}>Preview</button>
-            <button type="button" onClick={exportDiagnostics} disabled={busy}>Export</button>
-          </div>
-        </div>
-        <div className="diagnostics-options">
-          <label className="checkbox-item"><input type="checkbox" checked={diagnosticsOptions.include_logs} onChange={(event) => updateDiagnosticsOption("include_logs", event.target.checked)} /> Logs</label>
-          <label className="checkbox-item"><input type="checkbox" checked={diagnosticsOptions.include_recent_errors} onChange={(event) => updateDiagnosticsOption("include_recent_errors", event.target.checked)} /> Recent errors</label>
-          <label className="checkbox-item"><input type="checkbox" checked={diagnosticsOptions.include_traces} onChange={(event) => updateDiagnosticsOption("include_traces", event.target.checked)} /> Traces</label>
-          <label>Log lines <input type="number" min="1" max="1000" value={diagnosticsOptions.log_line_limit} onChange={(event) => updateDiagnosticsOption("log_line_limit", Number(event.target.value || 1))} /></label>
-          <label>Redaction <select value={diagnosticsOptions.redaction_profile} onChange={(event) => updateDiagnosticsOption("redaction_profile", event.target.value)}>
-            <option value="standard">Standard</option>
-          </select></label>
-        </div>
-        {diagnosticsPreview ? (
-          <div className="diagnostics-preview">
-            <div className="analytics-row">
-              <strong>Bundle v{diagnosticsPreview.manifest?.bundle_version}</strong>
-              <span>{diagnosticsPreview.manifest?.bundle_schema_id}</span>
-              <span>{diagnosticsPreview.manifest?.content_hash?.slice(0, 12)}</span>
-              <span>{Object.values(diagnosticsPreview.manifest?.redaction?.replacement_counts || {}).reduce((sum, count) => sum + count, 0)} redactions</span>
-              <span>{diagnosticsPreview.sections?.length || 0} sections</span>
+      <details className="panel diagnostics-panel analytics-collapsible">
+        <summary>Diagnostics bundle</summary>
+        <div className="analytics-collapsible-body">
+          <div className="panel-header">
+            <div>
+              <p className="muted">Preview redaction before creating a support export.</p>
             </div>
-            <pre>{JSON.stringify({
-              sections: diagnosticsPreview.sections?.map((section) => ({ name: section.name, count: section.count })),
-              redactions: diagnosticsPreview.manifest?.redaction?.replacement_counts,
-              warnings: diagnosticsPreview.manifest?.warnings,
-            }, null, 2)}</pre>
+            <div className="button-row">
+              <button type="button" className="secondary-button" onClick={previewDiagnostics} disabled={busy}>Preview</button>
+              <button type="button" onClick={exportDiagnostics} disabled={busy}>Export</button>
+            </div>
           </div>
-        ) : <p className="muted">Run preview to inspect included sections and redaction counts.</p>}
-      </div>
-
-      <div className="panel">
-        <h3>Run inspector</h3>
-        <div className="run-list">
-          {analytics.recent_runs?.map((run) => (
-            <button type="button" key={run.id} className="run-row" onClick={() => inspectRun(run.id)}>
-              <span className={`status-pill ${run.status}`}>{run.status}</span>
-              <strong>{run.workflow}</strong>
-              <span>{run.layer}</span>
-              <span>{run.model_name || "unknown model"}</span>
-              <span>{formatNumber(run.total_tokens)} tokens</span>
-              <span>{formatNumber(run.latency_ms)} ms</span>
-            </button>
-          ))}
-          {!analytics.recent_runs?.length ? <p className="muted">New generation and assistant calls will appear here.</p> : null}
+          <div className="diagnostics-options">
+            <label className="checkbox-item"><input type="checkbox" checked={diagnosticsOptions.include_logs} onChange={(event) => updateDiagnosticsOption("include_logs", event.target.checked)} /> Logs</label>
+            <label className="checkbox-item"><input type="checkbox" checked={diagnosticsOptions.include_recent_errors} onChange={(event) => updateDiagnosticsOption("include_recent_errors", event.target.checked)} /> Recent errors</label>
+            <label className="checkbox-item"><input type="checkbox" checked={diagnosticsOptions.include_traces} onChange={(event) => updateDiagnosticsOption("include_traces", event.target.checked)} /> Traces</label>
+            <label>Log lines <input type="number" min="1" max="1000" value={diagnosticsOptions.log_line_limit} onChange={(event) => updateDiagnosticsOption("log_line_limit", Number(event.target.value || 1))} /></label>
+            <label>Redaction <select value={diagnosticsOptions.redaction_profile} onChange={(event) => updateDiagnosticsOption("redaction_profile", event.target.value)}>
+              <option value="standard">Standard</option>
+            </select></label>
+          </div>
+          {diagnosticsPreview ? (
+            <div className="diagnostics-preview">
+              <div className="analytics-row">
+                <strong>Bundle v{diagnosticsPreview.manifest?.bundle_version}</strong>
+                <span data-label="Schema">{diagnosticsPreview.manifest?.bundle_schema_id}</span>
+                <span data-label="Hash">{diagnosticsPreview.manifest?.content_hash?.slice(0, 12)}</span>
+                <span data-label="Redactions">{Object.values(diagnosticsPreview.manifest?.redaction?.replacement_counts || {}).reduce((sum, count) => sum + count, 0)} redactions</span>
+                <span data-label="Sections">{diagnosticsPreview.sections?.length || 0} sections</span>
+              </div>
+              <pre>{JSON.stringify({
+                sections: diagnosticsPreview.sections?.map((section) => ({ name: section.name, count: section.count })),
+                redactions: diagnosticsPreview.manifest?.redaction?.replacement_counts,
+                warnings: diagnosticsPreview.manifest?.warnings,
+              }, null, 2)}</pre>
+            </div>
+          ) : <p className="muted">Run preview to inspect included sections and redaction counts.</p>}
         </div>
-      </div>
+      </details>
+
+      {hasRecentRuns || selectedRun ? (
+        <div className="panel">
+          <h3>Run inspector</h3>
+          <div className="run-list">
+            {recentRuns.map((run) => (
+              <button type="button" key={run.id} className="run-row" onClick={() => inspectRun(run.id)}>
+                <span className={`status-pill ${run.status}`} data-label="Status">{run.status}</span>
+                <strong>{run.workflow}</strong>
+                <span data-label="Layer">{run.layer}</span>
+                <span data-label="Model">{run.model_name || "unknown model"}</span>
+                <span data-label="Tokens">{formatNumber(run.total_tokens)} tokens</span>
+                <span data-label="Latency">{formatNumber(run.latency_ms)} ms</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {selectedRun ? (
         <div className="panel run-inspector">
           <div className="panel-header">
             <div>
               <h3>{selectedRun.workflow}</h3>
-              <p className="muted">Prompt version {selectedRun.prompt_version || "not recorded"} · {selectedRun.model_profile_id || selectedRun.model_name}</p>
+              <p className="muted">Prompt version {selectedRun.prompt_version || "not recorded"} | {selectedRun.model_profile_id || selectedRun.model_name}</p>
             </div>
             <button type="button" onClick={replayRun} disabled={busy || !selectedRun.user_prompt}>Replay Run</button>
           </div>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { COVERAGE_STATUSES, FEATURE_STATUSES, GRANULARITY_CLASSES, splitLines } from "./layer2WorkbenchUtils";
+import "./Layer2GraphPanel.css";
 
 export function Layer2FeatureForm({ pillars, onCreate, defaultOwnerId = "" }) {
   const [open, setOpen] = useState(false);
@@ -41,18 +42,25 @@ export function Layer2FeatureForm({ pillars, onCreate, defaultOwnerId = "" }) {
   }
 
   if (!open) {
-    return <button type="button" onClick={() => setOpen(true)}>Add Feature</button>;
+    return <button type="button" onClick={() => setOpen(true)}>Add feature</button>;
   }
 
   return (
     <form className="layer2-workbench-form" onSubmit={submit}>
+      <div className="layer2-form-head">
+        <div>
+          <h4>Add Layer 2 feature</h4>
+          <p className="muted">Create a concrete capability under a kept pillar without running generation.</p>
+        </div>
+        <button type="button" className="secondary-button" onClick={() => setOpen(false)}>Close</button>
+      </div>
       <div className="brief-grid">
         <label>
-          Feature Name
+          Feature name
           <input value={form.canonical_name} onChange={(event) => update("canonical_name", event.target.value)} required />
         </label>
         <label>
-          Owner Pillar
+          Owner pillar
           <select value={form.owner_pillar_id} onChange={(event) => update("owner_pillar_id", event.target.value)} required>
             {pillars.map((pillar) => <option key={pillar.id} value={pillar.id}>{pillar.title}</option>)}
           </select>
@@ -68,7 +76,7 @@ export function Layer2FeatureForm({ pillars, onCreate, defaultOwnerId = "" }) {
           </select>
         </label>
         <label>
-          Coverage Family
+          Coverage family
           <input value={form.coverage_family} onChange={(event) => update("coverage_family", event.target.value)} />
         </label>
         <label>
@@ -91,7 +99,7 @@ export function Layer2FeatureForm({ pillars, onCreate, defaultOwnerId = "" }) {
         <textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} rows={3} />
       </label>
       <div className="button-row">
-        <button type="submit" disabled={!form.canonical_name.trim() || !form.description.trim() || !form.owner_pillar_id}>Save Feature</button>
+        <button type="submit" disabled={!form.canonical_name.trim() || !form.description.trim() || !form.owner_pillar_id}>Save feature</button>
         <button type="button" className="secondary-button" onClick={() => setOpen(false)}>Cancel</button>
       </div>
     </form>
@@ -145,8 +153,14 @@ export function FeatureDetail({ feature, pillars, onUpdate, onReview, onAddEvide
   return (
     <div className="layer2-detail">
       <div className="panel-header">
-        <h3>{feature.canonical_name}</h3>
-        <span className={`status-pill ${feature.status}`}>{feature.status}</span>
+        <div>
+          <h3>{feature.canonical_name}</h3>
+          <p className="muted">{feature.description || "No description yet."}</p>
+        </div>
+        <div className="layer2-detail-state">
+          <span className={`status-pill ${feature.status}`}>{feature.status}</span>
+          {feature.layer3_ready ? <span className="status-pill published">Approved</span> : null}
+        </div>
       </div>
       <div className="brief-grid">
         <label>
@@ -176,7 +190,7 @@ export function FeatureDetail({ feature, pillars, onUpdate, onReview, onAddEvide
           <input value={form.feature_type || ""} onChange={(event) => update("feature_type", event.target.value)} />
         </label>
         <label>
-          Coverage Family
+          Coverage family
           <input value={form.coverage_family || ""} onChange={(event) => update("coverage_family", event.target.value)} />
         </label>
       </div>
@@ -189,9 +203,9 @@ export function FeatureDetail({ feature, pillars, onUpdate, onReview, onAddEvide
         <textarea value={form.notes || ""} onChange={(event) => update("notes", event.target.value)} rows={3} />
       </label>
       <div className="button-row">
-        <button type="button" onClick={save} disabled={!onUpdate}>Save Feature</button>
-        <button type="button" className="secondary-button" onClick={() => onReview?.({ action_type: "approve_for_layer3", feature_id: feature.id })} disabled={!onReview}>Approve</button>
-        <button type="button" className="secondary-button" onClick={() => onReview?.({ action_type: "cut", feature_id: feature.id })} disabled={!onReview}>Cut</button>
+        <button type="button" onClick={save} disabled={!onUpdate}>Save feature</button>
+        <button type="button" className="secondary-button" onClick={() => onReview?.({ action_type: "approve_for_layer3", feature_id: feature.id })} disabled={!onReview}>Accept</button>
+        <button type="button" className="secondary-button" onClick={() => onReview?.({ action_type: "cut", feature_id: feature.id })} disabled={!onReview}>Reject</button>
       </div>
       <div className="layer2-score-grid">
         <span>Fit {feature.pillar_fit_score}/100</span>
@@ -199,10 +213,15 @@ export function FeatureDetail({ feature, pillars, onUpdate, onReview, onAddEvide
         <span>Strategic {feature.strategic_value_score}/100</span>
         <span>Leakage {feature.implementation_leakage_score}/100</span>
         <span>Competitor {feature.competitor_coverage_score || 0}%</span>
-        <span>{feature.layer3_ready ? "Layer 3 ready" : `Blocked: ${(feature.readiness_blockers || []).join(", ")}`}</span>
+        <span>{feature.layer3_ready ? "Approved" : `Blocked: ${(feature.readiness_blockers || []).join(", ")}`}</span>
       </div>
       <form className="layer2-evidence-form" onSubmit={addEvidence}>
-        <h4>Manual Competitor Evidence</h4>
+        <div className="layer2-form-head">
+          <div>
+            <h4>Manual competitor evidence</h4>
+            <p className="muted">Attach a source-backed signal to this feature.</p>
+          </div>
+        </div>
         <div className="brief-grid">
           <label>
             Competitor
@@ -231,14 +250,15 @@ export function FeatureDetail({ feature, pillars, onUpdate, onReview, onAddEvide
           Notes
           <textarea value={evidence.notes} onChange={(event) => setEvidence({ ...evidence, notes: event.target.value })} rows={2} />
         </label>
-        <button type="submit" disabled={!onAddEvidence}>Add Evidence</button>
+        <button type="submit" disabled={!onAddEvidence || !evidence.competitor_name.trim()}>Add evidence</button>
       </form>
       {feature.evidence?.length ? (
-        <ul className="summary-list">
+        <ul className="summary-list layer2-evidence-list">
           {feature.evidence.map((item) => (
             <li key={item.id}>
-              <strong>{item.competitor_name}: {item.coverage_status}</strong> | confidence {item.confidence}/100 | {item.source_type}
-              {item.source_url ? <> | <a href={item.source_url} target="_blank" rel="noreferrer">source</a></> : null}
+              <strong>{item.competitor_name}: {item.coverage_status}</strong>
+              <span>confidence {item.confidence}/100 | {item.source_type}</span>
+              {item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">source</a> : null}
               {item.rationale ? <p>{item.rationale}</p> : null}
               {item.evidence_snippet ? <p className="muted">{item.evidence_snippet}</p> : null}
             </li>

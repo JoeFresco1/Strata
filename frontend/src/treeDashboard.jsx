@@ -27,7 +27,7 @@ import {
 } from "./treeDashboardData";
 
 // Shows compact counts for total, visible, overlap, and per-layer nodes.
-import { DashboardStats, GraphToolbar, LayerRail, NodeDetail, TreeCanvas } from "./treeDashboardComponents";
+import { DashboardStats, GraphToolbar, LayerRail, MapOutline, NodeDetail, TreeCanvas } from "./treeDashboardComponents";
 export { NodeDetail };
 export default function TreeDashboard({
   project,
@@ -52,6 +52,8 @@ export default function TreeDashboard({
   onGenerateLayer1,
   onGenerateLayer2,
   generationControls,
+  layer0Locked,
+  onUnlockLayer0,
 }) {
   // Interactive product map with filtering, collapse state, and overlap overlays.
   const root = useMemo(() => withDerivedFields(buildRootNode(project, brief, tree)), [project, brief, tree]);
@@ -74,7 +76,8 @@ export default function TreeDashboard({
   const [statusFilter, setStatusFilter] = useState(mapState?.filters?.status || "all");
   const [overlapMode, setOverlapMode] = useState(mapState?.overlap_mode || "focus");
   const [zoom, setZoom] = useState(mapState?.zoom || 1);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [focusBranch, setFocusBranch] = useState(Boolean(mapState?.focus_branch));
+  const [inspectorOpen, setInspectorOpen] = useState(Boolean(mapState?.inspector_open));
   const selectedId = selectedIdProp || root.id;
 
   function selectNode(nodeId) {
@@ -97,17 +100,20 @@ export default function TreeDashboard({
     setStatusFilter(mapState?.filters?.status || "all");
     setOverlapMode(mapState?.overlap_mode || "focus");
     setZoom(mapState?.zoom || 1);
-    setInspectorOpen(false);
+    setFocusBranch(Boolean(mapState?.focus_branch));
+    setInspectorOpen(Boolean(mapState?.inspector_open));
   }, [root.id, project?.id]);
 
   useEffect(() => {
     onMapStateChange?.({
       zoom,
       overlap_mode: overlapMode,
+      focus_branch: focusBranch,
+      inspector_open: inspectorOpen,
       collapsed_ids: Array.from(collapsedIds),
       filters: { query, layer: layerFilter, status: statusFilter },
     });
-  }, [zoom, overlapMode, collapsedIds, query, layerFilter, statusFilter]);
+  }, [zoom, overlapMode, focusBranch, inspectorOpen, collapsedIds, query, layerFilter, statusFilter]);
 
   const filteredRoot = useMemo(
     () => filterTree(root, { query, layerFilter, statusFilter }) || root,
@@ -146,7 +152,7 @@ export default function TreeDashboard({
   const childNodes = selectedNode ? (selectedNode.children || []) : [];
   const siblingNodes = parentNode ? (parentNode.children || []).filter((item) => item.id !== selectedNode?.id) : [];
   const breadcrumbs = selectedNode ? [...(fullIndex.ancestorsById[selectedNode.id] || []), selectedNode.id].map((id) => fullIndex.byId[id]).filter(Boolean) : [];
-  const focusedRoot = selectedNode?.layer > 0
+  const focusedRoot = focusBranch && selectedNode?.layer > 0
     ? filterTree(selectedNode, { query, layerFilter, statusFilter }) || selectedNode
     : filteredRoot;
   const focusedGraph = useMemo(() => buildVisibleGraph(focusedRoot, collapsedIds), [focusedRoot, collapsedIds]);
@@ -247,19 +253,9 @@ export default function TreeDashboard({
 
   return (
     <section className="tree-dashboard">
-      <div className="panel tree-dashboard-header">
-        <div>
-          <h3>Product Map Dashboard</h3>
-          <p className="muted">
-            Layer 0 anchors the map. Browse with progressive reveal, switch overlap modes when you need denser analysis,
-            and use the detail panel for lightweight structural edits without leaving the dashboard.
-          </p>
-        </div>
-      </div>
-
       <details className="panel tree-view-options">
         <summary>
-          <span>View options</span>
+          <span>Filters and map controls</span>
           <span className="muted">{stats.visibleNodes} visible | {stats.overlapEdges} overlaps</span>
         </summary>
         <GraphToolbar
@@ -273,6 +269,8 @@ export default function TreeDashboard({
           onOverlapModeChange={setOverlapMode}
           zoom={zoom}
           onZoomChange={setZoom}
+          focusBranch={focusBranch}
+          onFocusBranchChange={setFocusBranch}
           onExpandAll={expandAll}
           onCollapseAll={collapseAll}
           onResetView={resetView}
@@ -286,12 +284,12 @@ export default function TreeDashboard({
         </div>
         {siblingNodes.length ? (
           <div className="tree-sibling-rail">
-            <span className="muted">Parallel branches</span>
+            <span className="muted">Nearby branches</span>
             {siblingNodes.map((item) => <button key={item.id} type="button" className="tree-chip" onClick={() => selectNode(item.id)}>{item.title}</button>)}
           </div>
         ) : null}
         <button type="button" className="secondary-button tree-inspector-toggle" onClick={() => setInspectorOpen((current) => !current)}>
-          {inspectorOpen ? "Hide Inspector" : "Inspect Selection"}
+          {inspectorOpen ? "Hide inspector" : "Inspect selection"}
         </button>
       </div>
 
@@ -304,6 +302,15 @@ export default function TreeDashboard({
         />
 
         <div className="panel tree-visual-panel">
+          <MapOutline
+            nodes={focusedGraph.nodes}
+            selectedId={selectedNode?.id}
+            collapsedIds={collapsedIds}
+            overlapDegree={visibleOverlapDegree}
+            researchSignals={overlapData.researchByNode}
+            onSelect={selectNode}
+            onToggleCollapse={toggleCollapse}
+          />
           <TreeCanvas
             graph={focusedGraph}
             selectedId={selectedNode?.id}
@@ -342,6 +349,8 @@ export default function TreeDashboard({
             onGenerateLayer1={onGenerateLayer1}
             onGenerateLayer2={onGenerateLayer2}
             generationControls={generationControls}
+            layer0Locked={layer0Locked}
+            onUnlockLayer0={onUnlockLayer0}
           />
         </div> : null}
       </div>

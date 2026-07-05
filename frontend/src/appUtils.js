@@ -1,7 +1,41 @@
+export const PROJECT_STAGE_META = {
+  Workspace: {
+    kicker: "Product Tree",
+    title: "Shape the product from brief to approved features",
+    body: "Move through Layer 0, Layer 1, and Layer 2 in one continuous product workspace.",
+    short: "Layers 0-2",
+  },
+  Analytics: {
+    kicker: "Runtime",
+    title: "Check runtime health and activity",
+    body: "Confirm that the stack is healthy, review recent activity, and open diagnostics only when you need operational detail.",
+    short: "Health, jobs, diagnostics",
+  },
+  Project: {
+    kicker: "Controls",
+    title: "Control project behavior and outputs",
+    body: "Set project-level behavior, manage exports, and open advanced model controls only when this project needs custom setup.",
+    short: "Behavior, exports, setup",
+  },
+};
+
+export const HAMBURGER_ACTIONS = [
+  {
+    id: "guide",
+    label: "Guide",
+  },
+  {
+    id: "prompts",
+    label: "System Prompts",
+  },
+  {
+    id: "settings",
+    label: "App Settings",
+  },
+];
+
 export const TABS = [
-  { id: "Workspace", label: "Workspace" },
-  { id: "Layer 0", label: "Brief" },
-  { id: "Specs", label: "Capability Design" },
+  { id: "Workspace", label: "Product Tree" },
   { id: "Analytics", label: "Analytics" },
   { id: "Project", label: "Project Settings" },
 ];
@@ -37,17 +71,12 @@ export function findWorkspaceEntity(workspaceTree, selectedId) {
 
 export function assistantScopeFor(activeTab, selectedEntity) {
   // Map the visible workspace selection to the assistant retrieval scope.
-  if (activeTab === "Specs") return "layer3";
   if ([0, 1, 2].includes(selectedEntity?.layer)) return `layer${selectedEntity.layer}`;
   return "overall";
 }
 
 export function applyAssistantNavigation({ layer, citation = {}, setActiveTab, setWorkspaceState }) {
   // Translate assistant citations into the matching workspace tab and durable entity selection.
-  if (layer === "layer3") {
-    setActiveTab("Specs");
-    return;
-  }
   setActiveTab("Workspace");
   const targetId = layer === "layer0"
     ? "layer0-root"

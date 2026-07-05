@@ -19,16 +19,15 @@ from strata.api_models import Layer2FeatureCreateRequest, Layer2FeatureEvidenceR
 from strata.db import Database
 from strata.diagnostics import Redactor, diagnostics_content_hash
 from strata.embeddings import EmbeddingService
-from strata.export import export_layer2_markdown, export_layer3_manifest
+from strata.export import export_layer2_markdown, export_layer3_feature_expansions
 from strata.generation import LAYER2_EXHAUSTION_FAMILIES, LAYER2_LENSES, LAYER2_SURVEY_BUILDER_FAMILIES, GenerationService
 from strata.llm import LLMError, LlamaCppClient
 from strata.layer2_research import Layer2CompetitorSeed, Layer2ResearchMixin
 from strata.layer3_service import validate_product_level_content
 from strata.models import (
-    CapabilityDesignPayload,
-    CapabilityDesignResponse,
-    CapabilityPressureTest,
-    CapabilityPressureTestResponse,
+    FeatureExpansionGroup,
+    FeatureExpansionOption,
+    FeatureExpansionResponse,
     Layer2Candidate,
     Layer2CandidateResponse,
     Layer2CoverageAssessmentResponse,

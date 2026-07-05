@@ -17,16 +17,15 @@ from strata.assistant_service import AssistantService
 from strata.api_models import Layer2FeatureCreateRequest, Layer2FeatureEvidenceRequest
 from strata.db import Database
 from strata.embeddings import EmbeddingService
-from strata.export import export_layer2_markdown, export_layer3_manifest
+from strata.export import export_layer2_markdown, export_layer3_feature_expansions
 from strata.generation import LAYER2_EXHAUSTION_FAMILIES, LAYER2_LENSES, LAYER2_SURVEY_BUILDER_FAMILIES, GenerationService
 from strata.llm import LLMError, LlamaCppClient
 from strata.layer2_research import Layer2CompetitorSeed, Layer2ResearchMixin
 from strata.layer3_service import validate_product_level_content
 from strata.models import (
-    CapabilityDesignPayload,
-    CapabilityDesignResponse,
-    CapabilityPressureTest,
-    CapabilityPressureTestResponse,
+    FeatureExpansionGroup,
+    FeatureExpansionOption,
+    FeatureExpansionResponse,
     CriticResponse,
     Layer2Candidate,
     Layer2CandidateResponse,
@@ -55,76 +54,32 @@ from requests.exceptions import SSLError
 
 
 class GenerationHelperTests(unittest.TestCase):
-    def test_layer3_coverage_gap_analysis_is_bounded_and_normalized(self) -> None:
-        analysis = GenerationService._validate_coverage_gap_analysis({
-            "coverage_gap_analysis": {
-                "coverage_score": 120,
-                "summary": "Missing lifecycle behavior.",
-                "gaps": [{
-                    "area": "Lifecycle",
-                    "severity": "high",
-                    "missing": "Archived behavior",
-                    "recommendation": "Define the observable archived state.",
+    def test_layer3_feature_expansion_normalizes_option_state(self) -> None:
+        payload = GenerationService._normalize_feature_expansion({
+            "feature_intent": "Collect open text safely.",
+            "expansion_groups": [{
+                "name": "Validation rules",
+                "options": [{
+                    "name": "Email only",
+                    "selection_state": "invalid",
+                    "configuration_kind": "regex",
+                    "dependencies": ["Open text response"],
                 }],
-                "complete_areas": ["Purpose"],
-                "recommended_next_actions": ["Add lifecycle states"],
-            },
+            }],
+            "open_questions": ["  Should formatted text be allowed?  "],
         })
 
-        self.assertEqual(analysis["coverage_score"], 100)
-        self.assertEqual(analysis["gaps"][0]["area"], "Lifecycle")
-        self.assertEqual(analysis["recommended_next_actions"], ["Add lifecycle states"])
+        option = payload["expansion_groups"][0]["options"][0]
+        self.assertEqual(option["selection_state"], "undecided")
+        self.assertEqual(option["configuration_kind"], "other")
+        self.assertEqual(payload["open_questions"], ["Should formatted text be allowed?"])
 
-    def test_layer3_competitive_analysis_is_bounded_and_normalized(self) -> None:
-        analysis = GenerationService._validate_competitive_analysis({
-            "competitive_analysis": {
-                "summary": "The feature needs baseline parity but still has room to differentiate.",
-                "evidence_strength": "grounded",
-                "evidence_limitations": ["Only two competitors have current evidence."],
-                "parity_requirements": [{"capability": "Basic authoring", "rationale": "Common baseline across cited tools."}],
-                "differentiation_opportunities": [{"opportunity": "Safer branching guidance", "rationale": "Competitor language is generic on risk prevention."}],
-                "patterns_to_avoid": [{"pattern": "Opaque rule ordering", "why_to_avoid": "It creates avoidable confusion in similar products."}],
-                "positioning_decisions": [{"decision": "Emphasize clarity over power-user complexity", "rationale": "The evidence suggests users need predictable control first."}],
-            },
-        })
-
-        self.assertEqual(analysis["evidence_strength"], "grounded")
-        self.assertEqual(analysis["parity_requirements"][0]["capability"], "Basic authoring")
-        self.assertEqual(analysis["patterns_to_avoid"][0]["pattern"], "Opaque rule ordering")
-
-    def test_layer3_generation_batches_never_include_empty_passes(self) -> None:
-        sections = [
-            "product_purpose",
-            "feature_archetype",
-            "supported_variants",
-            "configurable_options",
-            "product_behaviors",
-            "validation_constraints",
-            "lifecycle_states",
-            "edge_cases",
-        ]
-
-        batches = GenerationService._layer3_generation_batches(sections)
-
-        self.assertTrue(all(batches))
-        self.assertEqual({item for batch in batches for item in batch}, set(sections))
-
-    def test_layer3_pressure_sanitizer_keeps_safe_leakage_signal(self) -> None:
-        pressure = {
-            "ambiguity": [],
-            "product_risk": [],
-            "overreach": [],
-            "missing_decisions": [],
-            "downstream_blockers": [],
-            "implementation_leakage": ["The card includes an API endpoint contract."],
-            "downstream_readiness_score": 80,
-            "readiness_rationale": "Otherwise clear.",
-        }
-
-        cleaned = GenerationService._sanitize_pressure_test(pressure)
-
-        self.assertEqual(cleaned["implementation_leakage"], ["Implementation-level detail was detected in the card review."])
-        self.assertEqual(GenerationService._bounded_layer3_readiness(cleaned, []), 40)
+    def test_layer3_feature_expansion_rejects_empty_groups(self) -> None:
+        with self.assertRaises(LLMError):
+            GenerationService._normalize_feature_expansion({
+                "feature_intent": "Collect open text safely.",
+                "expansion_groups": [{"name": ""}],
+            })
 
     def test_layer1_requires_published_brief(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -395,7 +350,7 @@ class GenerationHelperTests(unittest.TestCase):
 
         self.assertEqual(status, "needs_review")
 
-    def test_layer3_generation_persists_product_level_capability_card(self) -> None:
+    def test_layer3_generation_persists_feature_expansion(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "specforge.db")
             project = db.create_project("Test", "A useful product")
@@ -439,52 +394,41 @@ class GenerationHelperTests(unittest.TestCase):
             service._project_llm_runtime = lambda *_args, **_kwargs: {"id": "stub", "label": "Stub"}  # type: ignore[method-assign]
             service._ensure_profile_loaded = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
             def stub_pass(**kwargs):
-                if kwargs["schema_label"] == "capability_pressure_test":
-                    return "", CapabilityPressureTestResponse(
-                        pressure_test=CapabilityPressureTest(
-                            downstream_readiness_score=82,
-                            readiness_rationale="Clear behavior with one product decision remaining.",
-                        )
-                    )
-                complete = CapabilityDesignResponse(
-                    card=CapabilityDesignPayload(
-                        product_purpose="Route respondents through relevant question paths.",
-                        feature_archetype="workflow",
-                        supported_variants=[{"name": "Single condition", "description": "One condition controls the route."}],
-                        configurable_options=[{"name": "Fallback path", "description": "Choose the route used when no condition matches.", "required": False}],
-                        product_behaviors=[{"trigger": "A response is submitted", "behavior": "Evaluate configured branch conditions", "outcome": "Continue on the matching path"}],
-                        validation_constraints=[{"concept": "Complete condition", "description": "A branch must identify a valid destination."}],
-                        lifecycle_states=[{"state": "draft", "meaning": "Rules remain editable", "transitions": ["active"]}],
-                        dependencies=["Question response capture"],
-                        edge_cases=["Multiple conditions match at the same time."],
-                        product_risks=["Ambiguous rule ordering can create surprising routes."],
-                        relationships=[{
-                            "target_feature_id": sibling.id,
-                            "relationship_type": "depends_on",
-                            "rationale": "Branch evaluation consumes captured responses.",
+                return "", FeatureExpansionResponse(
+                    expansion={
+                        "feature_intent": "Route respondents through relevant question paths.",
+                        "expansion_groups": [{
+                            "name": "Routing rules",
+                            "description": "Controls for how branch rules behave.",
+                            "options": [{
+                                "name": "Fallback path",
+                                "description": "Choose where users go when no condition matches.",
+                                "selection_state": "undecided",
+                                "configuration_kind": "single_select",
+                                "default_recommendation": "Require a fallback.",
+                                "rationale": "Prevents dead-end survey flows.",
+                                "dependencies": ["Response capture"],
+                                "overlaps_feature_ids": [sibling.id],
+                            }],
                         }],
-                        open_decisions=[{"question": "How should multiple matches be resolved?", "options": ["First match", "Explicit priority"]}],
-                    )
+                        "overlap_review": [{"feature_id": sibling.id, "summary": "Branching consumes responses.", "recommendation": "keep separate"}],
+                        "open_questions": ["How should multiple matches be resolved?"],
+                    }
                 )
-                sections = kwargs["validator"].__defaults__[0] if kwargs["validator"].__defaults__ else []
-                payload = complete.card.model_dump(mode="json")
-                return "", {section: payload[section] for section in sections}
 
             service._call_structured_json_pass = stub_pass  # type: ignore[method-assign]
 
-            created = service.generate_capability_cards(project.id, [feature.id])
+            created = service.generate_feature_expansions(project.id, [feature.id])
             snapshot = db.layer3_snapshot(project.id)
 
             self.assertEqual(len(created), 1)
             self.assertEqual(created[0].parent_pillar_id, pillar.id)
             self.assertEqual(created[0].feature_id, feature.id)
             self.assertEqual(created[0].review_state, "draft")
-            self.assertEqual(created[0].downstream_readiness_score, 79)
-            self.assertEqual(len(snapshot["cards"][0]["open_decisions"]), 1)
-            self.assertEqual(snapshot["cards"][0]["relationships"][0]["target_feature_id"], sibling.id)
-            self.assertNotIn("user_stories", snapshot["cards"][0])
+            self.assertEqual(snapshot["expansions"][0]["expansion_groups"][0]["options"][0]["overlaps_feature_ids"], [sibling.id])
+            self.assertEqual(snapshot["expansions"][0]["open_questions"], ["How should multiple matches be resolved?"])
 
-    def test_layer3_review_decisions_and_export_manifest(self) -> None:
+    def test_layer3_review_and_export_feature_expansions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "strata.db")
             project = db.create_project("Test", "A useful product")
@@ -514,51 +458,49 @@ class GenerationHelperTests(unittest.TestCase):
                 candidate_source_ids=["candidate-1"],
                 status="approved",
             )
-            card = db.upsert_layer3_card(
+            expansion = db.upsert_layer3_expansion(
                 project_id=project.id,
                 feature_id=feature.id,
                 parent_pillar_id=pillar.id,
                 parent_pillar_title=pillar.title,
                 feature_name=feature.canonical_name,
                 feature_description=feature.description,
-                product_purpose="Keep stakeholders informed on a predictable cadence.",
-                feature_archetype="reporting",
-                supported_variants=[],
-                configurable_options=[],
-                product_behaviors=[],
-                validation_constraints=[],
-                lifecycle_states=[],
-                dependencies=[],
-                overlaps_conflicts=[],
-                edge_cases=[],
-                product_risks=[],
-                pressure_test={"implementation_leakage": []},
-                downstream_readiness_score=90,
-                readiness_rationale="Clear and bounded.",
-                review_state="draft",
+                feature_intent="Keep stakeholders informed on a predictable cadence.",
+                expansion_groups=[{
+                    "id": "group-1",
+                    "name": "Delivery cadence",
+                    "description": "Controls for report timing.",
+                    "options": [{
+                        "id": "option-1",
+                        "name": "Weekly report",
+                        "description": "Send a weekly summary.",
+                        "selection_state": "include",
+                        "configuration_kind": "single_select",
+                        "default_recommendation": "Include for recurring audiences.",
+                        "rationale": "Matches common stakeholder rhythm.",
+                        "dependencies": [],
+                        "overlaps_feature_ids": [],
+                    }],
+                }],
+                overlap_review=[],
+                open_questions=["Who may receive reports?"],
+                review_state="approved",
                 provenance={"source_layer2_feature_id": feature.id},
             )
-            decisions = db.replace_layer3_decisions(
+            db.record_layer3_expansion_action(
                 project_id=project.id,
-                card_id=card.id,
-                decisions=[{"question": "Who may receive reports?", "options": ["Admins", "Configured audiences"]}],
-            )
-            db.update_layer3_decision(decisions[0].id, status="resolved", resolution="Configured audiences")
-            db.update_layer3_card(card.id, review_state="approved")
-            db.record_layer3_review_action(
-                project_id=project.id,
-                card_id=card.id,
+                expansion_id=expansion.id,
                 action_type="approve",
                 payload={"note": "Reviewed"},
             )
             graph = db.layer2_graph_snapshot(project.id)
             layer3 = db.layer3_snapshot(project.id)
             review_count = db._fetchone(
-                "SELECT COUNT(*) AS count FROM layer3_review_actions WHERE card_id = ?",
-                (card.id,),
+                "SELECT COUNT(*) AS count FROM layer3_expansion_actions WHERE expansion_id = ?",
+                (expansion.id,),
             )
 
-            output = export_layer3_manifest(
+            output = export_layer3_feature_expansions(
                 project,
                 brief.model_dump(mode="json"),
                 graph,
@@ -567,164 +509,8 @@ class GenerationHelperTests(unittest.TestCase):
             )
             payload = json.loads(output.read_text(encoding="utf-8"))
 
-            self.assertEqual(payload["approved_card_count"], 1)
+            self.assertEqual(payload["approved_expansion_count"], 1)
             self.assertEqual(int(review_count["count"]), 1)
-            self.assertEqual(payload["capability_design_cards"][0]["lineage"]["layer2"]["feature_id"], feature.id)
-            self.assertEqual(payload["capability_design_cards"][0]["card"]["open_decisions"][0]["status"], "resolved")
-
-    def test_layer3_pressure_test_refreshes_stale_readiness(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = Database(Path(tmpdir) / "pressure.db")
-            project = db.create_project("Pressure", "A product")
-            pillar = db.create_node(
-                project_id=project.id,
-                parent_id=None,
-                layer=1,
-                node_type="pillar",
-                title="Authoring",
-                description="Create content.",
-                status="kept",
-            )
-            feature = db.create_layer2_feature(
-                project_id=project.id,
-                canonical_name="Text input",
-                description="Collect text.",
-                feature_type="question_type",
-                granularity_class="feature",
-                owner_pillar_id=pillar.id,
-                candidate_source_ids=[],
-                status="approved",
-            )
-            card = db.upsert_layer3_card(
-                project_id=project.id,
-                feature_id=feature.id,
-                parent_pillar_id=pillar.id,
-                parent_pillar_title=pillar.title,
-                feature_name=feature.canonical_name,
-                feature_description=feature.description,
-                product_purpose="Collect qualitative feedback.",
-                feature_archetype="question_type",
-                supported_variants=[],
-                configurable_options=[],
-                product_behaviors=[],
-                validation_constraints=[],
-                lifecycle_states=[],
-                dependencies=[],
-                overlaps_conflicts=[],
-                edge_cases=[],
-                product_risks=[],
-                pressure_test={"stale": True, "implementation_leakage": []},
-                downstream_readiness_score=0,
-                readiness_rationale="Stale.",
-                review_state="needs_review",
-                provenance={},
-            )
-            service = GenerationService(db, llm_client=None)  # type: ignore[arg-type]
-            service._project_llm_runtime = lambda *_args, **_kwargs: {"id": "stub"}  # type: ignore[method-assign]
-            service._ensure_profile_loaded = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-            service._call_structured_json_pass = lambda **_kwargs: (  # type: ignore[method-assign]
-                "",
-                CapabilityPressureTestResponse(
-                    pressure_test=CapabilityPressureTest(
-                        downstream_readiness_score=88,
-                        readiness_rationale="Product behavior is clear.",
-                    )
-                ),
-            )
-
-            updated = service.pressure_test_capability_card(project.id, card.id)
-
-            self.assertEqual(updated.downstream_readiness_score, 88)
-            self.assertNotIn("stale", updated.pressure_test)
-            self.assertEqual(updated.review_state, "needs_review")
-
-    def test_layer3_competitive_analysis_persists_citations_and_provenance(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = Database(Path(tmpdir) / "competitive.db")
-            project = db.create_project("Competitive", "A product")
-            db.upsert_project_brief(
-                project_id=project.id,
-                product_idea="A product",
-                known_competitors=["Typeform", "SurveyMonkey"],
-                constraints="",
-                target_users="Operations teams",
-                goals=["Reduce setup mistakes"],
-                status="published",
-            )
-            pillar = db.create_node(
-                project_id=project.id,
-                parent_id=None,
-                layer=1,
-                node_type="pillar",
-                title="Authoring",
-                description="Create content.",
-                status="kept",
-            )
-            feature = db.create_layer2_feature(
-                project_id=project.id,
-                canonical_name="Branching logic",
-                description="Route users based on prior answers.",
-                feature_type="workflow",
-                granularity_class="feature",
-                owner_pillar_id=pillar.id,
-                candidate_source_ids=[],
-                status="approved",
-            )
-            db.create_layer2_feature_evidence(
-                project_id=project.id,
-                feature_id=feature.id,
-                competitor_name="Typeform",
-                coverage_status="has_feature",
-                confidence=84,
-                source_url="https://example.com/typeform-logic",
-                evidence_snippet="Logic jumps route respondents to later questions.",
-                rationale="Direct feature page wording.",
-                source_type="manual",
-            )
-            card = db.upsert_layer3_card(
-                project_id=project.id,
-                feature_id=feature.id,
-                parent_pillar_id=pillar.id,
-                parent_pillar_title=pillar.title,
-                feature_name=feature.canonical_name,
-                feature_description=feature.description,
-                product_purpose="Route respondents through the right flow.",
-                feature_archetype="workflow",
-                supported_variants=[],
-                configurable_options=[],
-                product_behaviors=[],
-                validation_constraints=[],
-                lifecycle_states=[],
-                dependencies=[],
-                overlaps_conflicts=[],
-                edge_cases=[],
-                product_risks=[],
-                pressure_test={"implementation_leakage": []},
-                downstream_readiness_score=82,
-                readiness_rationale="Clear behavior.",
-                review_state="needs_review",
-                provenance={},
-            )
-            service = GenerationService(db, llm_client=None)  # type: ignore[arg-type]
-            service._project_llm_runtime = lambda *_args, **_kwargs: {"id": "stub", "model_name": "Stub Model"}  # type: ignore[method-assign]
-            service._ensure_profile_loaded = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-            service._call_structured_json_pass = lambda **_kwargs: (  # type: ignore[method-assign]
-                "",
-                {
-                    "summary": "Baseline parity matters, but clarity is the stronger wedge.",
-                    "evidence_strength": "grounded",
-                    "evidence_limitations": ["Only one competitor has current evidence."],
-                    "parity_requirements": [{"capability": "Logic jumps", "rationale": "A cited competitor already offers this baseline."}],
-                    "differentiation_opportunities": [{"opportunity": "Explain routing outcomes clearly", "rationale": "The evidence is light on user-facing clarity."}],
-                    "patterns_to_avoid": [{"pattern": "Hidden rule priority", "why_to_avoid": "It can make branching behavior feel arbitrary."}],
-                    "positioning_decisions": [{"decision": "Position as transparent branching", "rationale": "Clarity is the strongest grounded message."}],
-                },
-            )
-
-            updated = service.analyze_capability_competitive_positioning(project.id, card.id)
-
-            self.assertEqual(updated.competitive_analysis["evidence_strength"], "grounded")
-            self.assertEqual(updated.competitive_analysis["citations"][0]["competitor_name"], "Typeform")
-            self.assertEqual(updated.competitive_analysis["provenance"]["source_layer2_feature_id"], feature.id)
-
+            self.assertEqual(payload["feature_expansions"][0]["lineage"]["layer2"]["feature_id"], feature.id)
+            self.assertEqual(payload["feature_expansions"][0]["expansion"]["expansion_groups"][0]["options"][0]["selection_state"], "include")
 

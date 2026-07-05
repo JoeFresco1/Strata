@@ -355,7 +355,7 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin, Layer3ServiceMixin
         """Infer the product layer from the stable structured-response schema id."""
         if schema_label.startswith("layer2"):
             return "layer2"
-        if schema_label.startswith("capability"):
+        if schema_label.startswith("capability") or schema_label.startswith("layer3"):
             return "layer3"
         if schema_label.startswith("pillar"):
             return "layer1"

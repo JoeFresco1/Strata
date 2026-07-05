@@ -28,8 +28,6 @@ class PlatformJobService:
         "layer1_generation",
         "layer2_generation",
         "layer3_generation",
-        "layer3_pressure_test",
-        "layer3_coverage_gap_audit",
         "telemetry_replay",
         "diagnostics_export",
         "assistant_message",
@@ -127,9 +125,6 @@ class PlatformJobService:
             "layer1_generation": self._run_layer1_generation,
             "layer2_generation": self._run_layer2_generation,
             "layer3_generation": self._run_layer3_generation,
-            "layer3_pressure_test": self._run_layer3_pressure_test,
-            "layer3_coverage_gap_audit": self._run_layer3_coverage_gap_audit,
-            "layer3_competitive_analysis": self._run_layer3_competitive_analysis,
             "telemetry_replay": self._run_telemetry_replay,
             "diagnostics_export": self._run_diagnostics_export,
             "assistant_message": self._run_assistant_message,
@@ -205,47 +200,13 @@ class PlatformJobService:
         feature_ids = [str(item) for item in payload.get("feature_ids", [])]
         if not feature_ids:
             raise ValueError("Select at least one approved Layer 2 feature.")
-        self._checkpoint(job.id, "Generating Layer 3 capability cards", 10)
-        created = self.services.generation_service.generate_capability_cards(
+        self._checkpoint(job.id, "Generating Layer 3 feature expansions", 10)
+        created = self.services.generation_service.generate_feature_expansions(
             job.project_id,
             feature_ids,
             thinking_enabled=bool(payload.get("thinking_enabled")),
-            selected_sections=payload.get("selected_sections") or None,
         )
-        return {"created": [card.model_dump(mode="json") for card in created]}
-
-    def _run_layer3_pressure_test(self, job: PlatformJob) -> dict[str, Any]:
-        payload = job.request_payload
-        card_id = str(payload.get("card_id") or job.scope_id or "")
-        self._checkpoint(job.id, "Pressure-testing Layer 3 card", 20)
-        card = self.services.generation_service.pressure_test_capability_card(
-            job.project_id,
-            card_id,
-            thinking_enabled=bool(payload.get("thinking_enabled")),
-        )
-        return {"card": card.model_dump(mode="json")}
-
-    def _run_layer3_coverage_gap_audit(self, job: PlatformJob) -> dict[str, Any]:
-        payload = job.request_payload
-        card_id = str(payload.get("card_id") or job.scope_id or "")
-        self._checkpoint(job.id, "Checking Layer 3 coverage gaps", 20)
-        card = self.services.generation_service.check_capability_coverage_gaps(
-            job.project_id,
-            card_id,
-            thinking_enabled=bool(payload.get("thinking_enabled")),
-        )
-        return {"card": card.model_dump(mode="json")}
-
-    def _run_layer3_competitive_analysis(self, job: PlatformJob) -> dict[str, Any]:
-        payload = job.request_payload
-        card_id = str(payload.get("card_id") or job.scope_id or "")
-        self._checkpoint(job.id, "Analyzing Layer 3 competitive positioning", 20)
-        card = self.services.generation_service.analyze_capability_competitive_positioning(
-            job.project_id,
-            card_id,
-            thinking_enabled=bool(payload.get("thinking_enabled")),
-        )
-        return {"card": card.model_dump(mode="json")}
+        return {"created": [expansion.model_dump(mode="json") for expansion in created]}
 
     def _run_telemetry_replay(self, job: PlatformJob) -> dict[str, Any]:
         call_id = str(job.request_payload.get("call_id") or job.scope_id or "")

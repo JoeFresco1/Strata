@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-const SCOPES = ["overall", "layer0", "layer1", "layer2", "layer3"];
+const SCOPES = ["overall", "layer0", "layer1", "layer2"];
 const EXECUTION_INTENT_OPTIONS = [
   { value: "", label: "Project default" },
   { value: "local_first", label: "Local-first" },
@@ -8,9 +8,9 @@ const EXECUTION_INTENT_OPTIONS = [
   { value: "blended", label: "Blended" },
 ];
 const STARTER_PROMPTS = [
-  "What should I work on next?",
-  "Find the biggest gap in this branch.",
-  "Summarize the current product direction.",
+  "What is risky in this selection?",
+  "What should I inspect next?",
+  "Summarize this in plain English.",
 ];
 
 function requestId() {
@@ -19,6 +19,17 @@ function requestId() {
 
 function actionForMessage(actions, messageId) {
   return actions.filter((action) => action.message_id === messageId);
+}
+
+function scopeLabel(scope) {
+  return scope === "overall" ? "All layers" : scope.replace("layer", "Layer ");
+}
+
+function focusTypeLabel(type) {
+  if (type === "pillar") return "Layer 1 pillar";
+  if (type === "feature") return "Layer 2 feature";
+  if (type === "card") return "Project artifact";
+  return "Layer 0 brief";
 }
 
 export default function AssistantDrawer({ open, projectId, activeScope, focus = {}, apiFetch, onClose, onNavigate }) {
@@ -36,6 +47,9 @@ export default function AssistantDrawer({ open, projectId, activeScope, focus = 
   const [error, setError] = useState("");
   const endRef = useRef(null);
   const hasPendingMessages = thread.messages.some((message) => ["queued", "running"].includes(message.status));
+  const focusLabel = focus.label || "Current project";
+  const focusType = focusTypeLabel(focus.entity_type);
+  const activeViewLabel = focus.active_view ? `${focus.active_view} tab` : "Current tab";
 
   useEffect(() => setScope(activeScope), [activeScope]);
 
@@ -177,11 +191,17 @@ export default function AssistantDrawer({ open, projectId, activeScope, focus = 
     <aside className="assistant-drawer" aria-label="Strata project assistant">
       <header className="assistant-header">
         <div>
-          <strong>Project Assistant</strong>
-          <span>{scope === "overall" ? "All layers" : scope.replace("layer", "Layer ")}</span>
+          <strong>Ask Strata</strong>
+          <span>{activeViewLabel} / {scopeLabel(scope)}</span>
         </div>
-        <button type="button" className="icon-button" aria-label="Close assistant" title="Close assistant" onClick={onClose}>x</button>
+        <button type="button" className="assistant-close-button" onClick={onClose}>Close</button>
       </header>
+
+      <section className="assistant-context-card" aria-label="Assistant context">
+        <span>{focusType}</span>
+        <strong>{focusLabel}</strong>
+        <p>Replies are grounded in the selected workspace item. Switch selection in the workspace when you want a different focus.</p>
+      </section>
 
       <div className="assistant-thread-controls">
         <select value={conversationId} onChange={(event) => setConversationId(event.target.value)} aria-label="Conversation">
@@ -193,7 +213,7 @@ export default function AssistantDrawer({ open, projectId, activeScope, focus = 
 
       <div className="assistant-options">
         <details className="assistant-advanced-options">
-          <summary>Advanced</summary>
+          <summary>Run settings</summary>
           <label>
             Scope
             <select value={scope} onChange={(event) => setScope(event.target.value)}>
@@ -211,7 +231,7 @@ export default function AssistantDrawer({ open, projectId, activeScope, focus = 
         </details>
         {conversations.length > 1 ? (
           <details className="assistant-references">
-            <summary>Reference other conversations ({references.length})</summary>
+            <summary>Add prior chats ({references.length})</summary>
             {conversations.filter((item) => item.id !== conversationId).map((item) => (
               <label key={item.id}><input type="checkbox" checked={references.includes(item.id)} onChange={() => toggleReference(item.id)} /> {item.title}</label>
             ))}
@@ -223,7 +243,7 @@ export default function AssistantDrawer({ open, projectId, activeScope, focus = 
         {threadLoading ? <div className="assistant-loading"><div className="loading-spinner" /><span>Loading conversation...</span></div> : null}
         {!thread.messages.length ? (
           <div className="assistant-empty">
-            <p>Ask about the current layer, compare decisions, find conflicts, or preview an action.</p>
+            <p>Start with the selected workspace item. Strata can explain tradeoffs, find conflicts, or suggest the next inspection.</p>
             <div className="assistant-starter-prompts">
               {STARTER_PROMPTS.map((prompt) => (
                 <button key={prompt} type="button" className="secondary-button" onClick={() => setDraft(prompt)}>
@@ -265,7 +285,7 @@ export default function AssistantDrawer({ open, projectId, activeScope, focus = 
 
       {error ? <div className="assistant-error">{error}</div> : null}
       <form className="assistant-composer" onSubmit={sendMessage}>
-        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask Strata about this project..." rows={3} />
+        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={`Ask about ${focusLabel}...`} rows={3} />
         <button type="submit" disabled={busy || !draft.trim()}>{busy ? "Queuing..." : "Send"}</button>
       </form>
     </aside>

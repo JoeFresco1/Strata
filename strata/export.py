@@ -120,27 +120,27 @@ def export_layer2_markdown(project: Project, layer2_graph: dict[str, Any], expor
     return markdown_path
 
 
-def export_layer3_manifest(
+def export_layer3_feature_expansions(
     project: Project,
     brief: dict[str, Any],
     layer2_graph: dict[str, Any],
     layer3_snapshot: dict[str, Any],
     exports_dir: Path,
 ) -> Path:
-    """Write approved Capability Design Cards with complete Layer 0/1/2 lineage."""
+    """Write approved Layer 3 Feature Expansions with complete Layer 0/1/2 lineage."""
     exports_dir.mkdir(parents=True, exist_ok=True)
-    approved_cards = [
-        card for card in layer3_snapshot.get("cards", [])
-        if card.get("review_state") == "approved"
+    approved_expansions = [
+        expansion for expansion in layer3_snapshot.get("expansions", [])
+        if expansion.get("review_state") == "approved"
     ]
     pillars = {item.get("id"): item for item in layer2_graph.get("pillars", [])}
     features = {item.get("id"): item for item in layer2_graph.get("features", [])}
-    manifest_cards = []
-    for card in approved_cards:
-        feature = features.get(card.get("feature_id"), {})
-        pillar = pillars.get(card.get("parent_pillar_id"), {})
-        manifest_cards.append({
-            "card": card,
+    manifest_expansions = []
+    for expansion in approved_expansions:
+        feature = features.get(expansion.get("feature_id"), {})
+        pillar = pillars.get(expansion.get("parent_pillar_id"), {})
+        manifest_expansions.append({
+            "expansion": expansion,
             "lineage": {
                 "layer0": {
                     "brief_id": brief.get("id"),
@@ -148,28 +148,28 @@ def export_layer3_manifest(
                     "brief_status": brief.get("status"),
                 },
                 "layer1": {
-                    "pillar_id": card.get("parent_pillar_id"),
-                    "title": pillar.get("title", card.get("parent_pillar_title")),
+                    "pillar_id": expansion.get("parent_pillar_id"),
+                    "title": pillar.get("title", expansion.get("parent_pillar_title")),
                     "description": pillar.get("description", ""),
                 },
                 "layer2": {
-                    "feature_id": card.get("feature_id"),
-                    "canonical_name": feature.get("canonical_name", card.get("feature_name")),
-                    "description": feature.get("description", card.get("feature_description")),
+                    "feature_id": expansion.get("feature_id"),
+                    "canonical_name": feature.get("canonical_name", expansion.get("feature_name")),
+                    "description": feature.get("description", expansion.get("feature_description")),
                     "candidate_source_ids": feature.get("candidate_source_ids", []),
                     "status": feature.get("status"),
                 },
             },
         })
     slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in project.name).strip("-")
-    output_path = exports_dir / f"{slug or project.id}-layer3-capability-manifest.json"
+    output_path = exports_dir / f"{slug or project.id}-layer3-feature-expansions.json"
     output_path.write_text(
         json.dumps({
             "manifest_version": "1.0",
-            "artifact_type": "strata_layer3_capability_design",
+            "artifact_type": "strata_layer3_feature_expansion",
             "project": project.model_dump(mode="json"),
-            "approved_card_count": len(manifest_cards),
-            "capability_design_cards": manifest_cards,
+            "approved_expansion_count": len(manifest_expansions),
+            "feature_expansions": manifest_expansions,
         }, indent=2),
         encoding="utf-8",
     )

@@ -34,63 +34,87 @@ export default function AppModals({
   showPrompts,
   showSettings,
 }) {
-  return (
-    <>
-      {showCreateProject ? (
-        <CreateProjectModal
-          name={newProjectName}
-          idea={newProjectIdea}
-          onNameChange={setNewProjectName}
-          onIdeaChange={setNewProjectIdea}
-          onSubmit={handleCreateProject}
-          onClose={() => setShowCreateProject(false)}
-        />
-      ) : null}
-      {editingProject ? (
-        <EditProjectModal
-          project={editingProject}
-          name={editProjectName}
-          idea={editProjectIdea}
-          onNameChange={setEditProjectName}
-          onIdeaChange={setEditProjectIdea}
-          onSubmit={handleEditProject}
-          onClose={() => setEditingProject(null)}
-        />
-      ) : null}
-      {showImportProject ? (
-        <ImportProjectModal
-          archivePath={importArchivePath}
-          onArchivePathChange={setImportArchivePath}
-          onSubmit={handleImportProject}
-          onClose={() => setShowImportProject(false)}
-        />
-      ) : null}
-      {showSettings ? (
-        <AppSettingsModal
+  function closeAllModals() {
+    setShowCreateProject(false);
+    setEditingProject(null);
+    setShowImportProject(false);
+    setShowSettings(false);
+    setShowPrompts(false);
+    setShowGuide(false);
+  }
+
+  if (showCreateProject) {
+    return (
+      <CreateProjectModal
+        name={newProjectName}
+        idea={newProjectIdea}
+        onNameChange={setNewProjectName}
+        onIdeaChange={setNewProjectIdea}
+        onSubmit={handleCreateProject}
+        onClose={closeAllModals}
+      />
+    );
+  }
+
+  if (editingProject) {
+    return (
+      <EditProjectModal
+        project={editingProject}
+        name={editProjectName}
+        idea={editProjectIdea}
+        onNameChange={setEditProjectName}
+        onIdeaChange={setEditProjectIdea}
+        onSubmit={handleEditProject}
+        onClose={closeAllModals}
+      />
+    );
+  }
+
+  if (showImportProject) {
+    return (
+      <ImportProjectModal
+        archivePath={importArchivePath}
+        onArchivePathChange={setImportArchivePath}
+        onSubmit={handleImportProject}
+        onClose={closeAllModals}
+      />
+    );
+  }
+
+  if (showSettings) {
+    return (
+      <AppSettingsModal
+        settings={appSettings}
+        config={config}
+        saveState={modelSettingsSaveState}
+        onChange={setAppSettings}
+        onSave={handleSaveModelSettings}
+        onClose={closeAllModals}
+      />
+    );
+  }
+
+  if (showPrompts) {
+    return (
+      <ModalFrame
+        title="System Prompts"
+        subtitle="Review the shared prompt catalog by layer, then save only when the reusable defaults for future projects should change."
+        onClose={closeAllModals}
+        className="prompts-modal"
+      >
+        <PromptCatalogEditor
           settings={appSettings}
-          config={config}
-          saveState={modelSettingsSaveState}
           onChange={setAppSettings}
           onSave={handleSaveModelSettings}
-          onClose={() => setShowSettings(false)}
+          saveState={modelSettingsSaveState}
         />
-      ) : null}
-      {showPrompts ? (
-        <ModalFrame
-          title="System Prompts"
-          subtitle="Edit the shared prompt templates here. These edits apply to new projects created after you save."
-          onClose={() => setShowPrompts(false)}
-          className="prompts-modal"
-        >
-          <PromptCatalogEditor
-            settings={appSettings}
-            onChange={setAppSettings}
-            onSave={handleSaveModelSettings}
-            saveState={modelSettingsSaveState}
-          />
-        </ModalFrame>
-      ) : null}
-      {showGuide ? <GuideModal onClose={() => setShowGuide(false)} /> : null}
-    </>
-  );
+      </ModalFrame>
+    );
+  }
+
+  if (showGuide) {
+    return <GuideModal onClose={closeAllModals} />;
+  }
+
+  return null;
 }

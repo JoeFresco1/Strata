@@ -47,10 +47,8 @@ DIRECT_PROJECT_TABLES = [
     "assistant_messages",
     "assistant_documents",
     "assistant_action_proposals",
-    "layer3_capability_cards",
-    "layer3_relationships",
-    "layer3_open_decisions",
-    "layer3_review_actions",
+    "layer3_feature_expansions",
+    "layer3_expansion_actions",
 ]
 
 DEPENDENT_TABLES = {
@@ -381,10 +379,8 @@ class ProjectLifecycleDatabaseMixin:
             "layer2_feature_evidence",
             "layer2_competitive_settings",
             "layer2_review_actions",
-            "layer3_capability_cards",
-            "layer3_relationships",
-            "layer3_open_decisions",
-            "layer3_review_actions",
+            "layer3_feature_expansions",
+            "layer3_expansion_actions",
             "assistant_conversations",
             "assistant_messages",
             "assistant_documents",

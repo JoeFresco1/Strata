@@ -51,7 +51,6 @@ export default function SetupWizard({ defaults, apiFetch, onComplete }) {
   return (
     <main className="setup-screen">
       <form className="panel setup-card" onSubmit={submit}>
-        <span className="eyebrow">First-run setup</span>
         <h1>Connect Strata to your model</h1>
         <p className="muted">Strata stays on this machine. Connect any OpenAI-compatible endpoint, including llama.cpp, LM Studio, Ollama-compatible gateways, or a remote provider proxy.</p>
         <div className="button-row compact" aria-label="Runtime presets">

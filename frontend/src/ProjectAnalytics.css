@@ -1,12 +1,14 @@
 .analytics-workspace { display: grid; gap: 16px; }
 .analytics-hero { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .analytics-hero h2 { margin: 4px 0 8px; }
+.analytics-hero-quiet { align-items: flex-start; }
 .analytics-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
-.analytics-metric { display: grid; gap: 4px; padding: 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+.analytics-metric { display: grid; gap: 4px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
 .analytics-metric span, .analytics-metric small { color: var(--muted); }
 .analytics-metric strong { font-size: 1.35rem; }
 .analytics-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .analytics-lower-grid { grid-template-columns: 1fr 1fr; }
+.analytics-empty-panel { display: grid; gap: 8px; }
 .analytics-table, .health-list, .run-list, .job-table { display: grid; gap: 8px; }
 .analytics-row { display: grid; grid-template-columns: minmax(130px, 1.4fr) repeat(4, minmax(70px, 1fr)); gap: 8px; align-items: center; padding: 9px 0; border-top: 1px solid var(--border); font-size: .9rem; }
 .health-list span { padding: 8px 0; border-top: 1px solid var(--border); }
@@ -14,9 +16,11 @@
 .run-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .job-row { display: grid; grid-template-columns: 92px minmax(130px, 1.2fr) 90px minmax(160px, 1.4fr) 64px minmax(120px, 1fr) 150px; gap: 10px; align-items: center; border-top: 1px solid var(--border); padding: 10px 0; font-size: .9rem; }
 .button-row.compact { gap: 6px; justify-content: flex-end; }
-.button-row.compact button { min-height: 32px; padding: 6px 10px; }
+.button-row.compact button { min-height: 36px; padding: 7px 10px; }
 .run-inspector pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-.diagnostics-panel { display: grid; gap: 14px; }
+.analytics-collapsible summary { cursor: pointer; font-weight: 700; }
+.analytics-collapsible-body,
+.diagnostics-panel { display: grid; gap: 14px; margin-top: 14px; }
 .diagnostics-options { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: center; }
 .diagnostics-options label { color: var(--muted); font-size: .92rem; }
 .diagnostics-options input[type="number"], .diagnostics-options select { width: 100%; min-height: 38px; margin-top: 4px; }
@@ -25,16 +29,42 @@
 @media (max-width: 1050px) {
   .analytics-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .analytics-grid, .analytics-lower-grid { grid-template-columns: 1fr; }
-  .run-row { grid-template-columns: 80px 1fr 80px; }
-  .run-row span:nth-last-child(-n+3) { display: none; }
-  .job-row { grid-template-columns: 86px 1fr 64px; }
-  .job-row > span:nth-of-type(2), .job-row > span:nth-of-type(3), .job-row > span:nth-of-type(5) { display: none; }
+  .run-row { grid-template-columns: 96px 1fr 96px; }
+  .job-row { grid-template-columns: 100px 1fr 72px; }
   .job-row .button-row { grid-column: 1 / -1; justify-content: flex-start; }
   .diagnostics-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 680px) {
   .analytics-hero { align-items: flex-start; flex-direction: column; }
   .analytics-metrics { grid-template-columns: 1fr; }
-  .analytics-row { grid-template-columns: 1fr 1fr; }
+  .analytics-row,
+  .run-row,
+  .job-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 12px 0;
+  }
+  .analytics-row span,
+  .run-row span,
+  .job-row span {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .analytics-row span::before,
+  .run-row span::before,
+  .job-row span::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .status-pill::before {
+    display: none;
+  }
+  .button-row.compact button,
+  .analytics-hero button,
+  .diagnostics-panel button {
+    min-height: 44px;
+  }
   .diagnostics-options { grid-template-columns: 1fr; }
 }

@@ -115,23 +115,24 @@ function collapseLegacyDuplicatePairs(conversation) {
   return visible;
 }
 
-function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
-  const [mode, setMode] = useState("Plan");
+function compactPreview(value, limit = 220) {
+  const text = String(value || "");
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 3).trim()}...`;
+}
+
+function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish, locked = false, unlocked = false, onUnlock, compact = false }) {
+  const [mode, setMode] = useState("AI Chat");
   const [form, setForm] = useState(brief);
   const [message, setMessage] = useState("");
   const [planState, setPlanState] = useState("idle");
-  const [snapshotOpen, setSnapshotOpen] = useState(true);
-  const [revisionOpen, setRevisionOpen] = useState(brief.status !== "published");
+  const [snapshotOpen, setSnapshotOpen] = useState(!compact);
   const chatLogRef = useRef(null);
   const sendingRef = useRef(false);
 
   useEffect(() => {
     setForm(brief);
   }, [brief]);
-
-  useEffect(() => {
-    setRevisionOpen(brief.status !== "published");
-  }, [brief.id, brief.status]);
 
   useEffect(() => {
     if (!chatLogRef.current) {
@@ -159,7 +160,9 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
   const guidance = latestPlanGuidance(conversation);
   const visibleConversation = collapseLegacyDuplicatePairs(conversation);
   const suggestions = guidance?.next_questions?.length ? guidance.next_questions : planSuggestionsFromBrief(payload);
+  const visibleSuggestions = compact ? suggestions.slice(0, 2) : suggestions;
   const isPublished = brief.status === "published";
+  const readOnly = locked && !unlocked;
 
   // Sends a Plan-mode message and lets the backend extract structured brief fields.
   async function sendPlanMessage(nextMessage) {
@@ -182,14 +185,14 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
   }
 
   return (
-    <div className="panel">
+    <div className={compact ? "panel brief-workspace compact" : "panel brief-workspace"}>
       <div className="panel-header">
         <div>
           <h3>Layer 0 Brief</h3>
           <span className={`status-pill ${brief.status}`}>{brief.status}</span>
         </div>
         <div className="segmented">
-          {["Plan", "Form"].map((item) => (
+          {["AI Chat", "Form"].map((item) => (
             <button key={item} type="button" className={mode === item ? "active" : ""} onClick={() => setMode(item)}>
               {item}
             </button>
@@ -197,40 +200,41 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
         </div>
       </div>
 
-      {mode === "Plan" && isPublished && !revisionOpen ? (
+      {mode === "AI Chat" && readOnly ? (
         <div className="published-brief-summary">
           <div>
-            <span className="status-pill published">Published to Layer 1</span>
+            <span className="status-pill published">Layer 0 locked</span>
             <h4>{payload.product_idea || "Published project brief"}</h4>
-            <p className="muted">This version is active in downstream layers. Open a revision only when the product direction needs to change.</p>
+            <p className="muted">This published product plan is active in downstream layers. Unlock only when the product direction truly needs to change.</p>
           </div>
-          <button type="button" onClick={() => setRevisionOpen(true)}>Start Revised Draft</button>
+          <button type="button" onClick={onUnlock}>Unlock Layer 0</button>
         </div>
       ) : null}
 
-      {mode === "Plan" && (!isPublished || revisionOpen) ? (
+      {mode === "AI Chat" && !readOnly ? (
         <div className="plan-workspace">
           <div className="plan-chat-panel">
             <div className="plan-mode-header">
               <div>
-                <h4>Plan Conversation</h4>
+                <h4>Product Plan Conversation</h4>
                 <p className="muted">
                   {isPublished
-                    ? "This brief is published. Continue planning to create a revised draft when the direction changes."
+                    ? "Layer 0 is unlocked for this session. Changes may require downstream review."
                     : "Use this like a working session with an intake agent. The assistant should help discover the brief, ask follow-up questions, and keep the draft moving toward publish."}
                 </p>
               </div>
               <div className="plan-chip-row">
-                {suggestions.map((suggestion) => (
+                {visibleSuggestions.map((suggestion) => (
                   <button
                     key={suggestion}
                     type="button"
                     className="preset-chip"
+                    title={compact ? suggestion : undefined}
                     onClick={() => {
                       setMessage(suggestion);
                     }}
                   >
-                    {suggestion}
+                    {compact ? compactPreview(suggestion, 76) : suggestion}
                   </button>
                 ))}
               </div>
@@ -255,7 +259,7 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
                       <strong>{turn.role === "assistant" ? "Strata" : "You"}</strong>
                       {updates.length ? <span className="chat-turn-meta">Updated: {updates.join(", ")}</span> : null}
                     </div>
-                    <p>{turn.content}</p>
+                    <p title={compact ? turn.content : undefined}>{compact ? compactPreview(turn.content) : turn.content}</p>
                   </div>
                 );
               })}
@@ -286,7 +290,7 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
               <div className="panel-header">
                 <p className="muted plan-composer-note">
                   {isPublished
-                    ? "This version is active in downstream layers. Sending a new message reopens the brief as a draft for republishing."
+                    ? "Layer 0 is unlocked for this session. Save carefully and review downstream layers after changes."
                     : "The draft updates continuously. Layer 1 stays locked until this version is published."}
                 </p>
                 <button type="submit" disabled={planState === "sending" || !message.trim()}>
@@ -296,7 +300,7 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
             </form>
           </div>
 
-          <aside className={snapshotOpen ? "plan-brief-sidebar" : "plan-brief-sidebar collapsed"}>
+          {!compact ? <aside className={snapshotOpen ? "plan-brief-sidebar" : "plan-brief-sidebar collapsed"}>
             {!snapshotOpen ? (
               <button type="button" className="snapshot-reopen-tab" onClick={() => setSnapshotOpen(true)}>
                 Open Brief Snapshot
@@ -352,7 +356,7 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
                         <li key={item.label}>{item.label}</li>
                       ))
                     ) : (
-                      <li>The main brief fields are populated. Use Plan mode to pressure test the direction before publishing.</li>
+                      <li>The main brief fields are populated. Use AI Chat to pressure test the direction before publishing.</li>
                     )}
                   </ul>
                 </div>
@@ -360,52 +364,54 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish }) {
             ) : (
               <div className="plan-sidebar-collapsed-spacer" aria-hidden="true" />
             )}
-          </aside>
+          </aside> : null}
         </div>
       ) : null}
 
       {mode === "Form" ? (
-        <div className="brief-grid">
+        <div className="brief-grid layer0-brief-form">
           <label>
             Product Idea
-            <textarea value={payload.product_idea} onChange={(event) => updateField("product_idea", event.target.value)} rows={4} />
+            <textarea disabled={readOnly} value={payload.product_idea} onChange={(event) => updateField("product_idea", event.target.value)} rows={4} />
           </label>
           <label>
             Known Competitors
-            <textarea value={listToText(payload.known_competitors)} onChange={(event) => updateField("known_competitors", textToList(event.target.value))} rows={4} />
+            <textarea disabled={readOnly} value={listToText(payload.known_competitors)} onChange={(event) => updateField("known_competitors", textToList(event.target.value))} rows={4} />
           </label>
           <label>
             Target Users
-            <textarea value={payload.target_users} onChange={(event) => updateField("target_users", event.target.value)} rows={3} />
+            <textarea disabled={readOnly} value={payload.target_users} onChange={(event) => updateField("target_users", event.target.value)} rows={3} />
           </label>
           <label>
             Constraints
-            <textarea value={payload.constraints} onChange={(event) => updateField("constraints", event.target.value)} rows={3} />
+            <textarea disabled={readOnly} value={payload.constraints} onChange={(event) => updateField("constraints", event.target.value)} rows={3} />
           </label>
           <label>
             Goals
-            <textarea value={listToText(payload.goals)} onChange={(event) => updateField("goals", textToList(event.target.value))} rows={4} />
+            <textarea disabled={readOnly} value={listToText(payload.goals)} onChange={(event) => updateField("goals", textToList(event.target.value))} rows={4} />
           </label>
           <label>
             Preferred Directions
-            <textarea value={listToText(payload.preferred_directions)} onChange={(event) => updateField("preferred_directions", textToList(event.target.value))} rows={4} />
+            <textarea disabled={readOnly} value={listToText(payload.preferred_directions)} onChange={(event) => updateField("preferred_directions", textToList(event.target.value))} rows={4} />
           </label>
           <label>
             Rejected Directions
-            <textarea value={listToText(payload.rejected_directions)} onChange={(event) => updateField("rejected_directions", textToList(event.target.value))} rows={4} />
+            <textarea disabled={readOnly} value={listToText(payload.rejected_directions)} onChange={(event) => updateField("rejected_directions", textToList(event.target.value))} rows={4} />
           </label>
           <label>
             Notes
-            <textarea value={payload.notes} onChange={(event) => updateField("notes", event.target.value)} rows={4} />
+            <textarea disabled={readOnly} value={payload.notes} onChange={(event) => updateField("notes", event.target.value)} rows={4} />
           </label>
-          <button type="button" onClick={() => onSave(payload)}>{isPublished ? "Save as Revised Draft" : "Save Brief"}</button>
+          <div className="layer0-brief-actions">
+            {readOnly ? <button type="button" onClick={onUnlock}>Unlock Layer 0</button> : <button type="button" onClick={() => onSave(payload)}>Save Brief</button>}
+          </div>
         </div>
       ) : null}
 
-      {isPublished && !revisionOpen ? (
+      {isPublished ? (
         <div className="publish-row published-state">
-          <span className="status-pill published">Published to Layer 1</span>
-          <p className="muted">Downstream generation uses this published version until you start and publish a revision.</p>
+          <span className="status-pill published">{readOnly ? "Locked downstream snapshot" : "Unlocked for editing"}</span>
+          <p className="muted">{readOnly ? "Downstream generation uses this published version until you explicitly unlock Layer 0." : "Changes may require downstream review after saving."}</p>
         </div>
       ) : !isPublished ? (
         <div className="publish-row">

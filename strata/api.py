@@ -25,10 +25,8 @@ from strata.api_models import (
     Layer2GenerateRequest,
     Layer2ReviewActionRequest,
     Layer2ResearchStartRequest,
-    Layer3CardUpdateRequest,
-    Layer3DecisionUpdateRequest,
+    Layer3ExpansionUpdateRequest,
     Layer3GenerateRequest,
-    Layer3PressureTestRequest,
     Layer3ReviewRequest,
     ModelProfileResponse,
     NodeUpdateRequest,
@@ -67,7 +65,6 @@ from strata.prompts import load_prompt_catalog
 from strata.server_manager import LlamaServerManager
 from strata.storage import build_database
 from strata.tree import build_tree
-from strata.api_delivery import register_delivery_routes
 from strata.api_export import register_export_routes
 from strata.api_jobs import register_job_routes
 from strata.api_layer1 import register_layer1_routes
@@ -183,7 +180,6 @@ def create_app() -> FastAPI:
     register_telemetry_routes(app, services)
     register_job_routes(app, services)
     register_layer1_routes(app, services)
-    register_delivery_routes(app, services)
     register_export_routes(app, services)
     @app.get("/api/projects/{project_id}/assistant/conversations")
     def list_assistant_conversations(project_id: str) -> list[dict[str, object]]:
@@ -725,7 +721,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/projects/{project_id}/generate/layer3")
     def generate_layer3(project_id: str, request: Layer3GenerateRequest, background_tasks: BackgroundTasks) -> dict[str, object]:
-        """Generate product-level Capability Design Cards for approved Layer 2 features."""
+        """Generate editable Feature Expansions for approved Layer 2 features."""
         try:
             if not request.feature_ids:
                 raise ValueError("Select at least one approved Layer 2 feature.")
@@ -746,70 +742,37 @@ def create_app() -> FastAPI:
             "snapshot": _project_snapshot(services, project_id).model_dump(mode="json"),
         }
 
-    @app.patch("/api/projects/{project_id}/layer3/cards/{card_id}")
-    def update_layer3_card(project_id: str, card_id: str, request: Layer3CardUpdateRequest) -> dict[str, object]:
-        """Persist human edits to product-level card sections."""
+    @app.patch("/api/projects/{project_id}/layer3/expansions/{expansion_id}")
+    def update_layer3_expansion(project_id: str, expansion_id: str, request: Layer3ExpansionUpdateRequest) -> dict[str, object]:
+        """Persist human edits to Layer 3 feature-expansion groups and options."""
         try:
-            card = services.db.get_layer3_card(card_id)
-            if card.project_id != project_id:
-                raise ValueError("Layer 3 card belongs to another project.")
+            expansion = services.db.get_layer3_expansion(expansion_id)
+            if expansion.project_id != project_id:
+                raise ValueError("Layer 3 expansion belongs to another project.")
             updates = request.model_dump(exclude_none=True)
             if not updates:
-                raise ValueError("Provide at least one Layer 3 card field to update.")
+                raise ValueError("Provide at least one Layer 3 expansion field to update.")
             validate_product_level_content(updates)
-            relationships = updates.pop("relationships", None)
-            decisions = updates.pop("open_decisions", None)
-            if relationships is not None:
+            if "expansion_groups" in updates:
                 known_feature_ids = {
                     item.id
                     for item in services.db.list_layer2_features(project_id)
-                    if item.status in {"kept", "approved"}
+                    if item.status in {"kept", "approved"} and item.id != expansion.feature_id
                 }
-                allowed_types = {
-                    "depends_on", "feeds", "overlaps_with", "conflicts_with", "optionally_uses", "shared_concern",
-                }
-                if any(
-                    item.get("target_feature_id") not in known_feature_ids
-                    or item.get("target_feature_id") == card.feature_id
-                    or item.get("relationship_type") not in allowed_types
-                    for item in relationships
-                ):
-                    raise ValueError("Layer 3 relationships require a valid target feature and relationship type.")
-                services.db.replace_layer3_relationships(
-                    project_id=project_id,
-                    card_id=card.id,
-                    source_feature_id=card.feature_id,
-                    relationships=relationships,
-                )
-            if decisions is not None:
-                services.db.replace_layer3_decisions(
-                    project_id=project_id,
-                    card_id=card.id,
-                    decisions=decisions,
-                )
-            pressure_test = {**card.pressure_test, "stale": True}
-            if card.pressure_test.get("coverage_gap_analysis"):
-                pressure_test["coverage_gap_analysis"] = {
-                    **card.pressure_test["coverage_gap_analysis"],
-                    "stale": True,
-                }
-            competitive_analysis = card.competitive_analysis
-            if competitive_analysis:
-                competitive_analysis = {
-                    **competitive_analysis,
-                    "stale": True,
-                }
-            updates.update({
-                "pressure_test": pressure_test,
-                "competitive_analysis": competitive_analysis,
-                "downstream_readiness_score": 0,
-                "readiness_rationale": "Card changed. Rerun the pressure test before approval.",
-                "review_state": "needs_review",
-            })
-            services.db.update_layer3_card(card_id, **updates)
-            services.db.record_layer3_review_action(
+                invalid_targets = [
+                    target_id
+                    for group in updates["expansion_groups"]
+                    for option in group.get("options", [])
+                    for target_id in option.get("overlaps_feature_ids", [])
+                    if target_id not in known_feature_ids
+                ]
+                if invalid_targets:
+                    raise ValueError("Layer 3 overlap links require active Layer 2 feature targets.")
+            updates["review_state"] = "needs_review"
+            services.db.update_layer3_expansion(expansion_id, **updates)
+            services.db.record_layer3_expansion_action(
                 project_id=project_id,
-                card_id=card_id,
+                expansion_id=expansion_id,
                 action_type="edit",
                 payload={"fields": sorted(request.model_dump(exclude_none=True))},
             )
@@ -817,156 +780,24 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
 
-    @app.post("/api/projects/{project_id}/layer3/cards/{card_id}/pressure-test")
-    def pressure_test_layer3_card(
-        project_id: str,
-        card_id: str,
-        request: Layer3PressureTestRequest,
-        background_tasks: BackgroundTasks,
-    ) -> dict[str, object]:
-        """Recalculate pressure findings and readiness after human edits."""
+    @app.post("/api/projects/{project_id}/layer3/expansions/{expansion_id}/review")
+    def review_layer3_expansion(project_id: str, expansion_id: str, request: Layer3ReviewRequest) -> dict[str, object]:
         try:
-            card = services.db.get_layer3_card(card_id)
-            if card.project_id != project_id:
-                raise ValueError("Layer 3 card belongs to another project.")
-            job = services.job_service.enqueue(
-                project_id=project_id,
-                kind="audit",
-                workflow="layer3_pressure_test",
-                scope="layer3",
-                scope_id=card_id,
-                request_payload={"card_id": card_id, **request.model_dump(mode="json")},
-                dedupe_key=f"audit:layer3-pressure:{card_id}:{request.model_dump_json()}",
-            )
-            background_tasks.add_task(services.job_service.run_job, job.id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"job": job.model_dump(mode="json"), "snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
-
-    @app.post("/api/projects/{project_id}/layer3/cards/{card_id}/coverage-gaps")
-    def check_layer3_card_coverage_gaps(
-        project_id: str,
-        card_id: str,
-        request: Layer3PressureTestRequest,
-        background_tasks: BackgroundTasks,
-    ) -> dict[str, object]:
-        """Check one card for missing product-definition coverage."""
-        try:
-            card = services.db.get_layer3_card(card_id)
-            if card.project_id != project_id:
-                raise ValueError("Layer 3 card belongs to another project.")
-            job = services.job_service.enqueue(
-                project_id=project_id,
-                kind="audit",
-                workflow="layer3_coverage_gap_audit",
-                scope="layer3",
-                scope_id=card_id,
-                request_payload={"card_id": card_id, **request.model_dump(mode="json")},
-                dedupe_key=f"audit:layer3-coverage:{card_id}:{request.model_dump_json()}",
-            )
-            background_tasks.add_task(services.job_service.run_job, job.id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"job": job.model_dump(mode="json"), "snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
-
-    @app.post("/api/projects/{project_id}/layer3/cards/{card_id}/review")
-    def review_layer3_card(project_id: str, card_id: str, request: Layer3ReviewRequest) -> dict[str, object]:
-        try:
-            card = services.db.get_layer3_card(card_id)
-            if card.project_id != project_id:
-                raise ValueError("Layer 3 card belongs to another project.")
+            expansion = services.db.get_layer3_expansion(expansion_id)
+            if expansion.project_id != project_id:
+                raise ValueError("Layer 3 expansion belongs to another project.")
             if request.action == "approve":
-                feature = services.db.get_layer2_feature(card.feature_id)
+                feature = services.db.get_layer2_feature(expansion.feature_id)
                 if feature.project_id != project_id or feature.status != "approved":
-                    raise ValueError("The source Layer 2 feature must still be approved before approving its card.")
-                unresolved = [
-                    item for item in services.db.list_layer3_decisions(card_id)
-                    if item.status == "unresolved"
-                ]
-                leakage = card.pressure_test.get("implementation_leakage", [])
-                if card.pressure_test.get("stale"):
-                    raise ValueError("Rerun the Layer 3 pressure test before approval.")
-                if unresolved or leakage:
-                    raise ValueError("Resolve open decisions and implementation leakage before approval.")
+                    raise ValueError("The source Layer 2 feature must still be approved before approving its expansion.")
+                validate_product_level_content(expansion.model_dump(mode="json"))
             state = {"approve": "approved", "reject": "rejected", "needs_review": "needs_review"}[request.action]
-            services.db.update_layer3_card(card_id, review_state=state)
-            services.db.record_layer3_review_action(
+            services.db.update_layer3_expansion(expansion_id, review_state=state)
+            services.db.record_layer3_expansion_action(
                 project_id=project_id,
-                card_id=card_id,
+                expansion_id=expansion_id,
                 action_type=request.action,
                 payload={"note": request.note},
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
-
-    @app.post("/api/projects/{project_id}/layer3/cards/{card_id}/competitive-analysis")
-    def analyze_layer3_card_competitive_positioning(
-        project_id: str,
-        card_id: str,
-        request: Layer3PressureTestRequest,
-        background_tasks: BackgroundTasks,
-    ) -> dict[str, object]:
-        """Queue optional cited competitor-aware Layer 3 analysis for one card."""
-        try:
-            if not services.research_service.competitive_intelligence_enabled(project_id):
-                raise ValueError("Competitive intelligence is disabled for this project.")
-            card = services.db.get_layer3_card(card_id)
-            if card.project_id != project_id:
-                raise ValueError("Layer 3 card belongs to another project.")
-            job = services.job_service.enqueue(
-                project_id=project_id,
-                kind="audit",
-                workflow="layer3_competitive_analysis",
-                scope="layer3",
-                scope_id=card_id,
-                request_payload={"card_id": card_id, **request.model_dump(mode="json")},
-                dedupe_key=f"audit:layer3-competitive:{card_id}:{request.model_dump_json()}",
-            )
-            background_tasks.add_task(services.job_service.run_job, job.id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"job": job.model_dump(mode="json"), "snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
-
-    @app.patch("/api/projects/{project_id}/layer3/decisions/{decision_id}")
-    def update_layer3_decision(
-        project_id: str,
-        decision_id: str,
-        request: Layer3DecisionUpdateRequest,
-    ) -> dict[str, object]:
-        """Resolve or reopen one explicit Layer 3 product decision."""
-        try:
-            current = services.db.get_layer3_decision(decision_id)
-            current_card = services.db.get_layer3_card(current.card_id)
-            if current_card.project_id != project_id:
-                raise ValueError("Layer 3 decision belongs to another project.")
-            resolution = request.resolution.strip()
-            if request.status == "resolved" and not resolution:
-                raise ValueError("Resolved Layer 3 decisions require a resolution.")
-            validate_product_level_content(resolution)
-            decision = services.db.update_layer3_decision(
-                decision_id,
-                status=request.status,
-                resolution=resolution,
-            )
-            card = services.db.get_layer3_card(decision.card_id)
-            remaining_decisions = [
-                item.model_dump(mode="json")
-                for item in services.db.list_layer3_decisions(card.id)
-                if item.status == "unresolved"
-            ]
-            services.db.update_layer3_card(
-                card.id,
-                downstream_readiness_score=services.generation_service._bounded_layer3_readiness(
-                    card.pressure_test,
-                    remaining_decisions,
-                ),
-            )
-            services.db.record_layer3_review_action(
-                project_id=project_id,
-                card_id=card.id,
-                action_type=f"decision_{request.status}",
-                payload={"decision_id": decision_id, "resolution": resolution},
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

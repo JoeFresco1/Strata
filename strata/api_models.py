@@ -130,91 +130,74 @@ class Layer2GenerateRequest(BaseModel):
 class Layer3GenerateRequest(BaseModel):
     feature_ids: list[str] = Field(default_factory=list)
     thinking_enabled: bool = False
-    selected_sections: list[str] = Field(default_factory=list)
 
 
-class Layer3RelationshipUpdateRequest(BaseModel):
-    target_feature_id: str
-    relationship_type: Literal[
-        "depends_on",
-        "feeds",
-        "overlaps_with",
-        "conflicts_with",
-        "optionally_uses",
-        "shared_concern",
-    ]
+class Layer3ExpansionOptionRequest(BaseModel):
+    id: str = ""
+    name: str
+    description: str = ""
+    selection_state: Literal["include", "exclude", "undecided"] = "undecided"
+    configuration_kind: Literal[
+        "boolean",
+        "single_select",
+        "multi_select",
+        "numeric",
+        "text",
+        "rule",
+        "workflow",
+        "content",
+        "integration",
+        "other",
+    ] = "other"
+    default_recommendation: str = ""
     rationale: str = ""
+    dependencies: list[str] = Field(default_factory=list)
+    overlaps_feature_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("target_feature_id")
+    @field_validator("name")
     @classmethod
-    def required_relationship_target(cls, value: str) -> str:
-        """Require every edited relationship to identify a concrete Layer 2 feature."""
+    def require_option_name(cls, value: str) -> str:
         cleaned = value.strip()
         if not cleaned:
-            raise ValueError("Layer 3 relationships require a target feature.")
+            raise ValueError("Layer 3 expansion options require a name.")
         return cleaned
 
 
-class Layer3DecisionDraftRequest(BaseModel):
-    question: str
-    context: str = ""
-    options: list[str] = Field(default_factory=list)
+class Layer3ExpansionGroupRequest(BaseModel):
+    id: str = ""
+    name: str
+    description: str = ""
+    options: list[Layer3ExpansionOptionRequest] = Field(default_factory=list)
 
-    @field_validator("question")
+    @field_validator("name")
     @classmethod
-    def required_question(cls, value: str) -> str:
-        """Keep edited decisions reviewable and safe to persist."""
+    def require_group_name(cls, value: str) -> str:
         cleaned = value.strip()
         if not cleaned:
-            raise ValueError("Layer 3 decisions require a question.")
+            raise ValueError("Layer 3 expansion groups require a name.")
         return cleaned
 
-    @field_validator("options")
+
+class Layer3ExpansionUpdateRequest(BaseModel):
+    feature_intent: str | None = None
+    expansion_groups: list[Layer3ExpansionGroupRequest] | None = None
+    overlap_review: list[dict[str, Any] | str] | None = None
+    open_questions: list[str] | None = None
+
+    @field_validator("feature_intent")
     @classmethod
-    def clean_decision_options(cls, value: list[str]) -> list[str]:
-        """Remove blank decision options before persistence."""
-        return [item.strip() for item in value if item.strip()]
-
-
-class Layer3CardUpdateRequest(BaseModel):
-    product_purpose: str | None = None
-    feature_archetype: str | None = None
-    supported_variants: list[dict[str, Any]] | None = None
-    configurable_options: list[dict[str, Any]] | None = None
-    product_behaviors: list[dict[str, Any]] | None = None
-    validation_constraints: list[dict[str, Any]] | None = None
-    lifecycle_states: list[dict[str, Any]] | None = None
-    dependencies: list[str] | None = None
-    overlaps_conflicts: list[str] | None = None
-    edge_cases: list[str] | None = None
-    product_risks: list[str] | None = None
-    relationships: list[Layer3RelationshipUpdateRequest] | None = None
-    open_decisions: list[Layer3DecisionDraftRequest] | None = None
-
-    @field_validator("product_purpose", "feature_archetype")
-    @classmethod
-    def non_blank_card_text(cls, value: str | None) -> str | None:
-        """Reject blank identity fields while allowing omitted partial updates."""
+    def non_blank_intent(cls, value: str | None) -> str | None:
         if value is None:
             return None
         cleaned = value.strip()
         if not cleaned:
-            raise ValueError("Layer 3 purpose and archetype cannot be blank.")
+            raise ValueError("Layer 3 feature intent cannot be blank.")
         return cleaned
 
 
 class Layer3ReviewRequest(BaseModel):
     action: Literal["approve", "reject", "needs_review"]
     note: str = ""
-
-
-class Layer3PressureTestRequest(BaseModel):
-    thinking_enabled: bool = False
-
-
-class Layer3DecisionUpdateRequest(BaseModel):
-    status: Literal["resolved", "unresolved"]
-    resolution: str = ""
 
 
 class Layer2ReviewActionRequest(BaseModel):
@@ -477,6 +460,7 @@ class AppSnapshotResponse(BaseModel):
     tree: list[dict[str, Any]]
     memory: list[dict[str, Any]]
     research_jobs: list[dict[str, Any]] = Field(default_factory=list)
+    platform_jobs: list[dict[str, Any]] = Field(default_factory=list)
     research_findings: list[dict[str, Any]] = Field(default_factory=list)
     layer2_graph: dict[str, Any] = Field(default_factory=dict)
     layer3: dict[str, Any] = Field(default_factory=dict)

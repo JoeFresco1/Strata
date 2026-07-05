@@ -7,7 +7,7 @@ The current production product covers Layer 0 through Layer 3.
 - Layer 0 creates and publishes the canonical product brief.
 - Layer 1 discovers and reviews major product pillars.
 - Layer 2 creates and reviews a provenance-aware feature graph.
-- Layer 3 creates and reviews product-level Capability Design Cards for approved Layer 2 features.
+- Layer 3 creates and reviews product-level Feature Expansions for approved Layer 2 features.
 
 ## Runtime topology
 
@@ -33,7 +33,7 @@ Primary surfaces:
 - project library
 - Layer 0 brief workspace
 - living Map/Table workspace spanning Layer 0 through Layer 2
-- Capability Design workspace for Layer 3 generation, section editing, relationships, decisions, pressure testing, review, and export
+- Feature Expansion workspace for Layer 3 generation, option editing, include/exclude decisions, overlap review, and export
 - contextual entity inspector for editing, review, research, and downward generation
 - project settings, competitive intelligence, exports, and diagnostics
 - unified project assistant drawer
@@ -94,11 +94,11 @@ Versioned upgrades are recorded in `schema_migrations` and can be inspected with
 
 1. Only approved Layer 2 features are eligible.
 2. Generation receives compact Layer 0 context, the parent pillar, approved siblings, and relevant graph edges.
-3. The card defines purpose, archetype, variants, options, behaviors, product-level constraints, lifecycle states, relationships, dependencies, conflicts, edge cases, risks, and open decisions.
-4. A separate pressure-test pass identifies ambiguity, overreach, product risk, missing decisions, downstream blockers, and implementation leakage.
-5. Cards, relationships, decisions, readiness scores, provenance, and review actions are persisted independently of chat history.
-6. Human reviewers can edit, selectively regenerate, resolve decisions, approve, reject, and export cards.
-7. The downstream JSON manifest includes approved cards and complete Layer 0/1/2 lineage. Layer 3 never generates target-product APIs, database schemas, components, test cases, wireframes, user stories, architecture diagrams, or coding tasks.
+3. The expansion defines the feature intent plus grouped subfeatures, variants, settings, validation rules, limits, dependencies, overlap links, and open questions.
+4. Expansion options default to undecided so users can explicitly include, exclude, edit, add, or remove what belongs in the feature.
+5. Feature expansions, provenance, option state, and review actions are persisted independently of chat history.
+6. Human reviewers can edit expansion groups and options, mark overlaps with active Layer 2 features, approve, reject, and export expansions.
+7. The downstream JSON manifest includes approved expansions and complete Layer 0/1/2 lineage. Layer 3 never generates target-product APIs, database schemas, components, test cases, wireframes, user stories, architecture diagrams, or coding tasks.
 
 ### Project assistant
 

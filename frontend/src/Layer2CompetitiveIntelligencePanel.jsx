@@ -44,22 +44,22 @@ export default function CompetitiveIntelligencePanel({ graph, pillars, onCompeti
       <div className="panel">
         <div className="panel-header">
           <div>
-            <h3>Competitive Intelligence</h3>
+            <h3>Competitive intelligence</h3>
             <p className="muted">Run cited local research across the active Layer 2 feature set.</p>
           </div>
           <div className="button-row">
-            <button type="button" onClick={saveSettings} disabled={!onCompetitiveSettings}>Save Competitors</button>
-            <button type="button" className="secondary-button" onClick={() => onResearch?.([])} disabled={!onResearch}>Research All</button>
+            <button type="button" onClick={saveSettings} disabled={!onCompetitiveSettings}>Save competitors</button>
+            <button type="button" className="secondary-button" onClick={() => onResearch?.([])} disabled={!onResearch}>Research all</button>
           </div>
         </div>
         <div className="brief-grid">
           <label>
-            Known Competitors
+            Known competitors
             <textarea value={competitorsText} onChange={(event) => setCompetitorsText(event.target.value)} rows={6} />
             <span className="muted">Layer 0 competitors are inherited here; add Layer 2-specific competitors as needed.</span>
           </label>
           <label>
-            Research Mode
+            Research mode
             <select value={researchMode} onChange={(event) => setResearchMode(event.target.value)}>
               <option value="known_only">Focus on known competitors only</option>
               <option value="expand_from_known">Discover adjacent competitors during research</option>
@@ -68,7 +68,7 @@ export default function CompetitiveIntelligencePanel({ graph, pillars, onCompeti
         </div>
       </div>
       <div className="panel layer2-graph-panel">
-        <h3>Layer 2 Competitor Matrix</h3>
+        <h3>Layer 2 competitor matrix</h3>
         {!rows.length ? (
           <div className="guided-empty-state">
             <strong>No Layer 2 feature rows yet.</strong>
@@ -84,10 +84,10 @@ export default function CompetitiveIntelligencePanel({ graph, pillars, onCompeti
             <table className="layer2-feature-table">
               <thead>
                 <tr>
-                  <th>Feature</th>
-                  <th>Pillar</th>
-                  {competitors.map((competitor) => <th key={competitor}>{competitorLabel(competitor)}</th>)}
-                  <th>Coverage %</th>
+                  <th scope="col">Feature</th>
+                  <th scope="col">Pillar</th>
+                  {competitors.map((competitor) => <th key={competitor} scope="col">{competitorLabel(competitor)}</th>)}
+                  <th scope="col">Coverage %</th>
                 </tr>
               </thead>
               <tbody>

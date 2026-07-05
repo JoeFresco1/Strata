@@ -1,68 +1,77 @@
+import { useEffect, useId, useRef } from "react";
 import "./ProjectShell.css";
 
-const GUIDE_SECTIONS = [
+const GUIDE_FLOW_STEPS = [
   {
-    heading: "Start And Orient",
-    sections: [
-      {
-        title: "Start a project",
-        body: "Use the library to create, open, duplicate, archive, unarchive, import, or export portable project archives.",
-      },
-      {
-        title: "Choose the work style",
-        body: "Start in Layer 0 Plan mode for guided intake or Form mode if you already know the structure you want.",
-      },
-      {
-        title: "Check project behavior",
-        body: "Project Settings control compute mode, research, and assistant behavior for one project without changing app-wide defaults.",
-      },
-    ],
+    label: "Library",
+    title: "Open or create",
+    body: "Start, duplicate, archive, import, or export a project.",
   },
   {
-    heading: "Move Through The Layers",
-    sections: [
-      {
-        title: "Layer 0 brief",
-        body: "Shape one canonical product brief and publish it when you want downstream generation and research to unlock.",
-      },
-      {
-        title: "Layer 1 pillars",
-        body: "Generate or manually add major product pillars, then keep, cut, merge, rename, prioritize, and review coverage before expanding.",
-      },
-      {
-        title: "Layer 2 workspace",
-        body: "Turn approved pillars into concrete capabilities using the map, table, inspector, manual feature entry, bulk review, relationships, and evidence panels.",
-      },
-      {
-        title: "Layer 3 Capability Design",
-        body: "Expand approved Layer 2 features into product-level cards with behavior, configuration, decisions, risks, readiness, and optional cited competitive analysis.",
-      },
-    ],
+    label: "Layer 0",
+    title: "Brief",
+    body: "Use Plan mode for guided intake or Form mode when the structure is known.",
   },
   {
-    heading: "Export And Troubleshoot",
-    sections: [
-      {
-        title: "Delivery and exports",
-        body: "Create Layer 2 exports, full project bundles, portable archives, diagnostics bundles, and Spec Kit-ready delivery handoff zips.",
-      },
-      {
-        title: "Provider readiness",
-        body: "If model-backed controls are blocked, check provider readiness first. Tokens stay server-side and the browser only sees safe status.",
-      },
-      {
-        title: "Analytics and diagnostics",
-        body: "Use Analytics for model calls, queue state, and runtime health. Open diagnostics when you need traces, logs, or a redaction preview.",
-      },
-      {
-        title: "Assistant",
-        body: "Use the project assistant from any tab for cited synthesis, navigation, durable conversations, deeper specialist analysis, and action proposals.",
-      },
-      {
-        title: "Data ownership",
-        body: "Project data is keep-by-default. Backup, restore, archive, import/export, cleanup, purge dry-runs, and artifact previews are explicit actions.",
-      },
-    ],
+    label: "Layer 1",
+    title: "Pillars",
+    body: "Keep, merge, rename, prioritize, and review major product areas.",
+  },
+  {
+    label: "Layer 2",
+    title: "Capabilities",
+    body: "Use the workspace map, table, inspector, evidence, and bulk review.",
+  },
+  {
+    label: "Handoff",
+    title: "Export",
+    body: "Export project archives, diagnostics, and project data.",
+  },
+];
+
+const GUIDE_DECISION_ROUTES = [
+  {
+    need: "The idea is still fuzzy",
+    go: "Layer 0",
+    action: "Use Plan mode, answer the intake prompts, then publish the brief.",
+  },
+  {
+    need: "I know the big areas",
+    go: "Layer 1",
+    action: "Review pillars before expanding; fix weak labels here, not downstream.",
+  },
+  {
+    need: "I need feature-level structure",
+    go: "Layer 2",
+    action: "Work from the map/table, add manual features, review evidence, and resolve relationships.",
+  },
+  {
+    need: "Something is blocked",
+    go: "Readiness",
+    action: "Check provider readiness, Analytics, diagnostics, and project settings first.",
+  },
+];
+
+const GUIDE_UTILITY_ROUTES = [
+  {
+    title: "Project Settings",
+    body: "Per-project compute, research, and assistant behavior.",
+  },
+  {
+    title: "App Settings",
+    body: "Defaults for new projects, runtime profiles, routing, and assignments.",
+  },
+  {
+    title: "System Prompts",
+    body: "Prompt catalog changes for future projects, without rewriting existing snapshots.",
+  },
+  {
+    title: "Assistant",
+    body: "Cited synthesis, navigation help, durable conversations, and action proposals.",
+  },
+  {
+    title: "Data Ownership",
+    body: "Keep-by-default lifecycle controls: backup, restore, archive, import/export, cleanup, and purge previews.",
   },
 ];
 
@@ -90,6 +99,16 @@ function sortLabel(sortOrder) {
   }[sortOrder] || "Recently updated";
 }
 
+function projectResultSummary(projects, lifecycleState, trimmedSearch) {
+  const count = projects.length;
+  const noun = count === 1 ? "project" : "projects";
+  const view = viewLabel(lifecycleState).toLowerCase();
+  if (trimmedSearch) {
+    return `${count} ${noun} matching "${trimmedSearch}" in ${view}.`;
+  }
+  return `${count} ${view.toLowerCase()}.`;
+}
+
 export function ProjectHub({
   projects,
   loading = false,
@@ -108,23 +127,16 @@ export function ProjectHub({
   onImportProject,
 }) {
   const trimmedSearch = searchQuery.trim();
+  const resultSummary = projectResultSummary(projects, lifecycleState, trimmedSearch);
   // ProjectHub is the landing workspace for opening or creating Strata projects.
   return (
-    <section className="project-hub">
+    <section className="project-hub" aria-busy={loading ? "true" : undefined}>
       <div className="hub-header">
-        <div>
+        <div className="hub-heading">
           <h1>Project Library</h1>
           <p className="muted">Open a project to keep building, or create a new one and jump straight into Layer 0.</p>
         </div>
-        <div className="hub-actions">
-          <div className="project-search-wrap">
-            <input className="project-search" value={searchQuery} onChange={(event) => onSearchQueryChange(event.target.value)} placeholder="Search projects" aria-label="Search projects" />
-            {trimmedSearch ? (
-              <button type="button" className="project-search-clear" onClick={() => onSearchQueryChange("")} aria-label="Clear project search" title="Clear project search">
-                x
-              </button>
-            ) : null}
-          </div>
+        <div className="hub-toolbar">
           <div className="library-control-row">
             <label className="compact-select">
               View
@@ -145,43 +157,68 @@ export function ProjectHub({
               </select>
             </label>
           </div>
-          <div className="library-command-row">
-            <button type="button" onClick={onCreateProject}>Create New Project</button>
-            <details className="library-menu">
-              <summary aria-label="More library actions" title="More library actions">More</summary>
-              <div className="library-menu-panel">
-                <button type="button" className="secondary-button" onClick={onImportProject}>Import Project Archive</button>
-              </div>
-            </details>
+          <div className="hub-actions">
+            <div className="library-command-row">
+              <button type="button" onClick={onCreateProject}>Create new project</button>
+              <details className="library-menu">
+                <summary aria-label="More library actions" title="More library actions">More</summary>
+                <div className="library-menu-panel">
+                  <button type="button" className="secondary-button" onClick={onImportProject}>Import Project Archive</button>
+                </div>
+              </details>
+            </div>
+            <div className="project-search-wrap">
+              <input className="project-search" value={searchQuery} onChange={(event) => onSearchQueryChange(event.target.value)} placeholder="Search projects" aria-label="Search projects" />
+              {trimmedSearch ? (
+                <button type="button" className="project-search-clear" onClick={() => onSearchQueryChange("")} aria-label="Clear project search" title="Clear project search">
+                  x
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>
+      <div className="library-status-row" aria-live="polite">
+        <span>{loading ? "Loading projects..." : resultSummary}</span>
+        <span>{viewLabel(lifecycleState)} | {sortLabel(sortOrder)}</span>
+      </div>
       {loading ? (
         <div className="project-grid" aria-label="Loading projects">
-          {[0, 1, 2].map((item) => <div key={item} className="project-card project-card-skeleton" />)}
+          {[0, 1, 2].map((item) => (
+            <article key={item} className="project-card project-card-skeleton" aria-hidden="true">
+              <div className="project-skeleton-line title" />
+              <div className="project-skeleton-line" />
+              <div className="project-skeleton-line short" />
+              <div className="project-skeleton-actions">
+                <span />
+                <span />
+              </div>
+            </article>
+          ))}
         </div>
       ) : projects.length ? (
-        <div className="project-grid">
+        <div className="project-grid" aria-label={resultSummary}>
           {projects.map((project) => (
             <article key={project.id} className={`project-card ${project.lifecycle_state === "archived" ? "archived" : ""}`}>
               <div className="project-card-head">
                 <div className="project-title-row">
                   <strong>{project.name}</strong>
-                  <button type="button" className="icon-button project-title-edit" onClick={() => onEditProject(project)} aria-label={`Edit library details for ${project.name}`} title="Edit library details">
-                    Edit
+                  <button type="button" className="icon-button project-title-edit" onClick={() => onEditProject(project)} aria-label={`Edit name and library summary for ${project.name}`} title="Edit name and summary">
+                    <svg aria-hidden="true" className="project-title-edit-mark" viewBox="0 0 16 16" focusable="false">
+                      <path d="M3 11.8 3.7 9l6.9-6.9a1.7 1.7 0 0 1 2.4 0l.9.9a1.7 1.7 0 0 1 0 2.4L7 12.3l-2.8.7H3v-1.2Zm1.7-.3 1.5-.4 6.8-6.8a.3.3 0 0 0 0-.4l-.9-.9a.3.3 0 0 0-.4 0L4.9 9.8l-.4 1.5.2.2Z" />
+                    </svg>
                   </button>
                 </div>
-                <div className="button-row compact">
+                <div className="project-status-row">
                   {project.lifecycle_state === "archived" ? <span className="status-pill archived">archived</span> : null}
                   <span className={`status-pill ${project.brief_status || "draft"}`}>{project.brief_status || "draft"}</span>
                 </div>
               </div>
               <p>{project.idea}</p>
               <div className="project-card-meta">
-                <span>Updated {formatProjectCardDate(project.updated_at || project.brief_updated_at || project.created_at)}</span>
-                <span>Opened {formatProjectCardDate(project.last_opened_at)}</span>
-                <span>{project.node_count || 0} nodes</span>
-                <span>{project.pillar_count || 0} pillars</span>
+                <span><strong>Updated</strong> {formatProjectCardDate(project.updated_at || project.brief_updated_at || project.created_at)}</span>
+                <span><strong>Opened</strong> {formatProjectCardDate(project.last_opened_at)}</span>
+                <span><strong>Tree</strong> {project.node_count || 0} nodes | {project.pillar_count || 0} pillars</span>
                 {project.source_project_name ? <span>Cloned from {project.source_project_name}</span> : null}
                 <span>Project {project.id.slice(0, 8)}</span>
               </div>
@@ -198,25 +235,79 @@ export function ProjectHub({
           ))}
         </div>
       ) : (
-        <div className="panel">
+        <div className="panel library-empty-state">
+          <strong>{trimmedSearch ? "No matching projects" : lifecycleState === "archived" ? "No archived projects" : "No projects yet"}</strong>
           <p className="muted">
-            {trimmedSearch ? `No ${viewLabel(lifecycleState).toLowerCase()} match "${trimmedSearch}".` : "No projects yet. Use the Create New Project button to start the first brief."}
+            {trimmedSearch
+              ? `No ${viewLabel(lifecycleState).toLowerCase()} match "${trimmedSearch}". Clear the search or switch views to keep looking.`
+              : "Create the first project to capture a product idea and begin Layer 0 planning."}
           </p>
+          <div className="button-row compact">
+            {trimmedSearch ? <button type="button" className="secondary-button" onClick={() => onSearchQueryChange("")}>Clear Search</button> : null}
+            <button type="button" onClick={onCreateProject}>Create new project</button>
+          </div>
         </div>
       )}
     </section>
   );
 }
 
-export function ModalFrame({ title, subtitle, onClose, children, className = "" }) {
+export function ModalFrame({ title, subtitle, onClose, children, className = "", initialFocusSelector = "" }) {
   // Shared modal shell keeps settings, guide, and create-project dialogs consistent.
+  const titleId = useId();
+  const subtitleId = useId();
+  const dialogRef = useRef(null);
+
+  useEffect(() => {
+    const previousActiveElement = document.activeElement;
+    const preferredFocusTarget = initialFocusSelector
+      ? dialogRef.current?.querySelector(initialFocusSelector)
+      : null;
+    const fallbackFocusTarget = dialogRef.current?.querySelector(
+      "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])",
+    );
+    const focusTarget = preferredFocusTarget || fallbackFocusTarget;
+    focusTarget?.focus?.();
+    return () => previousActiveElement?.focus?.();
+  }, [initialFocusSelector]);
+
+  function handleDialogKeyDown(event) {
+    if (event.key === "Escape") {
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(dialogRef.current?.querySelectorAll(
+      "button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])",
+    ) || []);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
-      <div className={`modal-shell ${className}`.trim()} role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className={`modal-shell ${className}`.trim()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={subtitle ? subtitleId : undefined}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={handleDialogKeyDown}
+      >
         <div className="modal-header">
           <div>
-            <h2>{title}</h2>
-            {subtitle ? <p className="muted">{subtitle}</p> : null}
+            <h2 id={titleId}>{title}</h2>
+            {subtitle ? <p id={subtitleId} className="muted">{subtitle}</p> : null}
           </div>
           <button type="button" className="secondary-button" onClick={onClose}>Close</button>
         </div>
@@ -230,15 +321,16 @@ export function CreateProjectModal({ name, idea, onNameChange, onIdeaChange, onS
   // Captures the minimum project seed needed before Layer 0 planning starts.
   return (
     <ModalFrame
-      title="Create New Project"
+      title="Create new project"
       subtitle="Name the project, capture the product idea, and jump right into Layer 0."
       onClose={onClose}
       className="compact-modal"
+      initialFocusSelector="[data-modal-initial-focus]"
     >
       <form className="modal-form" onSubmit={onSubmit}>
         <label>
           Name
-          <input value={name} onChange={(event) => onNameChange(event.target.value)} autoFocus />
+          <input value={name} onChange={(event) => onNameChange(event.target.value)} data-modal-initial-focus />
         </label>
         <label>
           Product Idea
@@ -246,7 +338,7 @@ export function CreateProjectModal({ name, idea, onNameChange, onIdeaChange, onS
         </label>
         <div className="modal-actions">
           <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
-          <button type="submit" disabled={!name.trim() || !idea.trim()}>Create Project</button>
+          <button type="submit" disabled={!name.trim() || !idea.trim()}>Create project</button>
         </div>
       </form>
     </ModalFrame>
@@ -256,15 +348,16 @@ export function CreateProjectModal({ name, idea, onNameChange, onIdeaChange, onS
 export function EditProjectModal({ project, name, idea, onNameChange, onIdeaChange, onSubmit, onClose }) {
   return (
     <ModalFrame
-      title="Edit Project"
+      title="Edit project"
       subtitle="These fields shape the library card only. Published Layer 0 brief content is unchanged."
       onClose={onClose}
       className="compact-modal"
+      initialFocusSelector="[data-modal-initial-focus]"
     >
       <form className="modal-form" onSubmit={onSubmit}>
         <label>
           Name
-          <input value={name} onChange={(event) => onNameChange(event.target.value)} autoFocus />
+          <input value={name} onChange={(event) => onNameChange(event.target.value)} data-modal-initial-focus />
         </label>
         <label>
           Library Summary
@@ -282,10 +375,11 @@ export function EditProjectModal({ project, name, idea, onNameChange, onIdeaChan
 export function ImportProjectModal({ archivePath, onArchivePathChange, onSubmit, onClose }) {
   return (
     <ModalFrame
-      title="Import Project Archive"
+      title="Import project archive"
       subtitle="Import creates a new project ID and keeps the source archive intact."
       onClose={onClose}
       className="compact-modal"
+      initialFocusSelector="[data-modal-initial-focus]"
     >
       <form className="modal-form" onSubmit={onSubmit}>
         <div className="import-schema-note">
@@ -294,7 +388,7 @@ export function ImportProjectModal({ archivePath, onArchivePathChange, onSubmit,
         </div>
         <label>
           Archive path
-          <input value={archivePath} onChange={(event) => onArchivePathChange(event.target.value)} placeholder="C:\\path\\to\\project-archive.zip" autoFocus />
+          <input value={archivePath} onChange={(event) => onArchivePathChange(event.target.value)} placeholder="C:\\path\\to\\project-archive.zip" data-modal-initial-focus />
         </label>
         <div className="modal-actions">
           <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
@@ -315,19 +409,55 @@ export function GuideModal({ onClose }) {
       className="guide-modal"
     >
       <div className="guide-stack">
-        {GUIDE_SECTIONS.map((group) => (
-          <div key={group.heading} className="guide-group">
-            <h3>{group.heading}</h3>
-            <div className="guide-grid">
-              {group.sections.map((section) => (
-                <div key={section.title} className="guide-card">
-                  <strong>{section.title}</strong>
-                  <p className="muted">{section.body}</p>
-                </div>
-              ))}
-            </div>
+        <section className="panel guide-map-panel">
+          <div className="guide-group-header">
+            <span className="guide-eyebrow">Workflow map</span>
+            <h3>Move left to right until the artifact is useful enough to hand off.</h3>
           </div>
-        ))}
+          <div className="guide-flow" aria-label="Strata workflow order">
+            {GUIDE_FLOW_STEPS.map((step, index) => (
+              <div key={step.label} className="guide-flow-item">
+                <div className="guide-flow-node">
+                  <span className="guide-flow-index">{index + 1}</span>
+                  <span className="guide-flow-label">{step.label}</span>
+                </div>
+                <div className="guide-flow-copy">
+                  <strong>{step.title}</strong>
+                  <p className="muted">{step.body}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="panel guide-router">
+          <div className="guide-group-header">
+            <span className="guide-eyebrow">Decision router</span>
+            <h3>Pick the row that matches what is in your head right now.</h3>
+          </div>
+          <div className="guide-route-list">
+            {GUIDE_DECISION_ROUTES.map((route) => (
+              <div key={route.need} className="guide-route-row">
+                <strong>{route.need}</strong>
+                <span className="guide-route-target">{route.go}</span>
+                <p className="muted">{route.action}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="panel guide-utilities">
+          <div className="guide-group-header">
+            <span className="guide-eyebrow">Utility surfaces</span>
+            <h3>Use these when the workflow is not the problem.</h3>
+          </div>
+          <div className="guide-utility-grid">
+            {GUIDE_UTILITY_ROUTES.map((route) => (
+              <div key={route.title} className="guide-utility-card">
+                <strong>{route.title}</strong>
+                <p className="muted">{route.body}</p>
+              </div>
+            ))}
+          </div>
+        </section>
       </div>
     </ModalFrame>
   );

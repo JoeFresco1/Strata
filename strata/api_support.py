@@ -27,10 +27,7 @@ from strata.api_models import (
     Layer2GenerateRequest,
     Layer2ReviewActionRequest,
     Layer2ResearchStartRequest,
-    Layer3CardUpdateRequest,
-    Layer3DecisionUpdateRequest,
     Layer3GenerateRequest,
-    Layer3PressureTestRequest,
     Layer3ReviewRequest,
     ModelProfileResponse,
     NodeUpdateRequest,
@@ -55,7 +52,7 @@ from strata.config import (
 )
 from strata.db import Database
 from strata.embeddings import EmbeddingService
-from strata.export import export_layer2_markdown, export_layer3_manifest, export_project
+from strata.export import export_layer2_markdown, export_layer3_feature_expansions, export_project
 from strata.generation import GenerationService
 from strata.jobs import PlatformJobService
 from strata.layer3_service import validate_product_level_content
@@ -183,6 +180,7 @@ def _project_snapshot(services: AppServices, project_id: str) -> AppSnapshotResp
     model_settings = _ensure_project_model_settings(services, project_id)
     conversation = services.db.list_brief_conversation(project_id)
     jobs = services.db.list_research_jobs(project_id)
+    platform_jobs = services.db.list_platform_jobs(project_id, limit=25)
     findings = services.db.list_research_findings(project_id)
     layer2_graph = services.db.layer2_graph_snapshot(project_id)
     layer3 = services.db.layer3_snapshot(project_id)
@@ -225,6 +223,7 @@ def _project_snapshot(services: AppServices, project_id: str) -> AppSnapshotResp
         tree=build_tree(nodes),
         memory=[item.model_dump(mode="json") for item in memory],
         research_jobs=[job.model_dump(mode="json") for job in jobs],
+        platform_jobs=[job.model_dump(mode="json") for job in platform_jobs],
         research_findings=[finding.model_dump(mode="json") for finding in findings],
         layer2_graph=layer2_graph,
         layer3=layer3,

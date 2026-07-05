@@ -17,16 +17,15 @@ from strata.assistant_service import AssistantService
 from strata.api_models import Layer2FeatureCreateRequest, Layer2FeatureEvidenceRequest
 from strata.db import Database
 from strata.embeddings import EmbeddingService
-from strata.export import export_layer2_markdown, export_layer3_manifest
+from strata.export import export_layer2_markdown, export_layer3_feature_expansions
 from strata.generation import LAYER2_EXHAUSTION_FAMILIES, LAYER2_LENSES, LAYER2_SURVEY_BUILDER_FAMILIES, GenerationService
 from strata.llm import LLMError, LlamaCppClient
 from strata.layer2_research import Layer2CompetitorSeed, Layer2ResearchMixin
 from strata.layer3_service import validate_product_level_content
 from strata.models import (
-    CapabilityDesignPayload,
-    CapabilityDesignResponse,
-    CapabilityPressureTest,
-    CapabilityPressureTestResponse,
+    FeatureExpansionGroup,
+    FeatureExpansionOption,
+    FeatureExpansionResponse,
     Layer2Candidate,
     Layer2CandidateResponse,
     Layer2CoverageAssessmentResponse,
@@ -52,8 +51,8 @@ from requests.exceptions import SSLError
 
 class Layer3ApiTests(unittest.TestCase):
     @staticmethod
-    def _fixture(tmpdir: str) -> tuple[Database, object, object, object, object]:
-        """Create a reviewed card and unresolved decision for Layer 3 API integrity tests."""
+    def _fixture(tmpdir: str) -> tuple[Database, object, object, object]:
+        """Create a reviewed Feature Expansion for Layer 3 API integrity tests."""
         db_path = Path(tmpdir) / "layer3-api.db"
         db = Database(db_path)
         project = db.create_project("Layer 3 API", "A product")
@@ -83,41 +82,36 @@ class Layer3ApiTests(unittest.TestCase):
             candidate_source_ids=[],
             status="approved",
         )
-        card = db.upsert_layer3_card(
+        expansion = db.upsert_layer3_expansion(
             project_id=project.id,
             feature_id=feature.id,
             parent_pillar_id=pillar.id,
             parent_pillar_title=pillar.title,
             feature_name=feature.canonical_name,
             feature_description=feature.description,
-            product_purpose="Collect qualitative responses.",
-            feature_archetype="question_type",
-            supported_variants=[],
-            configurable_options=[],
-            product_behaviors=[],
-            validation_constraints=[],
-            lifecycle_states=[],
-            dependencies=[],
-            overlaps_conflicts=[],
-            edge_cases=[],
-            product_risks=[],
-            pressure_test={"implementation_leakage": []},
-            competitive_analysis={
-                "summary": "Initial cited analysis.",
-                "evidence_strength": "limited",
-                "citations": [],
-            },
-            downstream_readiness_score=85,
-            readiness_rationale="Clear product behavior.",
+            feature_intent="Collect qualitative responses.",
+            expansion_groups=[{
+                "id": "response-limits",
+                "name": "Response limits",
+                "description": "Controls for how much text can be entered.",
+                "options": [{
+                    "id": "one-line",
+                    "name": "One-line response",
+                    "description": "Limit the response to a single line.",
+                    "selection_state": "undecided",
+                    "configuration_kind": "boolean",
+                    "default_recommendation": "Include for short-answer prompts.",
+                    "rationale": "Keeps brief responses concise.",
+                    "dependencies": [],
+                    "overlaps_feature_ids": [],
+                }],
+            }],
+            overlap_review=[],
+            open_questions=["Should formatted text be allowed?"],
             review_state="approved",
             provenance={"source_layer2_feature_id": feature.id},
         )
-        decision = db.replace_layer3_decisions(
-            project_id=project.id,
-            card_id=card.id,
-            decisions=[{"question": "Which formats are supported?", "options": ["Plain text", "Formatted text"]}],
-        )[0]
-        return db, project, feature, card, decision
+        return db, project, feature, expansion
 
     @staticmethod
     def _client(db_path: Path, exports_dir: Path) -> TestClient:
@@ -132,77 +126,83 @@ class Layer3ApiTests(unittest.TestCase):
         with patch("strata.api.AppConfig", return_value=config):
             return TestClient(create_app())
 
-    def test_editing_approved_card_requires_review_again(self) -> None:
+    def test_editing_approved_expansion_requires_review_again(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            db, project, _, card, _ = self._fixture(tmpdir)
+            db, project, _, expansion = self._fixture(tmpdir)
             client = self._client(db.db_path, Path(tmpdir) / "exports")
 
             response = client.patch(
-                f"/api/projects/{project.id}/layer3/cards/{card.id}",
-                json={"product_purpose": "Collect detailed qualitative responses."},
+                f"/api/projects/{project.id}/layer3/expansions/{expansion.id}",
+                json={"feature_intent": "Collect detailed qualitative responses."},
             )
 
             self.assertEqual(response.status_code, 200)
-            updated = response.json()["snapshot"]["layer3"]["cards"][0]
+            updated = response.json()["snapshot"]["layer3"]["expansions"][0]
             self.assertEqual(updated["review_state"], "needs_review")
-            self.assertEqual(updated["downstream_readiness_score"], 0)
-            self.assertTrue(updated["pressure_test"]["stale"])
-            self.assertTrue(updated["competitive_analysis"]["stale"])
 
-            approval = client.post(
-                f"/api/projects/{project.id}/layer3/cards/{card.id}/review",
-                json={"action": "approve"},
-            )
-            self.assertEqual(approval.status_code, 400)
-
-    def test_resolved_decision_requires_resolution_and_preserves_state(self) -> None:
+    def test_expansion_option_edit_supports_include_exclude_add_and_remove(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            db, project, _, _, decision = self._fixture(tmpdir)
+            db, project, _, expansion = self._fixture(tmpdir)
             client = self._client(db.db_path, Path(tmpdir) / "exports")
+            groups = expansion.model_dump(mode="json")["expansion_groups"]
+            groups[0]["options"] = [{
+                **groups[0]["options"][0],
+                "selection_state": "include",
+            }, {
+                "id": "email-only",
+                "name": "Email only",
+                "description": "Only accept email-like responses.",
+                "selection_state": "exclude",
+                "configuration_kind": "rule",
+                "default_recommendation": "Exclude unless collecting contact fields.",
+                "rationale": "This may overlap dedicated contact fields.",
+                "dependencies": [],
+                "overlaps_feature_ids": [],
+            }]
 
             response = client.patch(
-                f"/api/projects/{project.id}/layer3/decisions/{decision.id}",
-                json={"status": "resolved", "resolution": "  "},
+                f"/api/projects/{project.id}/layer3/expansions/{expansion.id}",
+                json={"expansion_groups": groups, "open_questions": []},
+            )
+
+            self.assertEqual(response.status_code, 200)
+            saved_options = response.json()["snapshot"]["layer3"]["expansions"][0]["expansion_groups"][0]["options"]
+            self.assertEqual([item["selection_state"] for item in saved_options], ["include", "exclude"])
+            self.assertEqual(response.json()["snapshot"]["layer3"]["expansions"][0]["open_questions"], [])
+
+    def test_overlap_edit_rejects_inactive_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db, project, _, expansion = self._fixture(tmpdir)
+            inactive = db.create_layer2_feature(
+                project_id=project.id,
+                canonical_name="Retired feature",
+                description="No longer active.",
+                feature_type="capability",
+                granularity_class="feature",
+                owner_pillar_id=expansion.parent_pillar_id,
+                candidate_source_ids=[],
+                status="cut",
+            )
+            client = self._client(db.db_path, Path(tmpdir) / "exports")
+            groups = expansion.model_dump(mode="json")["expansion_groups"]
+            groups[0]["options"][0]["overlaps_feature_ids"] = [inactive.id]
+
+            response = client.patch(
+                f"/api/projects/{project.id}/layer3/expansions/{expansion.id}",
+                json={"expansion_groups": groups},
             )
 
             self.assertEqual(response.status_code, 400)
-            self.assertEqual(db.get_layer3_decision(decision.id).status, "unresolved")
+            self.assertEqual(db.get_layer3_expansion(expansion.id).expansion_groups[0].options[0].overlaps_feature_ids, [])
 
-    def test_decision_resolution_rejects_implementation_leakage(self) -> None:
+    def test_expansion_approval_and_export_reject_stale_layer2_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            db, project, _, _, decision = self._fixture(tmpdir)
-            client = self._client(db.db_path, Path(tmpdir) / "exports")
-
-            response = client.patch(
-                f"/api/projects/{project.id}/layer3/decisions/{decision.id}",
-                json={"status": "resolved", "resolution": "Create a backend API endpoint."},
-            )
-
-            self.assertEqual(response.status_code, 400)
-            self.assertEqual(db.get_layer3_decision(decision.id).status, "unresolved")
-
-    def test_malformed_decision_edit_does_not_delete_existing_decisions(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db, project, _, card, decision = self._fixture(tmpdir)
-            client = self._client(db.db_path, Path(tmpdir) / "exports")
-
-            response = client.patch(
-                f"/api/projects/{project.id}/layer3/cards/{card.id}",
-                json={"open_decisions": [{"question": "", "options": "invalid"}]},
-            )
-
-            self.assertEqual(response.status_code, 422)
-            self.assertEqual(db.get_layer3_decision(decision.id).question, "Which formats are supported?")
-
-    def test_card_approval_and_export_reject_stale_layer2_source(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db, project, feature, card, decision = self._fixture(tmpdir)
-            db.update_layer3_decision(decision.id, status="resolved", resolution="Plain text")
+            db, project, feature, expansion = self._fixture(tmpdir)
             db.update_layer2_feature(feature.id, status="kept")
             client = self._client(db.db_path, Path(tmpdir) / "exports")
 
             approval = client.post(
-                f"/api/projects/{project.id}/layer3/cards/{card.id}/review",
+                f"/api/projects/{project.id}/layer3/expansions/{expansion.id}/review",
                 json={"action": "approve"},
             )
             exported = client.post(f"/api/projects/{project.id}/export/layer3")
@@ -210,129 +210,43 @@ class Layer3ApiTests(unittest.TestCase):
             self.assertEqual(approval.status_code, 400)
             self.assertEqual(exported.status_code, 400)
 
-    def test_speckit_handoff_rejects_unresolved_decisions(self) -> None:
+    def test_old_layer3_card_endpoints_are_removed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            db, project, _, _, _ = self._fixture(tmpdir)
+            db, project, _, expansion = self._fixture(tmpdir)
             client = self._client(db.db_path, Path(tmpdir) / "exports")
 
-            preview = client.get(f"/api/projects/{project.id}/delivery/speckit")
-            response = client.post(f"/api/projects/{project.id}/delivery/speckit", json={})
+            self.assertIn(client.patch(f"/api/projects/{project.id}/layer3/cards/{expansion.id}", json={}).status_code, {404, 405})
+            self.assertIn(client.post(f"/api/projects/{project.id}/layer3/cards/{expansion.id}/pressure-test", json={}).status_code, {404, 405})
+            self.assertIn(client.post(f"/api/projects/{project.id}/layer3/cards/{expansion.id}/competitive-analysis", json={}).status_code, {404, 405})
+            self.assertIn(client.patch(f"/api/projects/{project.id}/layer3/decisions/{expansion.id}", json={}).status_code, {404, 405})
+            self.assertIn(client.get(f"/api/projects/{project.id}/delivery/speckit").status_code, {404, 405})
 
-            self.assertEqual(preview.status_code, 200)
-            self.assertEqual(preview.json()["ready_card_count"], 0)
-            self.assertEqual(response.status_code, 400)
-            self.assertIn("Resolve all Layer 3 open decisions", response.text)
-
-    def test_speckit_handoff_exports_spec_seed_and_lineage(self) -> None:
+    def test_empty_expansion_update_does_not_invalidate_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            db, project, _, card, decision = self._fixture(tmpdir)
-            db.update_layer3_decision(decision.id, status="resolved", resolution="Plain text")
-            db.update_layer3_card(
-                card.id,
-                product_behaviors=[{"title": "Capture response", "description": "The user can submit free-form text."}],
-                validation_constraints=[{"title": "Required response", "description": "Response cannot be empty."}],
-                edge_cases=["Very long responses are handled with clear product messaging."],
-            )
-            exports_dir = Path(tmpdir) / "exports"
-            client = self._client(db.db_path, exports_dir)
-
-            response = client.post(f"/api/projects/{project.id}/delivery/speckit", json={"card_ids": [card.id]})
-
-            self.assertEqual(response.status_code, 200)
-            payload = response.json()
-            output_dir = Path(payload["output_dir"])
-            self.assertTrue(Path(payload["zip_path"]).exists())
-            spec_path = output_dir / payload["slices"][0]["folder"] / "spec.md"
-            lineage_path = output_dir / payload["slices"][0]["folder"] / "strata-lineage.json"
-            self.assertIn("/speckit.specify", spec_path.read_text(encoding="utf-8"))
-            self.assertEqual(json.loads(lineage_path.read_text(encoding="utf-8"))["layer3"]["card_id"], card.id)
-
-    def test_competitive_analysis_endpoint_respects_project_setting(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db, project, _, card, _ = self._fixture(tmpdir)
-            defaults = default_project_model_settings(
-                AppConfig(database_backend="sqlite", db_path=Path(tmpdir) / "layer3-api.db", embeddings_enabled=False),
-            )
-            db.upsert_project_model_settings(
-                project_id=project.id,
-                llm_profiles=defaults["llm_profiles"],
-                embedding_profiles=[],
-                execution_intent=defaults["execution_intent"],
-                routing_policy=defaults["routing_policy"],
-                concurrency_policy=defaults["concurrency_policy"],
-                assignments=defaults["assignments"],
-                prompt_catalog=load_prompt_catalog(),
-                competitive_intelligence_enabled=False,
-            )
-            client = self._client(db.db_path, Path(tmpdir) / "exports")
-
-            response = client.post(
-                f"/api/projects/{project.id}/layer3/cards/{card.id}/competitive-analysis",
-                json={"thinking_enabled": False},
-            )
-
-            self.assertEqual(response.status_code, 400)
-            self.assertIn("disabled", response.text)
-
-    def test_relationship_edit_rejects_inactive_target(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db, project, _, card, _ = self._fixture(tmpdir)
-            inactive = db.create_layer2_feature(
-                project_id=project.id,
-                canonical_name="Retired feature",
-                description="No longer active.",
-                feature_type="capability",
-                granularity_class="feature",
-                owner_pillar_id=card.parent_pillar_id,
-                candidate_source_ids=[],
-                status="cut",
-            )
+            db, project, _, expansion = self._fixture(tmpdir)
             client = self._client(db.db_path, Path(tmpdir) / "exports")
 
             response = client.patch(
-                f"/api/projects/{project.id}/layer3/cards/{card.id}",
-                json={"relationships": [{
-                    "target_feature_id": inactive.id,
-                    "relationship_type": "depends_on",
-                    "rationale": "Should be rejected.",
-                }]},
-            )
-
-            self.assertEqual(response.status_code, 400)
-            self.assertEqual(db.list_layer3_relationships(card.id), [])
-
-    def test_empty_card_update_does_not_invalidate_review(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db, project, _, card, _ = self._fixture(tmpdir)
-            client = self._client(db.db_path, Path(tmpdir) / "exports")
-
-            response = client.patch(
-                f"/api/projects/{project.id}/layer3/cards/{card.id}",
+                f"/api/projects/{project.id}/layer3/expansions/{expansion.id}",
                 json={},
             )
 
             self.assertEqual(response.status_code, 400)
-            self.assertEqual(db.get_layer3_card(card.id).review_state, "approved")
+            self.assertEqual(db.get_layer3_expansion(expansion.id).review_state, "approved")
 
     def test_layer3_mutations_enforce_project_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            db, _, _, card, decision = self._fixture(tmpdir)
+            db, _, _, expansion = self._fixture(tmpdir)
             other_project = db.create_project("Other", "Another product")
             client = self._client(db.db_path, Path(tmpdir) / "exports")
 
-            card_response = client.patch(
-                f"/api/projects/{other_project.id}/layer3/cards/{card.id}",
-                json={"product_purpose": "Cross-project edit."},
-            )
-            decision_response = client.patch(
-                f"/api/projects/{other_project.id}/layer3/decisions/{decision.id}",
-                json={"status": "resolved", "resolution": "Plain text"},
+            response = client.patch(
+                f"/api/projects/{other_project.id}/layer3/expansions/{expansion.id}",
+                json={"feature_intent": "Cross-project edit."},
             )
 
-            self.assertEqual(card_response.status_code, 400)
-            self.assertEqual(decision_response.status_code, 400)
-            self.assertEqual(db.get_layer3_card(card.id).product_purpose, "Collect qualitative responses.")
-            self.assertEqual(db.get_layer3_decision(decision.id).status, "unresolved")
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(db.get_layer3_expansion(expansion.id).feature_intent, "Collect qualitative responses.")
 
     def test_pillar_quality_gate_rejects_narrow_low_quality_items(self) -> None:
         weak_assessment = PillarAssessment(

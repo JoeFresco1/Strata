@@ -2,7 +2,7 @@
 
 This folder defines the current production behavior and architecture for Strata.
 
-The production scope now runs through Layer 3. Layer 3 is the Capability Design Layer: a persisted, reviewable product-definition step between approved Layer 2 features and later implementation-spec systems.
+The production scope now runs through Layer 3. Layer 3 is the Feature Expansion Layer: a persisted, reviewable product-definition step where approved Layer 2 features are broken into selectable subfeatures, options, limits, validation rules, and overlap notes.
 
 ## Files
 

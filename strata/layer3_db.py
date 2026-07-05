@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import uuid
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from strata.models import CapabilityDesignCard, Layer3OpenDecision, Layer3Relationship
+from strata.models import FeatureExpansion
 
 
 def utc_now() -> str:
@@ -14,38 +14,38 @@ def utc_now() -> str:
 
 
 class Layer3DatabaseMixin:
-    """Persist Layer 3 cards, product relationships, decisions, and review history."""
+    """Persist Layer 3 feature expansions and their review history."""
 
-    def upsert_layer3_card(self, *, card_id: str | None = None, **values: Any) -> CapabilityDesignCard:
-        """Create or replace one feature's current Capability Design Card."""
+    def upsert_layer3_expansion(self, *, expansion_id: str | None = None, **values: Any) -> FeatureExpansion:
+        """Create or replace one approved Layer 2 feature's expansion."""
         now = utc_now()
         existing = self._fetchone(
-            f"SELECT id, created_at FROM layer3_capability_cards WHERE project_id = {self.param} AND feature_id = {self.param}",
+            f"SELECT id, created_at FROM layer3_feature_expansions WHERE project_id = {self.param} AND feature_id = {self.param}",
             (values["project_id"], values["feature_id"]),
         )
-        resolved_id = str(self._row_value(existing, "id")) if existing is not None else card_id or str(uuid.uuid4())
+        resolved_id = str(self._row_value(existing, "id")) if existing is not None else expansion_id or str(uuid.uuid4())
         created_at = self._row_value(existing, "created_at") if existing is not None else now
         columns = [
-            "parent_pillar_id", "parent_pillar_title", "feature_name", "feature_description",
-            "product_purpose", "feature_archetype", "supported_variants", "configurable_options",
-            "product_behaviors", "validation_constraints", "lifecycle_states", "dependencies",
-            "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "competitive_analysis",
-            "downstream_readiness_score", "readiness_rationale", "review_state", "provenance",
+            "parent_pillar_id",
+            "parent_pillar_title",
+            "feature_name",
+            "feature_description",
+            "feature_intent",
+            "expansion_groups",
+            "overlap_review",
+            "open_questions",
+            "review_state",
+            "provenance",
         ]
-        values.setdefault("competitive_analysis", {})
         encoded = {
             key: self._dump_json(values[key])
-            if key in {
-                "supported_variants", "configurable_options", "product_behaviors",
-                "validation_constraints", "lifecycle_states", "dependencies",
-                "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "competitive_analysis", "provenance",
-            }
+            if key in {"expansion_groups", "overlap_review", "open_questions", "provenance"}
             else values[key]
             for key in columns
         }
         self._execute(
             f"""
-            INSERT INTO layer3_capability_cards (
+            INSERT INTO layer3_feature_expansions (
                 id, project_id, feature_id, {", ".join(columns)}, created_at, updated_at
             ) VALUES (
                 {", ".join([self.param] * (5 + len(columns)))}
@@ -63,211 +63,69 @@ class Layer3DatabaseMixin:
                 now,
             ),
         )
-        return self.get_layer3_card(resolved_id)
+        return self.get_layer3_expansion(resolved_id)
 
-    def get_layer3_card(self, card_id: str) -> CapabilityDesignCard:
-        """Return one Capability Design Card by id."""
+    def get_layer3_expansion(self, expansion_id: str) -> FeatureExpansion:
+        """Return one Layer 3 feature expansion by id."""
         row = self._fetchone(
-            f"SELECT * FROM layer3_capability_cards WHERE id = {self.param}",
-            (card_id,),
+            f"SELECT * FROM layer3_feature_expansions WHERE id = {self.param}",
+            (expansion_id,),
         )
         if row is None:
-            raise ValueError(f"Layer 3 card not found: {card_id}")
-        return self._row_to_layer3_card(row)
+            raise ValueError(f"Layer 3 expansion not found: {expansion_id}")
+        return self._row_to_layer3_expansion(row)
 
-    def get_layer3_card_for_feature(self, project_id: str, feature_id: str) -> CapabilityDesignCard | None:
-        """Return the current card for one Layer 2 feature."""
+    def get_layer3_expansion_for_feature(self, project_id: str, feature_id: str) -> FeatureExpansion | None:
+        """Return the current expansion for one Layer 2 feature."""
         row = self._fetchone(
-            f"SELECT * FROM layer3_capability_cards WHERE project_id = {self.param} AND feature_id = {self.param}",
+            f"SELECT * FROM layer3_feature_expansions WHERE project_id = {self.param} AND feature_id = {self.param}",
             (project_id, feature_id),
         )
-        return self._row_to_layer3_card(row) if row is not None else None
+        return self._row_to_layer3_expansion(row) if row is not None else None
 
-    def list_layer3_cards(self, project_id: str) -> list[CapabilityDesignCard]:
-        """List current cards in stable feature-name order."""
+    def list_layer3_expansions(self, project_id: str) -> list[FeatureExpansion]:
+        """List current expansions in stable feature-name order."""
         rows = self._fetchall(
-            f"SELECT * FROM layer3_capability_cards WHERE project_id = {self.param} ORDER BY feature_name, created_at",
+            f"SELECT * FROM layer3_feature_expansions WHERE project_id = {self.param} ORDER BY feature_name, created_at",
             (project_id,),
         )
-        return [self._row_to_layer3_card(row) for row in rows]
+        return [self._row_to_layer3_expansion(row) for row in rows]
 
-    def update_layer3_card(self, card_id: str, **updates: Any) -> CapabilityDesignCard:
-        """Apply human edits or review-state changes to a card."""
+    def update_layer3_expansion(self, expansion_id: str, **updates: Any) -> FeatureExpansion:
+        """Apply human edits or review-state changes to a feature expansion."""
         if not updates:
-            return self.get_layer3_card(card_id)
-        json_fields = {
-            "supported_variants", "configurable_options", "product_behaviors",
-            "validation_constraints", "lifecycle_states", "dependencies",
-            "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "competitive_analysis", "provenance",
-        }
+            return self.get_layer3_expansion(expansion_id)
+        json_fields = {"expansion_groups", "overlap_review", "open_questions", "provenance"}
         assignments = [f"{key} = {self.param}" for key in updates]
         values = [self._dump_json(value) if key in json_fields else value for key, value in updates.items()]
         assignments.append(f"updated_at = {self.param}")
-        values.extend([utc_now(), card_id])
+        values.extend([utc_now(), expansion_id])
         self._execute(
-            f"UPDATE layer3_capability_cards SET {', '.join(assignments)} WHERE id = {self.param}",
+            f"UPDATE layer3_feature_expansions SET {', '.join(assignments)} WHERE id = {self.param}",
             tuple(values),
         )
-        return self.get_layer3_card(card_id)
+        return self.get_layer3_expansion(expansion_id)
 
-    def replace_layer3_relationships(
+    def record_layer3_expansion_action(
         self,
         *,
         project_id: str,
-        card_id: str,
-        source_feature_id: str,
-        relationships: list[dict[str, Any]],
-    ) -> list[Layer3Relationship]:
-        """Atomically replace and deduplicate relationship edges for one card."""
-        now = utc_now()
-        unique_relationships = {
-            (str(item["target_feature_id"]), str(item["relationship_type"])): item
-            for item in relationships
-        }
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            try:
-                cursor.execute(f"DELETE FROM layer3_relationships WHERE card_id = {self.param}", (card_id,))
-                for item in unique_relationships.values():
-                    cursor.execute(
-                        f"""
-                        INSERT INTO layer3_relationships (
-                            id, project_id, card_id, source_feature_id, target_feature_id,
-                            relationship_type, rationale, created_at
-                        ) VALUES ({", ".join([self.param] * 8)})
-                        """,
-                        (
-                            str(uuid.uuid4()), project_id, card_id, source_feature_id,
-                            item["target_feature_id"], item["relationship_type"],
-                            item.get("rationale", ""), now,
-                        ),
-                    )
-            finally:
-                cursor.close()
-        return self.list_layer3_relationships(card_id)
-
-    def list_layer3_relationships(self, card_id: str) -> list[Layer3Relationship]:
-        """List product relationship edges attached to one card."""
-        rows = self._fetchall(
-            f"SELECT * FROM layer3_relationships WHERE card_id = {self.param} ORDER BY created_at",
-            (card_id,),
-        )
-        return [self._row_to_layer3_relationship(row) for row in rows]
-
-    def replace_layer3_decisions(
-        self,
-        *,
-        project_id: str,
-        card_id: str,
-        decisions: list[dict[str, Any]],
-    ) -> list[Layer3OpenDecision]:
-        """Atomically replace unique decisions while preserving matching resolutions."""
-        existing = {item.question.strip().casefold(): item for item in self.list_layer3_decisions(card_id)}
-        unique_decisions = {
-            str(item["question"]).strip().casefold(): item
-            for item in decisions
-            if str(item.get("question", "")).strip()
-        }
-        now = utc_now()
-        with self.connect() as connection:
-            cursor = connection.cursor()
-            try:
-                cursor.execute(f"DELETE FROM layer3_open_decisions WHERE card_id = {self.param}", (card_id,))
-                for key, item in unique_decisions.items():
-                    prior = existing.get(key)
-                    cursor.execute(
-                        f"""
-                        INSERT INTO layer3_open_decisions (
-                            id, project_id, card_id, question, context, options,
-                            status, resolution, created_at, updated_at
-                        ) VALUES ({", ".join([self.param] * 10)})
-                        """,
-                        (
-                            prior.id if prior else str(uuid.uuid4()),
-                            project_id,
-                            card_id,
-                            item["question"],
-                            item.get("context", ""),
-                            self._dump_json(item.get("options", [])),
-                            prior.status if prior else "unresolved",
-                            prior.resolution if prior else "",
-                            prior.created_at if prior else now,
-                            now,
-                        ),
-                    )
-            finally:
-                cursor.close()
-        return self.list_layer3_decisions(card_id)
-
-    def list_layer3_decisions(self, card_id: str) -> list[Layer3OpenDecision]:
-        """List explicit product decisions for one card."""
-        rows = self._fetchall(
-            f"SELECT * FROM layer3_open_decisions WHERE card_id = {self.param} ORDER BY created_at",
-            (card_id,),
-        )
-        return [self._row_to_layer3_decision(row) for row in rows]
-
-    def update_layer3_decision(
-        self,
-        decision_id: str,
-        *,
-        status: str,
-        resolution: str,
-    ) -> Layer3OpenDecision:
-        """Resolve or reopen one product decision."""
-        self._execute(
-            f"""
-            UPDATE layer3_open_decisions
-            SET status = {self.param}, resolution = {self.param}, updated_at = {self.param}
-            WHERE id = {self.param}
-            """,
-            (status, resolution, utc_now(), decision_id),
-        )
-        row = self._fetchone(
-            f"SELECT * FROM layer3_open_decisions WHERE id = {self.param}",
-            (decision_id,),
-        )
-        if row is None:
-            raise ValueError(f"Layer 3 decision not found: {decision_id}")
-        return self._row_to_layer3_decision(row)
-
-    def get_layer3_decision(self, decision_id: str) -> Layer3OpenDecision:
-        """Return one Layer 3 decision before applying project-scoped mutations."""
-        row = self._fetchone(
-            f"SELECT * FROM layer3_open_decisions WHERE id = {self.param}",
-            (decision_id,),
-        )
-        if row is None:
-            raise ValueError(f"Layer 3 decision not found: {decision_id}")
-        return self._row_to_layer3_decision(row)
-
-    def record_layer3_review_action(
-        self,
-        *,
-        project_id: str,
-        card_id: str,
+        expansion_id: str,
         action_type: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        """Append an auditable human or generation action for one card."""
+        """Append an auditable Layer 3 generation, edit, or review action."""
         self._execute(
             f"""
-            INSERT INTO layer3_review_actions (id, project_id, card_id, action_type, payload, created_at)
+            INSERT INTO layer3_expansion_actions (id, project_id, expansion_id, action_type, payload, created_at)
             VALUES ({", ".join([self.param] * 6)})
             """,
-            (str(uuid.uuid4()), project_id, card_id, action_type, self._dump_json(payload or {}), utc_now()),
+            (str(uuid.uuid4()), project_id, expansion_id, action_type, self._dump_json(payload or {}), utc_now()),
         )
 
     def layer3_snapshot(self, project_id: str) -> dict[str, Any]:
         """Build the complete Layer 3 workspace payload from durable state."""
-        cards = self.list_layer3_cards(project_id)
-        card_payloads = []
-        for card in cards:
-            card_payloads.append({
-                **card.model_dump(mode="json"),
-                "relationships": [item.model_dump(mode="json") for item in self.list_layer3_relationships(card.id)],
-                "open_decisions": [item.model_dump(mode="json") for item in self.list_layer3_decisions(card.id)],
-            })
+        expansions = [item.model_dump(mode="json") for item in self.list_layer3_expansions(project_id)]
         active_features = self.list_layer2_features(project_id, statuses=["kept", "approved"])
         eligible = [
             feature.model_dump(mode="json")
@@ -286,37 +144,17 @@ class Layer3DatabaseMixin:
         return {
             "eligible_features": eligible,
             "feature_directory": feature_directory,
-            "cards": card_payloads,
+            "expansions": expansions,
         }
 
-    def _row_to_layer3_card(self, row: Any) -> CapabilityDesignCard:
-        """Convert one database row into a typed card."""
-        json_fields = {
-            "supported_variants", "configurable_options", "product_behaviors",
-            "validation_constraints", "lifecycle_states", "dependencies",
-            "overlaps_conflicts", "edge_cases", "product_risks", "pressure_test", "competitive_analysis", "provenance",
-        }
+    def _row_to_layer3_expansion(self, row: Any) -> FeatureExpansion:
+        """Convert one database row into a typed FeatureExpansion."""
+        json_fields = {"expansion_groups", "overlap_review", "open_questions", "provenance"}
         values = {
             key: self._load_layer3_json(self._row_value(row, key)) if key in json_fields else self._row_value(row, key)
-            for key in CapabilityDesignCard.model_fields
+            for key in FeatureExpansion.model_fields
         }
-        for field in ("dependencies", "overlaps_conflicts", "edge_cases", "product_risks"):
-            values[field] = [
-                self._layer3_text_value(item)
-                for item in values[field]
-                if self._layer3_text_value(item)
-            ]
-        return CapabilityDesignCard(**values)
-
-    def _row_to_layer3_relationship(self, row: Any) -> Layer3Relationship:
-        """Convert one relationship row into its typed model."""
-        return Layer3Relationship(**{key: self._row_value(row, key) for key in Layer3Relationship.model_fields})
-
-    def _row_to_layer3_decision(self, row: Any) -> Layer3OpenDecision:
-        """Convert one decision row into its typed model."""
-        values = {key: self._row_value(row, key) for key in Layer3OpenDecision.model_fields}
-        values["options"] = self._load_layer3_json(values["options"])
-        return Layer3OpenDecision(**values)
+        return FeatureExpansion(**values)
 
     @staticmethod
     def _load_layer3_json(value: Any) -> Any:
@@ -324,14 +162,3 @@ class Layer3DatabaseMixin:
         if isinstance(value, str):
             return json.loads(value)
         return value
-
-    @staticmethod
-    def _layer3_text_value(item: Any) -> str:
-        """Read string-list fields written by earlier or near-valid model responses."""
-        if isinstance(item, str):
-            return item.strip()
-        if isinstance(item, dict):
-            for key in ("risk", "name", "description", "summary", "concept"):
-                if str(item.get(key, "")).strip():
-                    return str(item[key]).strip()
-        return ""

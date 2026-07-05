@@ -84,8 +84,8 @@ export default function ProjectToolsTab({
       <div className="panel project-tool-section">
         <div className="project-tool-section-header">
           <div>
-            <h3>Project settings</h3>
-            <p className="muted">Decide how this one project should run without changing global defaults.</p>
+            <h3>Common behavior controls</h3>
+            <p className="muted">Use the default project-level decisions here, and open advanced model setup only when this project needs deeper overrides.</p>
           </div>
         </div>
         <ProjectSettingsTab
@@ -125,7 +125,7 @@ export default function ProjectToolsTab({
           </div>
         ) : null}
         {layer2Graph.review_open ? (
-          <p className="warning">Layer 2 export includes unresolved review state. Layer 3 still requires approved features.</p>
+          <p className="warning">Layer 2 export includes unresolved review state. Downstream handoff still requires approved features.</p>
         ) : null}
       </div>
 
@@ -133,8 +133,8 @@ export default function ProjectToolsTab({
         <div className="panel project-tool-section">
           <div className="project-tool-section-header">
             <div>
-              <h3>Competitive intelligence</h3>
-              <p className="muted">Tune the competitor set and rerun feature-level evidence without leaving project controls.</p>
+              <h3>Competitive intelligence setup</h3>
+              <p className="muted">Control the competitor list, research mode, and feature matrix from one place when this project needs cited market evidence.</p>
             </div>
           </div>
           <CompetitiveIntelligencePanel
@@ -148,7 +148,7 @@ export default function ProjectToolsTab({
       ) : null}
 
       <details className="panel export-diagnostics">
-        <summary>Diagnostics and generation memory</summary>
+        <summary>Advanced project diagnostics and generation memory</summary>
         <p className="muted">{memories.length} memory records{quarantine ? " including Layer 1 quarantine data" : ""}.</p>
         <details>
           <summary>Generation memory</summary>

@@ -2,7 +2,7 @@
 
 Layer 2 and Layer 3 are controlled descents from approved upstream product
 structure. They stay product-definition focused: they describe capabilities,
-relationships, decisions, risks, and readiness before any implementation-spec
+relationships, configuration choices, overlap decisions, and option state before any implementation-spec
 or code-generation system takes over.
 
 ## Layer 2: Feature Graph
@@ -33,34 +33,29 @@ implementation tasks.
 - Competitive evidence is cited and advisory; it does not automatically decide
   product scope.
 
-## Layer 3: Capability Design Cards
+## Layer 3: Feature Expansions
 
-Layer 3 turns approved Layer 2 features into persisted Capability Design Cards.
-It defines what the capability means as a product experience and operational
-contract while explicitly excluding implementation specifications.
+Layer 3 turns approved Layer 2 features into persisted Feature Expansions. It
+defines what can go inside the feature as product-level options while explicitly
+excluding implementation specifications.
 
 ### Key Objectives
 
-- Generate cards only for approved Layer 2 features.
+- Generate expansions only for approved Layer 2 features.
 - Use compact Layer 0 context, the parent pillar, approved siblings, and
   relevant Layer 2 graph edges as bounded context.
-- Define purpose, archetype, variants, options, behaviors, product constraints,
-  lifecycle states, relationships, dependencies, conflicts, edge cases, risks,
-  and open decisions.
-- Run a pressure-test pass for ambiguity, overreach, product risk, unresolved
-  decisions, downstream blockers, and implementation leakage.
-- Persist cards, card relationships, decisions, readiness scores, review
-  actions, optional competitive analysis, and provenance independently of chat
-  history.
+- Define feature intent, grouped subfeatures, configuration options, validation
+  rules, limits, dependencies, overlap links, and open questions.
+- Default options to undecided so users choose include, exclude, or edit rather
+  than accepting a hidden generated scope.
+- Persist expansions, option state, review actions, and provenance independently
+  of chat history.
 
 ### Review And Delivery
 
-- Users can edit sections, rerun selected sections, resolve decisions,
-  pressure-test, approve, reject, and export cards.
-- Approved cards can be exported as structured JSON with complete Layer 0/1/2
-  lineage.
-- Delivery handoff converts approved, ready cards into Spec Kit-ready seeds,
-  lineage files, traceability notes, and a zip archive without writing into a
-  target code repository.
+- Users can edit feature intent, add/remove groups, include/exclude options,
+  mark overlaps, approve, reject, and export expansions.
+- Approved expansions can be exported as structured JSON with complete Layer
+  0/1/2 lineage and selected/excluded option state.
 - Layer 3 must not generate target-product APIs, database schemas, components,
   test cases, wireframes, user stories, architecture diagrams, or coding tasks.

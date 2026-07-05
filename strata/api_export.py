@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 
 from strata.api_models import ExportResponse
 from strata.api_support import AppServices
-from strata.export import export_layer2_markdown, export_layer3_manifest, export_project
+from strata.export import export_layer2_markdown, export_layer3_feature_expansions, export_project
 from strata.layer3_service import validate_product_level_content
 
 
@@ -47,44 +47,33 @@ def register_export_routes(app: FastAPI, services: AppServices) -> None:
         return {"markdown_path": str(markdown_path), "json_path": str(output_path), "layer2_graph": graph}
 
     @app.post("/api/projects/{project_id}/export/layer3")
-    def export_layer3_cards(project_id: str) -> dict[str, object]:
-        """Export approved Capability Design Cards as a downstream agent manifest."""
+    def export_layer3_expansions(project_id: str) -> dict[str, object]:
+        """Export approved Feature Expansions as a structured Layer 3 manifest."""
         try:
             project = services.db.get_project(project_id)
             brief = services.brief_service.ensure_brief(project_id).model_dump(mode="json")
             layer2_graph = services.db.layer2_graph_snapshot(project_id)
             layer3 = services.db.layer3_snapshot(project_id)
-            approved_cards = [
-                card for card in layer3.get("cards", [])
-                if card.get("review_state") == "approved"
+            approved_expansions = [
+                expansion for expansion in layer3.get("expansions", [])
+                if expansion.get("review_state") == "approved"
             ]
-            if not approved_cards:
-                raise ValueError("Approve at least one Capability Design Card before export.")
+            if not approved_expansions:
+                raise ValueError("Approve at least one Feature Expansion before export.")
             feature_statuses = {
                 feature.id: feature.status
                 for feature in services.db.list_layer2_features(project_id)
             }
-            stale_card_ids = [
-                card["id"]
-                for card in approved_cards
-                if feature_statuses.get(card.get("feature_id")) != "approved"
+            stale_expansion_ids = [
+                expansion["id"]
+                for expansion in approved_expansions
+                if feature_statuses.get(expansion.get("feature_id")) != "approved"
             ]
-            if stale_card_ids:
-                raise ValueError("Approved Layer 3 cards have Layer 2 sources that are no longer approved.")
-            allowed_relationship_targets = {
-                feature_id
-                for feature_id, status in feature_statuses.items()
-                if status in {"kept", "approved"}
-            }
-            if any(
-                edge.get("target_feature_id") not in allowed_relationship_targets
-                for card in approved_cards
-                for edge in card.get("relationships", [])
-            ):
-                raise ValueError("Approved Layer 3 cards contain relationships to inactive Layer 2 features.")
-            for card in approved_cards:
-                validate_product_level_content(card)
-            output_path = export_layer3_manifest(
+            if stale_expansion_ids:
+                raise ValueError("Approved Layer 3 expansions have Layer 2 sources that are no longer approved.")
+            for expansion in approved_expansions:
+                validate_product_level_content(expansion)
+            output_path = export_layer3_feature_expansions(
                 project,
                 brief,
                 layer2_graph,
@@ -93,6 +82,6 @@ def register_export_routes(app: FastAPI, services: AppServices) -> None:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"json_path": str(output_path), "approved_card_count": sum(
-            1 for card in layer3.get("cards", []) if card.get("review_state") == "approved"
+        return {"json_path": str(output_path), "approved_expansion_count": sum(
+            1 for expansion in layer3.get("expansions", []) if expansion.get("review_state") == "approved"
         )}

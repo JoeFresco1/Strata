@@ -1,0 +1,339 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-30T12:19:55.4337194-04:00",
+  "title": "Design System: Strata",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Workspace Teal",
+        "canonical": "#245f73",
+        "tonalRamp": [
+          "#122830",
+          "#183744",
+          "#1f4758",
+          "#245f73",
+          "#3a788f",
+          "#6f9fb0",
+          "#a9c4ce",
+          "#e7f0f3"
+        ]
+      },
+      "primary-strong": {
+        "role": "primary",
+        "displayName": "Resolved Teal",
+        "canonical": "#1e6d85",
+        "tonalRamp": [
+          "#12303c",
+          "#174454",
+          "#1b586b",
+          "#1e6d85",
+          "#3587a0",
+          "#6caabc",
+          "#a7cfda",
+          "#e6f3f7"
+        ]
+      },
+      "secondary": {
+        "role": "secondary",
+        "displayName": "Signal Plum",
+        "canonical": "#6d5bd0",
+        "tonalRamp": [
+          "#231c4e",
+          "#33286f",
+          "#463896",
+          "#6d5bd0",
+          "#8c7de0",
+          "#b1a8ec",
+          "#d8d3f7",
+          "#f1effd"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Control Ink",
+        "canonical": "#172026",
+        "tonalRamp": [
+          "#0c1013",
+          "#172026",
+          "#2a353c",
+          "#425057",
+          "#5d6b72",
+          "#839096",
+          "#bac2c6",
+          "#eef1f3"
+        ]
+      },
+      "muted-ink": {
+        "role": "neutral",
+        "displayName": "Support Ink",
+        "canonical": "#4e5f65",
+        "tonalRamp": [
+          "#1b2225",
+          "#303b3f",
+          "#4e5f65",
+          "#68797f",
+          "#839398",
+          "#adb9bc",
+          "#d6dde0",
+          "#f2f5f6"
+        ]
+      },
+      "app-bg": {
+        "role": "neutral",
+        "displayName": "Cool Canvas",
+        "canonical": "#f3f6f8",
+        "tonalRamp": [
+          "#1e2528",
+          "#3f494d",
+          "#667277",
+          "#99a6ab",
+          "#c1ccd1",
+          "#d8e0e4",
+          "#e7edf0",
+          "#f3f6f8"
+        ]
+      },
+      "panel-bg": {
+        "role": "neutral",
+        "displayName": "Paper Surface",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#2b2b2b",
+          "#4c4c4c",
+          "#737373",
+          "#a0a0a0",
+          "#c8c8c8",
+          "#e1e1e1",
+          "#f2f2f2",
+          "#ffffff"
+        ]
+      },
+      "surface-alt": {
+        "role": "neutral",
+        "displayName": "Utility Surface",
+        "canonical": "#eef3f6",
+        "tonalRamp": [
+          "#1e2326",
+          "#3b4448",
+          "#616d72",
+          "#92a0a6",
+          "#b8c5cb",
+          "#d3dde2",
+          "#e3eaee",
+          "#eef3f6"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Division Line",
+        "canonical": "#d9e0e6",
+        "tonalRamp": [
+          "#1b1f22",
+          "#353d41",
+          "#576267",
+          "#7e8b93",
+          "#a8b3ba",
+          "#c4cdd3",
+          "#d9e0e6",
+          "#eef2f5"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Page and project headings."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Modal titles and high-level workspace sections."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Cards, settings groups, and compact panel headers."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Workflow copy, field text, and general prose."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Metadata, controls, helpers, and pills."
+      },
+      "mono": {
+        "displayName": "Monospace",
+        "purpose": "Structured JSON, prompt, and code-adjacent editors."
+      }
+    },
+    "shadows": [
+      {
+        "name": "surface-lift",
+        "value": "0 10px 24px rgba(23, 32, 38, 0.07)",
+        "purpose": "Project cards and premium contained panels."
+      },
+      {
+        "name": "action-lift",
+        "value": "0 8px 16px rgba(36, 95, 115, 0.18)",
+        "purpose": "Navigation actions and strong interactive controls."
+      },
+      {
+        "name": "overlay-lift",
+        "value": "0 30px 70px rgba(16, 24, 28, 0.24)",
+        "purpose": "Modal shells and full-priority overlays."
+      },
+      {
+        "name": "edge-lift",
+        "value": "-12px 0 32px rgb(24 39 49 / 16%)",
+        "purpose": "Assistant drawer separation."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-standard",
+        "value": "0.2s ease",
+        "purpose": "Panel, nav, and layout transitions."
+      },
+      {
+        "name": "spinner-linear",
+        "value": "0.75s linear infinite",
+        "purpose": "Loading spinner rotation."
+      },
+      {
+        "name": "shimmer-soft",
+        "value": "1.2s ease-in-out infinite",
+        "purpose": "Project card loading skeleton."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "620px"
+      },
+      {
+        "name": "md",
+        "value": "720px"
+      },
+      {
+        "name": "lg",
+        "value": "900px"
+      },
+      {
+        "name": "xl",
+        "value": "960px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Default forward action for create, save, send, and open flows.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">Create Project</button>",
+      "css": ".ds-btn-primary { border: none; border-radius: 8px; background: #245f73; color: #ffffff; padding: 0.72rem 1rem; font: 600 0.95rem \"Segoe UI\", \"Helvetica Neue\", sans-serif; cursor: pointer; transition: filter 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease; } .ds-btn-primary:hover { filter: brightness(1.03); transform: translateY(-1px); box-shadow: 0 8px 18px rgba(36, 95, 115, 0.18); } .ds-btn-primary:focus-visible { outline: 2px solid #1e6d85; outline-offset: 2px; } .ds-btn-primary:active { transform: translateY(0); filter: brightness(0.98); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Low-risk action for duplicate, archive, close, and supporting controls.",
+      "html": "<button class=\"ds-btn-secondary\" type=\"button\">Duplicate</button>",
+      "css": ".ds-btn-secondary { border: 1px solid #cbd8df; border-radius: 8px; background: #eef3f6; color: #1f3b46; padding: 0.72rem 1rem; font: 600 0.95rem \"Segoe UI\", \"Helvetica Neue\", sans-serif; cursor: pointer; transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease; } .ds-btn-secondary:hover { background: #e5edf1; border-color: #b7c9d2; } .ds-btn-secondary:focus-visible { outline: 2px solid #245f73; outline-offset: 2px; } .ds-btn-secondary:active { background: #dfe8ed; }"
+    },
+    {
+      "name": "Rail Action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Expanded navigation rail action with stronger visual presence.",
+      "html": "<button class=\"ds-rail-action\" type=\"button\">App Settings</button>",
+      "css": ".ds-rail-action { width: 100%; min-height: 48px; border: none; border-radius: 12px; background: linear-gradient(180deg, #2f6176 0%, #245f73 100%); color: #ffffff; padding: 0.72rem 1rem; font: 700 0.92rem \"Segoe UI\", \"Helvetica Neue\", sans-serif; cursor: pointer; box-shadow: 0 8px 16px rgba(36, 95, 115, 0.18); transition: transform 0.2s ease, box-shadow 0.2s ease; } .ds-rail-action:hover { transform: translateY(-1px); box-shadow: 0 12px 20px rgba(36, 95, 115, 0.22); } .ds-rail-action:focus-visible { outline: 2px solid #a9c4ce; outline-offset: 2px; } .ds-rail-action:active { transform: translateY(0); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input-default",
+      "description": "Canonical form field used across setup, settings, search, and project editing.",
+      "html": "<label class=\"ds-field\"><span>Project Name</span><input class=\"ds-input\" type=\"text\" placeholder=\"Name your project\" /></label>",
+      "css": ".ds-field { display: grid; gap: 0.35rem; font: 600 0.88rem \"Segoe UI\", \"Helvetica Neue\", sans-serif; color: #172026; } .ds-input { width: 100%; border-radius: 8px; border: 1px solid #c9d1d8; padding: 0.8rem; background: #ffffff; color: #172026; font: 400 1rem \"Segoe UI\", \"Helvetica Neue\", sans-serif; transition: border-color 0.2s ease, box-shadow 0.2s ease; } .ds-input::placeholder { color: #61727a; } .ds-input:hover { border-color: #b8c5cc; } .ds-input:focus-visible { outline: none; border-color: #245f73; box-shadow: 0 0 0 3px rgba(36, 95, 115, 0.16); }"
+    },
+    {
+      "name": "Project Library Card",
+      "kind": "card",
+      "refersTo": "panel-default",
+      "description": "The signature work-resume container in the library.",
+      "html": "<article class=\"ds-project-card\"><div class=\"ds-card-bar\"></div><div class=\"ds-card-head\"><strong>Neighborhood Planner</strong><span class=\"ds-pill\">draft</span></div><p>Planning the product brief and early feature map.</p><div class=\"ds-card-meta\"><span>Updated today</span><span>12 nodes</span></div><div class=\"ds-card-actions\"><button class=\"ds-btn-primary\" type=\"button\">Open</button><button class=\"ds-btn-secondary\" type=\"button\">Archive</button></div></article>",
+      "css": ".ds-project-card { position: relative; display: grid; gap: 0.65rem; overflow: hidden; border: 1px solid #d8e1e7; border-radius: 18px; background: #ffffff; color: #172026; padding: 1rem 1rem 1.05rem; box-shadow: 0 10px 24px rgba(23, 32, 38, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.82); font-family: \"Segoe UI\", \"Helvetica Neue\", sans-serif; } .ds-card-bar { position: absolute; inset: 0 0 auto 0; height: 4px; background: linear-gradient(90deg, rgba(36, 95, 115, 0.35), rgba(109, 91, 208, 0.25)); } .ds-card-head, .ds-card-meta, .ds-card-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; justify-content: space-between; } .ds-project-card p { margin: 0; color: #4e5f65; line-height: 1.45; } .ds-card-meta { justify-content: flex-start; color: #61727a; font-size: 0.92rem; } .ds-card-actions { justify-content: flex-start; margin-top: 0.1rem; } .ds-project-card:hover { border-color: #6b9bad; box-shadow: 0 16px 34px rgba(23, 32, 38, 0.11), 0 0 0 1px rgba(36, 95, 115, 0.08); transform: translateY(-2px); transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease; } .ds-pill { display: inline-block; padding: 0.22rem 0.5rem; border-radius: 999px; background: #e8edf1; color: #172026; font-size: 0.82rem; font-weight: 700; }"
+    },
+    {
+      "name": "Modal Shell",
+      "kind": "custom",
+      "refersTo": "panel-default",
+      "description": "Shared shell for guide, create-project, import, and settings dialogs.",
+      "html": "<div class=\"ds-modal-backdrop\"><section class=\"ds-modal\"><header class=\"ds-modal-head\"><div><strong>Create New Project</strong><p>Name the project, capture the idea, and jump into Layer 0.</p></div><button class=\"ds-btn-secondary\" type=\"button\">Close</button></header><div class=\"ds-modal-body\"><div class=\"ds-panel\">Modal content</div></div></section></div>",
+      "css": ".ds-modal-backdrop { display: grid; place-items: center; padding: 1.25rem; background: radial-gradient(circle at top, rgba(36, 95, 115, 0.16), transparent 36%), rgba(17, 24, 28, 0.5); } .ds-modal { width: min(760px, 100%); max-height: calc(100vh - 2.5rem); overflow: auto; padding: 1.4rem 1rem 1.4rem 1.4rem; border-radius: 24px; border: 1px solid rgba(255, 255, 255, 0.6); background: linear-gradient(180deg, rgba(255, 255, 255, 0.985) 0%, rgba(247, 249, 251, 0.985) 100%); box-shadow: 0 30px 70px rgba(16, 24, 28, 0.24), 0 4px 18px rgba(16, 24, 28, 0.1); color: #172026; font-family: \"Segoe UI\", \"Helvetica Neue\", sans-serif; } .ds-modal-head { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; margin-bottom: 1.15rem; } .ds-modal-head p { margin: 0.3rem 0 0; color: #4e5f65; max-width: 56ch; } .ds-modal-body { display: grid; gap: 1rem; } .ds-panel { padding: 1rem; border: 1px solid #d9e0e6; border-radius: 16px; background: linear-gradient(180deg, #ffffff 0%, #f7fafb 100%); box-shadow: 0 10px 24px rgba(23, 32, 38, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.85); }"
+    },
+    {
+      "name": "Assistant Drawer",
+      "kind": "nav",
+      "refersTo": "panel-default",
+      "description": "Persistent right-side assistant surface for project-aware conversation.",
+      "html": "<aside class=\"ds-assistant\"><header class=\"ds-assistant-head\"><div><strong>Project Assistant</strong><span>All layers</span></div><button class=\"ds-icon-button\" type=\"button\">x</button></header><div class=\"ds-assistant-body\"><article class=\"ds-message\"><div class=\"ds-message-meta\"><span>Strata</span><span>ready</span></div><p>Ask about the current layer, compare decisions, or preview an action.</p></article></div><form class=\"ds-assistant-composer\"><textarea placeholder=\"Ask Strata about this project...\"></textarea><button class=\"ds-btn-primary\" type=\"button\">Send</button></form></aside>",
+      "css": ".ds-assistant { width: min(460px, 100vw); display: grid; grid-template-rows: auto 1fr auto; background: #f8fafb; border-left: 1px solid #cbd5dc; box-shadow: -12px 0 32px rgb(24 39 49 / 16%); color: #172026; font-family: \"Segoe UI\", \"Helvetica Neue\", sans-serif; } .ds-assistant-head, .ds-assistant-composer { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 12px 16px; } .ds-assistant-head { border-bottom: 1px solid #dbe3e8; } .ds-assistant-head div { display: grid; gap: 2px; } .ds-assistant-head span, .ds-message-meta { color: #5c6c75; font-size: 12px; } .ds-icon-button { width: 34px; height: 34px; border: 1px solid #cbd8df; border-radius: 8px; background: #ffffff; color: #172026; padding: 0; font-size: 16px; cursor: pointer; } .ds-assistant-body { padding: 16px; display: grid; gap: 12px; } .ds-message { padding: 12px 0; border-bottom: 1px solid #dde5e9; } .ds-message-meta { display: flex; justify-content: space-between; text-transform: capitalize; } .ds-message p { margin: 8px 0 0; color: #172026; line-height: 1.45; } .ds-assistant-composer { align-items: flex-end; border-top: 1px solid #cbd5dc; background: #ffffff; } .ds-assistant-composer textarea { flex: 1; min-height: 80px; border: 1px solid #c9d1d8; border-radius: 8px; padding: 0.8rem; font: 400 1rem \"Segoe UI\", \"Helvetica Neue\", sans-serif; resize: vertical; } .ds-assistant-composer textarea:focus-visible { outline: none; border-color: #245f73; box-shadow: 0 0 0 3px rgba(36, 95, 115, 0.16); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Calm Control Room",
+    "overview": "Strata is a working product tool, not a brand showcase. The interface should feel like a dependable control room for shaping product architecture: quiet, legible, and ready for sustained task work. The codebase already expresses that through cool slate surfaces, teal action color, restrained plum accents, familiar form controls, and consistent rounded geometry that stays soft without becoming playful.\n\nThis system rejects novelty-for-novelty's-sake. It uses light gradients and shadow only to separate work zones, loading states, overlays, and navigation rails. It does not ask the user to admire the UI. It should help them move from project library to brief, workspace, specs, and settings with minimal translation cost.",
+    "keyCharacteristics": [
+      "Familiar sans-serif product typography with a tight hierarchy.",
+      "Cool neutral surfaces with teal reserved for action and focus.",
+      "Rounded panels and pills that soften density without looking decorative.",
+      "Motion used for feedback, reveal, and loading only.",
+      "Dense information presented in calm, segmented containers."
+    ],
+    "rules": [
+      {
+        "name": "The One Accent Rule",
+        "body": "Teal is the only true action color. Plum may support atmosphere or selection, but it must never compete with teal for primary intent.",
+        "section": "colors"
+      },
+      {
+        "name": "The Cool Neutrals Rule",
+        "body": "Neutrals stay cool and practical. Do not warm them into beige, cream, or editorial paper tones.",
+        "section": "colors"
+      },
+      {
+        "name": "The No Performance Typography Rule",
+        "body": "No display fonts in labels, controls, settings, tables, or data-heavy views. If the user is working, the typography must disappear into the task.",
+        "section": "typography"
+      },
+      {
+        "name": "The Structural First Rule",
+        "body": "Borders and background shifts establish layout first. Shadows are a supporting layer, never the primary organizing principle.",
+        "section": "elevation"
+      },
+      {
+        "name": "The State Lift Rule",
+        "body": "Heavier lift belongs to things the user can act on or things that temporarily sit above the workspace.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep the path to the next action obvious through stable button placement, strong section headers, and compact explanatory copy.",
+      "Do use familiar UI patterns and a single sans-serif family for the majority of the product surface.",
+      "Do keep interactive targets spacious enough for quick scanning and repeated workflow use.",
+      "Do preserve readable contrast with Control Ink (#172026) or Support Ink (#4e5f65) instead of airy low-contrast gray.",
+      "Do keep motion short (150ms-250ms) and state-driven: loading, expanding, revealing, or confirming."
+    ],
+    "donts": [
+      "Don't create dense walls of text. Break explanation into cards, summaries, lists, or scoped helper copy.",
+      "Don't ship cluttered layouts. If a panel cannot explain itself quickly, reduce competing surfaces before adding more decoration.",
+      "Don't introduce confusing navigation through custom affordances, inconsistent button styling, or hidden action placement.",
+      "Don't use slow loading animations or choreographed page reveals. Loading should reassure, not delay.",
+      "Don't add overly complex instructions when a label, helper sentence, or guided empty state would do the job.",
+      "Don't add decorative motion that does not communicate state.",
+      "Don't use heavy saturated accents on inactive controls, decorative glassmorphism, gradient text, or side-stripe borders."
+    ]
+  }
+}

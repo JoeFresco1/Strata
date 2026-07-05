@@ -22,7 +22,6 @@ import {
   formatLayerLabel,
   formatNodeType,
   nodeTone,
-  truncate,
   withDerivedFields,
 } from "./treeDashboardData";
 
@@ -91,6 +90,8 @@ function GraphToolbar({
   onOverlapModeChange,
   zoom,
   onZoomChange,
+  focusBranch,
+  onFocusBranchChange,
   onExpandAll,
   onCollapseAll,
   onResetView,
@@ -113,7 +114,6 @@ function GraphToolbar({
             <option value="0">Layer 0</option>
             <option value="1">Layer 1</option>
             <option value="2">Layer 2</option>
-            <option value="3">Layer 3</option>
           </select>
         </label>
         <label className="compact-select">
@@ -142,6 +142,13 @@ function GraphToolbar({
           ))}
         </div>
         <div className="button-row">
+          <button
+            type="button"
+            className={focusBranch ? "secondary-button active-soft" : "secondary-button"}
+            onClick={() => onFocusBranchChange(!focusBranch)}
+          >
+            {focusBranch ? "Show Full Map" : "Focus Branch"}
+          </button>
           <button type="button" className="secondary-button" onClick={onExpandAll}>Expand All</button>
           <button type="button" className="secondary-button" onClick={onCollapseAll}>Collapse All</button>
           <button type="button" className="secondary-button" onClick={() => onZoomChange(clamp(zoom - 0.1, MIN_ZOOM, MAX_ZOOM))}>-</button>
@@ -207,6 +214,19 @@ function TreeCanvas({
 
   const maxOverlap = Math.max(1, ...Object.values(overlapDegree));
   const selectedEdgeIds = new Set(overlapEdges.map((edge) => edge.from === selectedId ? edge.to : edge.from));
+
+  function handleNodeKeyDown(event, nodeId) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onSelect(nodeId);
+  }
+
+  function handleCollapseKeyDown(event, nodeId) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    event.stopPropagation();
+    onToggleCollapse(nodeId);
+  }
 
   return (
     <div
@@ -305,26 +325,29 @@ function TreeCanvas({
                   heatLevel ? `heat-${heatLevel}` : "",
                 ].filter(Boolean).join(" ")}
                 onClick={() => onSelect(node.id)}
+                onKeyDown={(event) => handleNodeKeyDown(event, node.id)}
+                role="button"
+                tabIndex={0}
+                aria-label={`${node.title}, ${formatLayerLabel(node.layer)}, ${node.status}. Select node.`}
+                aria-pressed={isSelected}
                 data-tree-node="true"
               >
                 <rect rx="18" ry="18" width={node.width} height={node.height} className="tree-node-box" data-tree-node="true" />
-                <text x="18" y="24" className="tree-node-kicker" data-tree-node="true">
-                  {formatLayerLabel(node.layer)} | {formatNodeType(node.node_type)}
-                </text>
-                <text x="18" y="48" className="tree-node-title" data-tree-node="true">
-                  {truncate(node.title, 32)}
-                </text>
-                <text x="18" y="72" className="tree-node-description" data-tree-node="true">
-                  {truncate(node.description || "No description yet.", 56)}
-                </text>
-                <text x="18" y="96" className="tree-node-status" data-tree-node="true">
-                  {node.status}
-                </text>
-                <text x="18" y="116" className="tree-node-status subtle" data-tree-node="true">
-                  {node.child_count ? `${node.child_count} branches` : "Leaf node"}
-                  {overlapCount ? ` | ${overlapCount} overlaps` : ""}
-                  {researchSignals[node.id] ? " | research stale" : ""}
-                </text>
+                <foreignObject x="18" y="14" width={node.width - 36} height={node.height - 26} data-tree-node="true">
+                  <div className="tree-node-content" data-tree-node="true">
+                    <div className="tree-node-kicker" data-tree-node="true">
+                      {formatLayerLabel(node.layer)} | {formatNodeType(node.node_type)}
+                    </div>
+                    <div className="tree-node-title" data-tree-node="true">{node.title}</div>
+                    <div className="tree-node-description" data-tree-node="true">{node.description || "No description yet."}</div>
+                    <div className="tree-node-status" data-tree-node="true">{node.status}</div>
+                    <div className="tree-node-status subtle" data-tree-node="true">
+                      {node.child_count ? `${node.child_count} branches` : "Leaf node"}
+                      {overlapCount ? ` | ${overlapCount} overlaps` : ""}
+                      {researchSignals[node.id] ? " | research stale" : ""}
+                    </div>
+                  </div>
+                </foreignObject>
                 {node.hasChildren ? (
                   <g
                     transform={`translate(${node.width - 38}, 14)`}
@@ -332,7 +355,12 @@ function TreeCanvas({
                       event.stopPropagation();
                       onToggleCollapse(node.id);
                     }}
+                    onKeyDown={(event) => handleCollapseKeyDown(event, node.id)}
                     className="tree-collapse-control"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${collapsedIds.has(node.id) ? "Expand" : "Collapse"} ${node.title}`}
+                    aria-expanded={!collapsedIds.has(node.id)}
                     data-tree-node="true"
                   >
                     <circle r="12" cx="0" cy="0" />
@@ -345,6 +373,67 @@ function TreeCanvas({
         </svg>
       </div>
     </div>
+  );
+}
+
+function MapOutline({
+  nodes,
+  selectedId,
+  collapsedIds,
+  overlapDegree,
+  researchSignals,
+  onSelect,
+  onToggleCollapse,
+}) {
+  if (!nodes.length) {
+    return (
+      <div className="tree-map-outline empty">
+        <p className="muted">No map entities match the current filters.</p>
+      </div>
+    );
+  }
+
+  return (
+    <nav className="tree-map-outline" aria-label="Accessible product map outline">
+      <div className="tree-map-outline-header">
+        <strong>Map outline</strong>
+        <span className="muted">{nodes.length} visible</span>
+      </div>
+      <ul>
+        {nodes.map((node) => {
+          const isSelected = node.id === selectedId;
+          const isCollapsed = collapsedIds.has(node.id);
+          const overlapCount = overlapDegree[node.id] || 0;
+          return (
+            <li key={node.id} style={{ "--node-depth": Math.max(0, node.layer || 0) }}>
+              <div className={isSelected ? "tree-outline-row selected" : "tree-outline-row"}>
+                <button
+                  type="button"
+                  className="tree-outline-main"
+                  onClick={() => onSelect(node.id)}
+                  aria-current={isSelected ? "true" : undefined}
+                >
+                  <span className="tree-outline-meta">{formatLayerLabel(node.layer)} | {formatNodeType(node.node_type)}</span>
+                  <strong>{node.title}</strong>
+                  <span>{node.status}{overlapCount ? ` | ${overlapCount} overlaps` : ""}{researchSignals[node.id] ? " | research stale" : ""}</span>
+                </button>
+                {node.hasChildren ? (
+                  <button
+                    type="button"
+                    className="tree-outline-toggle"
+                    onClick={() => onToggleCollapse(node.id)}
+                    aria-expanded={!isCollapsed}
+                    aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${node.title}`}
+                  >
+                    {isCollapsed ? "+" : "-"}
+                  </button>
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }
 
@@ -393,8 +482,14 @@ function PillarResearch({ node, findings }) {
     return null;
   }
   return (
-    <div className="tree-detail-section">
-      <h4>Research Evidence</h4>
+    <div className="tree-detail-section layer1-research-section">
+      <div className="layer1-section-heading">
+        <div>
+          <h4>Research evidence</h4>
+          <p className="muted">Competitor and implementation signals for this pillar.</p>
+        </div>
+        {matrix.length ? <span className="status-pill">{matrix.length} competitors</span> : null}
+      </div>
       {profile ? (
         <div className="research-scorecard">
           <div className="research-scorecard-head">
@@ -423,14 +518,15 @@ function PillarResearch({ node, findings }) {
           ) : null}
         </div>
       ) : null}
-      <ul className="summary-list">
+      <ul className="summary-list layer1-competitor-list">
         {matrix.slice(0, 5).map((row) => (
           <li key={row.competitor_name}>
-            <strong>{row.competitor_name}</strong> | {row.coverage_status} | {row.adoption_level} | confidence {row.confidence}
+            <strong>{row.competitor_name}</strong>
+            <span>{row.coverage_status} | {row.adoption_level} | confidence {row.confidence}</span>
             {row.evidence?.[0]?.url ? (
               <>
                 {" "}
-                | <a href={row.evidence[0].url} target="_blank" rel="noreferrer">source</a>
+                <a href={row.evidence[0].url} target="_blank" rel="noreferrer">source</a>
               </>
             ) : null}
           </li>
@@ -465,13 +561,13 @@ function Layer1PillarForm({ disabled, onCreate }) {
   }
 
   return (
-    <form className="tree-edit-form" onSubmit={submit}>
+    <form className="tree-edit-form layer1-pillar-form" onSubmit={submit}>
       <div className="panel-header">
         <div>
-          <h4>Manual Layer 1 Pillar</h4>
-          <p className="muted">Add a known high-level product area without running Layer 1 generation.</p>
+          <h4>Manual Layer 1 pillar</h4>
+          <p className="muted">{disabled ? "Publish the Layer 0 brief before adding pillars." : "Add a known high-level product area without running generation."}</p>
         </div>
-        <div className="tree-save-state">{saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : saveState === "error" ? "Could not save" : ""}</div>
+        <div className={`tree-save-state ${saveState !== "idle" ? saveState : ""}`} aria-live="polite">{saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : saveState === "error" ? "Could not save" : ""}</div>
       </div>
       <label>
         Pillar title
@@ -493,12 +589,12 @@ function Layer1PillarForm({ disabled, onCreate }) {
           <input disabled={disabled} type="number" min="0" max="10" value={form.priority} onChange={(event) => setForm((current) => ({ ...current, priority: Number(event.target.value) }))} />
         </label>
       </div>
-      <button type="submit" disabled={disabled || !form.title.trim()}>Add Pillar</button>
+      <button type="submit" disabled={disabled || !form.title.trim()}>Add pillar</button>
     </form>
   );
 }
 
-function BriefInspector({ brief, onSaveBrief, onPublishBrief, onCreatePillar, onGenerateLayer1, generationControls }) {
+function BriefInspector({ brief, onSaveBrief, onPublishBrief, onCreatePillar, onGenerateLayer1, generationControls, locked, onUnlockLayer0 }) {
   const [form, setForm] = useState(brief || {});
 
   useEffect(() => setForm(brief || {}), [brief]);
@@ -509,16 +605,21 @@ function BriefInspector({ brief, onSaveBrief, onPublishBrief, onCreatePillar, on
 
   return (
     <div className="tree-edit-form">
-      <label>Product idea<textarea rows={5} value={form.product_idea || ""} onChange={(event) => update("product_idea", event.target.value)} /></label>
-      <label>Target users<textarea rows={3} value={form.target_users || ""} onChange={(event) => update("target_users", event.target.value)} /></label>
-      <label>Constraints<textarea rows={3} value={form.constraints || ""} onChange={(event) => update("constraints", event.target.value)} /></label>
-      <label>Known competitors<textarea rows={3} value={(form.known_competitors || []).join("\n")} onChange={(event) => update("known_competitors", event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))} /></label>
-      <label>Goals<textarea rows={3} value={(form.goals || []).join("\n")} onChange={(event) => update("goals", event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))} /></label>
-      <label>Preferred directions<textarea rows={3} value={(form.preferred_directions || []).join("\n")} onChange={(event) => update("preferred_directions", event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))} /></label>
-      <label>Rejected directions<textarea rows={3} value={(form.rejected_directions || []).join("\n")} onChange={(event) => update("rejected_directions", event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))} /></label>
-      <label>Notes<textarea rows={4} value={form.notes || ""} onChange={(event) => update("notes", event.target.value)} /></label>
+      {locked ? (
+        <div className="status-banner">
+          <strong>Layer 0 is locked.</strong> Unlock only if the product plan has changed enough to review downstream layers again.
+        </div>
+      ) : null}
+      <label>Product idea<textarea disabled={locked} rows={5} value={form.product_idea || ""} onChange={(event) => update("product_idea", event.target.value)} /></label>
+      <label>Target users<textarea disabled={locked} rows={3} value={form.target_users || ""} onChange={(event) => update("target_users", event.target.value)} /></label>
+      <label>Constraints<textarea disabled={locked} rows={3} value={form.constraints || ""} onChange={(event) => update("constraints", event.target.value)} /></label>
+      <label>Known competitors<textarea disabled={locked} rows={3} value={(form.known_competitors || []).join("\n")} onChange={(event) => update("known_competitors", event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))} /></label>
+      <label>Goals<textarea disabled={locked} rows={3} value={(form.goals || []).join("\n")} onChange={(event) => update("goals", event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))} /></label>
+      <label>Preferred directions<textarea disabled={locked} rows={3} value={(form.preferred_directions || []).join("\n")} onChange={(event) => update("preferred_directions", event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))} /></label>
+      <label>Rejected directions<textarea disabled={locked} rows={3} value={(form.rejected_directions || []).join("\n")} onChange={(event) => update("rejected_directions", event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))} /></label>
+      <label>Notes<textarea disabled={locked} rows={4} value={form.notes || ""} onChange={(event) => update("notes", event.target.value)} /></label>
       <div className="button-row">
-        <button type="button" onClick={() => onSaveBrief?.(form)}>Save Brief</button>
+        {locked ? <button type="button" onClick={onUnlockLayer0}>Unlock Layer 0</button> : <button type="button" onClick={() => onSaveBrief?.(form)}>Save brief</button>}
         {brief?.status !== "published" ? <button type="button" className="secondary-button" onClick={onPublishBrief}>Publish</button> : null}
         <button type="button" disabled={brief?.status !== "published"} onClick={onGenerateLayer1}>Broaden Layer 1</button>
       </div>
@@ -559,6 +660,8 @@ export function NodeDetail({
   onGenerateLayer1,
   onGenerateLayer2,
   generationControls,
+  layer0Locked,
+  onUnlockLayer0,
 }) {
   // Detail drawer for reviewing and lightly editing the selected tree node.
   const [title, setTitle] = useState(node?.title || "");
@@ -616,6 +719,8 @@ export function NodeDetail({
   }
 
   const detailRows = detailRowsForNode(node, parentNode);
+  const isLayer1Pillar = node.layer === 1 && node.node_type === "pillar";
+  const pillarReadyForLayer2 = isLayer1Pillar && ["kept", "prioritized"].includes(node.status);
 
   return (
     <section className="tree-detail">
@@ -638,13 +743,15 @@ export function NodeDetail({
             onCreatePillar={onCreatePillar}
             onGenerateLayer1={onGenerateLayer1}
             generationControls={generationControls}
+            locked={layer0Locked}
+            onUnlockLayer0={onUnlockLayer0}
           />
         </>
       ) : (
         <>
           <div className="tree-action-strip">
-            <button type="button" className="secondary-button" onClick={() => { setStatus("kept"); commitEdit({ title, description, status: "kept", priority }); }}>Keep</button>
-            <button type="button" className="secondary-button" onClick={() => { setStatus("cut"); commitEdit({ title, description, status: "cut", priority }); }}>Cut</button>
+            <button type="button" className="secondary-button" onClick={() => { setStatus("kept"); commitEdit({ title, description, status: "kept", priority }); }}>Accept</button>
+            <button type="button" className="secondary-button" onClick={() => { setStatus("cut"); commitEdit({ title, description, status: "cut", priority }); }}>Reject</button>
             <button type="button" className="secondary-button" onClick={() => { setStatus("merged"); commitEdit({ title, description, status: "merged", priority }); }}>Merge</button>
             <button type="button" className="secondary-button" onClick={() => { setStatus("prioritized"); commitEdit({ title, description, status: "prioritized", priority }); }}>Prioritize</button>
           </div>
@@ -657,6 +764,20 @@ export function NodeDetail({
               </div>
             ))}
           </div>
+
+          {isLayer1Pillar ? (
+            <div className={pillarReadyForLayer2 ? "layer1-next-step ready" : "layer1-next-step"}>
+              <div>
+                <strong>{pillarReadyForLayer2 ? "Ready for Layer 2 expansion" : "Review this pillar before expansion"}</strong>
+                <p className="muted">
+                  {pillarReadyForLayer2
+                    ? "Expand this pillar into concrete Layer 2 capabilities, or research it first if competitive evidence matters."
+                    : "Keep or prioritize the pillar when it belongs in the product tree. Cut or merge it if the scope is weak or duplicated."}
+                </p>
+              </div>
+              <span className={`status-pill ${node.status}`}>{node.status}</span>
+            </div>
+          ) : null}
 
           <div className="tree-edit-form">
             <label>
@@ -688,7 +809,7 @@ export function NodeDetail({
               <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={7} />
             </label>
             <div className="button-row">
-              <button type="button" onClick={() => commitEdit({ title, description, status, priority })}>Save Node</button>
+              <button type="button" onClick={() => commitEdit({ title, description, status, priority })}>Save {isLayer1Pillar ? "pillar" : "node"}</button>
               <button
                 type="button"
                 className="secondary-button"
@@ -705,9 +826,9 @@ export function NodeDetail({
           </div>
           {node.layer === 1 && ["kept", "prioritized"].includes(node.status) ? (
             <>
-              <div className="button-row">
-                <button type="button" onClick={() => onGenerateLayer2?.([node.id])}>Expand This Pillar</button>
-                {onResearchLayer1 ? <button type="button" className="secondary-button" onClick={() => onResearchLayer1([node.id])}>Research Pillar</button> : null}
+              <div className="button-row layer1-action-row">
+                <button type="button" onClick={() => onGenerateLayer2?.([node.id])}>Expand this pillar</button>
+                {onResearchLayer1 ? <button type="button" className="secondary-button" onClick={() => onResearchLayer1([node.id])}>Research pillar</button> : null}
                 <Layer2FeatureForm pillars={pillars} defaultOwnerId={node.id} onCreate={onCreateFeature} />
               </div>
               <details className="review-details">
@@ -769,4 +890,4 @@ export function NodeDetail({
 }
 
 
-export { DashboardStats, GraphToolbar, LayerRail, TreeCanvas };
+export { DashboardStats, GraphToolbar, LayerRail, MapOutline, TreeCanvas };

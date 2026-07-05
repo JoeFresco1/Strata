@@ -25,7 +25,7 @@ Strata is a local-first product discovery and feature-architecture platform. It 
 - Track ownership, aliases, relationships, scope contracts, coverage families, shared concerns, ambiguity, rejection memory, and competitor evidence.
 - Require human review for ambiguous, overlapping, or off-scope candidates.
 
-Layer 3 is the Capability Design Layer. It expands approved Layer 2 features into product-level definitions with behavior, configuration, relationships, risks, decisions, and downstream-readiness review while explicitly excluding implementation specs.
+Layer 3 is the Feature Expansion Layer. It expands approved Layer 2 features one step deeper into selectable subfeatures, configuration choices, validation rules, limits, dependencies, and overlap notes while explicitly excluding implementation specs.
 
 ## Core principles
 
