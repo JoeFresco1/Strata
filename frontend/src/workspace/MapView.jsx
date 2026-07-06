@@ -10,7 +10,6 @@ function chipClass(status) {
 export default function MapView({ snapshot, layerStatus, onNavigate }) {
   const pillars = layer1Pillars(snapshot);
   const featuresByPillar = layer2FeaturesByPillar(snapshot);
-  const expansions = snapshot?.layer3?.expansions || [];
   const rows = [
     {
       key: "layer0",
@@ -33,17 +32,6 @@ export default function MapView({ snapshot, layerStatus, onNavigate }) {
         label: feature.canonical_name,
         status: feature.status,
         tab: "layer2",
-      })),
-    },
-    {
-      key: "layer3",
-      title: "Layer 3",
-      body: "Feature expansion artifacts for approved Layer 2 features.",
-      chips: expansions.map((expansion) => ({
-        id: expansion.id,
-        label: expansion.feature_name,
-        status: expansion.review_state,
-        tab: "layer3",
       })),
     },
   ];

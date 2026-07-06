@@ -19,7 +19,6 @@ function nodeTabLabel(tab) {
   if (tab === "layer0") return "Layer 0";
   if (tab === "layer1") return "Layer 1";
   if (tab === "layer2") return "Layer 2";
-  if (tab === "layer3") return "Layer 3";
   if (tab === "export") return "Export";
   return "Workspace";
 }

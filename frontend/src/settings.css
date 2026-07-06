@@ -119,6 +119,7 @@
   grid-template-columns: 1fr;
 }
 
+.guide-tab-shell,
 .guide-map-panel,
 .guide-router,
 .guide-utilities,
@@ -126,6 +127,14 @@
 .guide-flow-item,
 .guide-flow-copy,
 .guide-group-header,
+.guide-tabs,
+.guide-operational,
+.guide-operational-list,
+.guide-operational-layer,
+.guide-operational-visual,
+.guide-operational-step,
+.guide-operational-details,
+.guide-operational-detail,
 .guide-route-list,
 .guide-route-row,
 .guide-utility-grid,
@@ -165,9 +174,200 @@
   gap: 0.85rem;
 }
 
+.settings-subnav {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  gap: 0.45rem;
+  padding: 0.35rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.settings-subnav button {
+  flex: 0 0 auto;
+  padding: 0.58rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+}
+
+.settings-subnav button.active {
+  border-color: var(--border-strong);
+  background: var(--panel);
+  box-shadow: 0 6px 14px rgba(23, 32, 38, 0.08);
+}
+
+.settings-section-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
 .settings-section-head h3,
 .settings-section-head p {
   margin: 0;
+}
+
+.settings-custom-state,
+.settings-sticky-save,
+.assignment-stage-row th > div,
+.assignment-task-name,
+.assignment-parallelism,
+.assignment-chip-picker {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.settings-custom-state {
+  justify-content: flex-end;
+}
+
+.settings-custom-state span {
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  background: var(--warning-bg);
+  color: var(--warning-ink);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.profile-row-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.settings-profile-row {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.settings-profile-row summary {
+  display: grid;
+  grid-template-columns: auto minmax(9rem, 0.6fr) minmax(6rem, 0.35fr) minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.75rem 0.85rem;
+  cursor: pointer;
+}
+
+.settings-profile-row summary span:last-child {
+  overflow-wrap: anywhere;
+}
+
+.settings-profile-fields,
+.settings-profile-row > .preset-grid,
+.settings-profile-row > button {
+  margin: 0.75rem;
+}
+
+.settings-assignment-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.settings-assignment-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+}
+
+.settings-assignment-table th,
+.settings-assignment-table td {
+  padding: 0.72rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.settings-assignment-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.assignment-stage-row th {
+  background: color-mix(in srgb, var(--accent-soft) 42%, var(--panel));
+}
+
+.assignment-stage-row label {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.assignment-stage-row select,
+.assignment-stage-row input {
+  width: auto;
+  min-width: 6.4rem;
+  margin: 0;
+}
+
+.assignment-parallelism input {
+  min-width: 4.2rem;
+  max-width: 5.2rem;
+}
+
+.assignment-chip {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  font-size: 0.86rem;
+}
+
+.assignment-chip.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.assignment-chip input {
+  width: auto;
+  margin: 0;
+}
+
+.compact-block {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: 0;
+}
+
+.settings-sticky-save {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  justify-content: space-between;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  box-shadow: 0 -10px 24px rgba(23, 32, 38, 0.08);
+  backdrop-filter: blur(8px);
+}
+
+.settings-sticky-save span {
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 @media (max-width: 900px) {
@@ -179,6 +379,17 @@
 
 @media (max-width: 720px) {
   .settings-save-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-section-head,
+  .settings-profile-row summary {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-custom-state,
+  .settings-sticky-save {
     align-items: stretch;
     flex-direction: column;
   }
@@ -201,6 +412,38 @@
 .guide-group-header h3 {
   margin: 0;
   font-size: 1.2rem;
+}
+
+.guide-tab-shell {
+  gap: 1.1rem;
+}
+
+.guide-tabs {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.35rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-alt);
+}
+
+.guide-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: max-content;
+  padding: 0.62rem 0.8rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+}
+
+.guide-tabs button.active {
+  border-color: var(--border-strong);
+  background: var(--panel);
+  box-shadow: 0 6px 14px rgba(23, 32, 38, 0.08);
 }
 
 .guide-flow {
@@ -302,6 +545,115 @@
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel-soft);
+}
+
+.guide-operational {
+  gap: 1rem;
+}
+
+.guide-operational-intro,
+.guide-operational-note {
+  gap: 0.75rem;
+}
+
+.guide-operational-intro p,
+.guide-operational-note p {
+  margin: 0;
+}
+
+.guide-operational-list {
+  gap: 1rem;
+}
+
+.guide-operational-layer {
+  gap: 1rem;
+}
+
+.guide-operational-visual {
+  display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+  overflow-x: auto;
+  padding-bottom: 0.2rem;
+}
+
+.guide-operational-step {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+}
+
+.guide-operational-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.6rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+  background: linear-gradient(180deg, rgba(36, 95, 115, 0.08) 0%, rgba(255, 255, 255, 0.96) 100%);
+  white-space: nowrap;
+}
+
+.guide-operational-index {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.45rem;
+  height: 1.45rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.guide-operational-connector {
+  color: var(--muted);
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.guide-operational-details {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.guide-operational-details.compact {
+  grid-template-columns: 1fr;
+}
+
+.guide-operational-detail {
+  gap: 0.35rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-soft);
+}
+
+.guide-operational-detail p {
+  margin: 0;
+}
+
+.guide-operational.compact .guide-operational-visual {
+  flex-direction: column;
+  overflow: visible;
+}
+
+.guide-operational.compact .guide-operational-step {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.guide-operational.compact .guide-operational-node {
+  width: 100%;
+  white-space: normal;
+}
+
+.guide-operational.compact .guide-operational-connector {
+  align-self: center;
+  transform: rotate(90deg);
 }
 
 .modal-header h2,
@@ -661,4 +1013,3 @@
   line-height: 1.45;
   background: #f8fbfc;
 }
-

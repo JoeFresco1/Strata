@@ -217,9 +217,7 @@
 
 .layer0-input-pane,
 .layer0-preview-pane,
-.brief-preview-list,
-.layer3-expansion-detail,
-.layer3-option-group {
+.brief-preview-list {
   display: grid;
   gap: 0.75rem;
   min-width: 0;
@@ -382,12 +380,6 @@
 .success {
   background: var(--success-bg);
   color: var(--success-ink);
-}
-
-.layer3-option-list {
-  display: flex;
-  gap: 0.45rem;
-  flex-wrap: wrap;
 }
 
 .tree-graph-view {

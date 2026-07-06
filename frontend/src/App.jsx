@@ -263,9 +263,10 @@ export default function App() {
     setActiveTab("Workspace");
     setActiveProjectId(payload.id);
   }
-  async function handleSaveModelSettings() {
+  async function handleSaveModelSettings(nextSettings = null) {
     // Persists reusable defaults for future projects and runtime routing.
-    if (!appSettings) {
+    const settingsPayload = nextSettings || appSettings;
+    if (!settingsPayload) {
       return;
     }
     setError("");
@@ -273,7 +274,7 @@ export default function App() {
     try {
       const payload = await apiFetch("/config/models", {
         method: "PATCH",
-        body: JSON.stringify(appSettings),
+        body: JSON.stringify(settingsPayload),
       });
       setConfig(payload);
       setAppSettings(payload);
@@ -611,39 +612,6 @@ export default function App() {
     }
   }
 
-  async function handleGenerateLayer3(featureIds = []) {
-    setError("");
-    try {
-      const response = await apiFetch(`/projects/${activeProjectId}/generate/layer3`, {
-        method: "POST",
-        body: JSON.stringify({
-          feature_ids: featureIds,
-          thinking_enabled: false,
-        }),
-      });
-      applySnapshot(response.snapshot);
-      setStatusMessage("Layer 3 generation queued.");
-    } catch (generationError) {
-      setError(generationError.message);
-      throw generationError;
-    }
-  }
-
-  async function handleLayer3ExpansionReview(expansionId, action) {
-    setError("");
-    try {
-      const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}/review`, {
-        method: "POST",
-        body: JSON.stringify({ action }),
-      });
-      applySnapshot(response.snapshot);
-      setStatusMessage(`Layer 3 expansion marked ${action}.`);
-    } catch (reviewError) {
-      setError(reviewError.message);
-      throw reviewError;
-    }
-  }
-
   async function handleCompetitiveSettings(payload) {
     // Saves the competitor set used by the Layer 2 matrix.
     setError("");
@@ -941,13 +909,11 @@ export default function App() {
                   handleExport={handleExport}
                   handleGenerateLayer1={handleGenerateLayer1}
                   handleGenerateLayer2={handleGenerateLayer2}
-                  handleGenerateLayer3={handleGenerateLayer3}
                   handleLayer1PillarCreate={handleLayer1PillarCreate}
                   handleLayer2Export={handleLayer2Export}
                   handleLayer2FeatureCreate={handleLayer2FeatureCreate}
                   handleLayer2Research={handleLayer2Research}
                   handleLayer2Review={handleLayer2Review}
-                  handleLayer3ExpansionReview={handleLayer3ExpansionReview}
                   handleNodeSave={handleNodeSave}
                   handleProjectArchiveExport={handleProjectArchiveExport}
                   handlePlanChat={handlePlanChat}

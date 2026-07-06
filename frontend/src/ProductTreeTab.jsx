@@ -3,7 +3,6 @@ import ExportView from "./workspace/ExportView";
 import Layer0View from "./workspace/Layer0View";
 import Layer1View from "./workspace/Layer1View";
 import Layer2View from "./workspace/Layer2View";
-import Layer3View from "./workspace/Layer3View";
 import LayerTabBar from "./workspace/LayerTabBar";
 import ProgressTrack from "./workspace/ProgressTrack";
 import TreeGraphView from "./workspace/TreeGraphView";
@@ -28,13 +27,11 @@ export default function ProductTreeTab({
   handleBriefSave,
   handleGenerateLayer1,
   handleGenerateLayer2,
-  handleGenerateLayer3,
   handleLayer1PillarCreate,
   handleLayer2FeatureCreate,
   handleLayer2Export,
   handleLayer2Research,
   handleLayer2Review,
-  handleLayer3ExpansionReview,
   handleNodeSave,
   handleProjectArchiveExport,
   handlePlanChat,
@@ -99,7 +96,6 @@ export default function ProductTreeTab({
   const layer1ResearchJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer1_pillar", "layer1"], "layer1"));
   const layer2GenerationJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer2_generation", "generate_layer2"], "layer2"));
   const layer2ResearchJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer2_feature", "layer2"], "layer2"));
-  const layer3GenerationJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer3_generation", "generate_layer3"], "layer3"));
 
   function renderActiveTab() {
     if (activeWorkspaceTab === "layer0") {
@@ -138,16 +134,6 @@ export default function ProductTreeTab({
           onResearch={handleLayer2Research}
           generationJobState={layer2GenerationJob}
           researchJobState={layer2ResearchJob}
-        />
-      );
-    }
-    if (activeWorkspaceTab === "layer3") {
-      return (
-        <Layer3View
-          snapshot={snapshotWithJobs}
-          onGenerate={handleGenerateLayer3}
-          onReviewExpansion={handleLayer3ExpansionReview}
-          generationJobState={layer3GenerationJob}
         />
       );
     }

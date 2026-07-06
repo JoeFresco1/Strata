@@ -13,7 +13,7 @@ export default function ExportView({
         <div className="project-tool-section-header">
           <div>
             <h3>Exports and handoff</h3>
-            <p className="muted">Create portable outputs once Layer 3 is approved and the project is ready to hand off.</p>
+            <p className="muted">Create portable outputs once the feature set is reviewed and ready to hand off.</p>
           </div>
           {exportCount ? <span className="project-tool-inline-meta">{exportCount} saved path{exportCount === 1 ? "" : "s"}</span> : null}
         </div>
@@ -38,7 +38,7 @@ export default function ExportView({
         ) : (
           <div className="panel guided-empty-state">
             <strong>No exports created yet.</strong>
-            <p className="muted">Use one of the export actions above after you finish the Layer 3 review pass.</p>
+            <p className="muted">Use one of the export actions above after you finish the Layer 2 review pass.</p>
           </div>
         )}
         {layer2Graph?.review_open ? (

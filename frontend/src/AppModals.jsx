@@ -1,6 +1,7 @@
 import PromptCatalogEditor from "./PromptCatalogEditor";
+import GuideModal from "./GuideModal";
 import { AppSettingsModal } from "./ModelSettingsPanel";
-import { CreateProjectModal, EditProjectModal, GuideModal, ImportProjectModal, ModalFrame } from "./ProjectShell";
+import { CreateProjectModal, EditProjectModal, ImportProjectModal, ModalFrame } from "./ProjectShell";
 
 export default function AppModals({
   appSettings,

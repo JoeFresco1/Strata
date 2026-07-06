@@ -8,7 +8,6 @@ export const LAYER_TABS = [
   { id: "layer0", label: "Layer 0", statusKey: "layer0" },
   { id: "layer1", label: "Layer 1", statusKey: "layer1" },
   { id: "layer2", label: "Layer 2", statusKey: "layer2" },
-  { id: "layer3", label: "Layer 3", statusKey: "layer3" },
   { id: "export", label: "Export", statusKey: "export" },
 ];
 
@@ -16,7 +15,6 @@ export const PROGRESS_STEPS = [
   { id: "idea", label: "Idea", statusKey: "layer0" },
   { id: "pillars", label: "Pillars", statusKey: "layer1" },
   { id: "features", label: "Features", statusKey: "layer2" },
-  { id: "details", label: "Details", statusKey: "layer3" },
   { id: "export", label: "Export", statusKey: "export" },
 ];
 
@@ -42,10 +40,6 @@ function layer2Features(snapshot) {
   return snapshot?.layer2_graph?.workbench?.rows || snapshot?.layer2_graph?.features || [];
 }
 
-function layer3Expansions(snapshot) {
-  return snapshot?.layer3?.expansions || [];
-}
-
 function keptPillars(snapshot) {
   return (snapshot?.nodes || []).filter((node) => node.layer === 1 && node.node_type === "pillar" && ["kept", "prioritized"].includes(node.status));
 }
@@ -64,11 +58,9 @@ export function getLayerStatus(snapshot) {
   const kept = keptPillars(snapshot);
   const features = layer2Features(snapshot);
   const approvedFeatures = approvedLayer2Features(snapshot);
-  const expansions = layer3Expansions(snapshot);
   const layer0Complete = brief?.status === "published";
   const layer1Unlocked = layer0Complete;
   const layer2Unlocked = layer1Unlocked && kept.length > 0;
-  const layer3Unlocked = layer2Unlocked && approvedFeatures.length > 0;
   const allPillarsReviewed = pillars.length > 0 && reviewedPillars(snapshot).length === pillars.length;
   const allFeaturesReviewed = features.length > 0 && features.every((feature) => !["candidate", "needs_review"].includes(feature.status));
 
@@ -90,21 +82,17 @@ export function getLayerStatus(snapshot) {
       locked: !layer2Unlocked,
       label: !layer2Unlocked ? "Keep Layer 1 pillars to unlock" : allFeaturesReviewed ? "Reviewed" : "Review features",
     },
-    layer3: {
-      status: !layer3Unlocked ? "locked" : expansions.length ? "active" : "needs_review",
-      locked: !layer3Unlocked,
-      label: !layer3Unlocked ? "Approve Layer 2 features to unlock" : expansions.length ? "Expansion ready" : "Generate details",
-    },
     export: {
-      status: expansions.some((item) => item.review_state === "approved") ? "active" : "locked",
-      locked: !expansions.some((item) => item.review_state === "approved"),
-      label: "Export",
+      status: !layer2Unlocked ? "locked" : approvedFeatures.length ? "active" : "needs_review",
+      locked: !layer2Unlocked,
+      label: !layer2Unlocked ? "Review earlier layers first" : approvedFeatures.length ? "Ready" : "Approve features first",
     },
   };
 }
 
 export function normalizeWorkspaceTab(tabId) {
   if (!tabId || tabId === "map" || tabId === "overview") return "tree";
+  if (tabId === "layer3") return "layer2";
   return tabId;
 }
 
@@ -117,13 +105,6 @@ export function buildTreeFromSnapshot(snapshot) {
   const brief = snapshot?.brief || {};
   const pillars = layer1Pillars(snapshot);
   const featuresByPillar = layer2FeaturesByPillar(snapshot);
-  const expansionsByFeature = new Map();
-  layer3Expansions(snapshot).forEach((expansion) => {
-    const featureId = expansion.feature_id || expansion.provenance?.source_layer2_feature_id;
-    if (!featureId) return;
-    expansionsByFeature.set(featureId, [...(expansionsByFeature.get(featureId) || []), expansion]);
-  });
-
   return treeNode({
     id: "layer0-root",
     name: project.name || brief.product_idea || "Project",
@@ -145,15 +126,7 @@ export function buildTreeFromSnapshot(snapshot) {
         source: "layer2",
         tab: "layer2",
         entityType: "feature",
-        children: (expansionsByFeature.get(feature.id) || []).map((expansion) => treeNode({
-          id: expansion.id,
-          name: expansion.feature_name,
-          status: expansion.review_state || "draft",
-          source: "layer3",
-          tab: "layer3",
-          entityType: "expansion",
-          children: [],
-        })),
+        children: [],
       })),
     })),
   });
@@ -172,10 +145,6 @@ export function layer2FeaturesByPillar(snapshot) {
     grouped.set(ownerId, [...(grouped.get(ownerId) || []), feature]);
   });
   return grouped;
-}
-
-export function getLayer3Expansions(snapshot) {
-  return layer3Expansions(snapshot);
 }
 
 export function getLayerJobState(snapshot, matcher) {
