@@ -33,10 +33,11 @@ Layer2ReviewActionType = Literal[
     "manual_add",
 ]
 ResearchJobStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+OverlapResolutionAction = Literal["accept_merge", "link", "dismiss", "keep_separate", "needs_followup"]
 ResearchJobType = Literal["layer0_competitors", "layer1_pillar_competitors", "layer2_feature_competitors"]
 ResearchScope = Literal["layer0", "layer1", "layer2"]
 PlatformJobStatus = Literal["queued", "running", "completed", "failed", "cancelled", "interrupted"]
-PlatformJobKind = Literal["research", "generation", "assistant", "replay", "audit", "diagnostics"]
+PlatformJobKind = Literal["research", "generation", "assistant", "replay", "audit", "diagnostics", "critic"]
 CoverageStatus = Literal["supported", "partially_supported", "unclear", "not_evident"]
 AdoptionLevel = Literal["common", "emerging", "rare", "unclear"]
 CoverageMatrixStatus = Literal["missing", "partial", "covered", "excluded"]
@@ -69,6 +70,17 @@ Layer3ConfigurationKind = Literal[
     "content",
     "integration",
     "other",
+]
+OverlapLayer = Literal["layer1", "layer2"]
+OverlapVerdictRelation = Literal[
+    "same_capability",
+    "broader",
+    "narrower",
+    "merge",
+    "link",
+    "distinct",
+    "fake_novelty",
+    "needs_review",
 ]
 
 
@@ -524,6 +536,67 @@ class PlatformJob(BaseModel):
     started_at: datetime | None = None
     updated_at: datetime
     completed_at: datetime | None = None
+
+
+class OverlapVerdict(BaseModel):
+    id: str
+    project_id: str
+    job_id: str
+    layer: OverlapLayer
+    target_id: str
+    neighbor_id: str
+    relation: OverlapVerdictRelation
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+    rationale: str = ""
+    critic_source: str = "overlap_critic"
+    target_hash: str = ""
+    neighbor_hash: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class OverlapVerdictResolution(BaseModel):
+    id: str
+    project_id: str
+    verdict_id: str
+    layer: OverlapLayer
+    target_id: str
+    neighbor_id: str
+    action: OverlapResolutionAction
+    note: str = ""
+    resolved_by: str = "user"
+    target_hash: str = ""
+    neighbor_hash: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class OverlapClusterRecord(BaseModel):
+    id: str
+    project_id: str
+    job_id: str
+    layer: OverlapLayer
+    cluster_id: str
+    member_ids: list[str] = Field(default_factory=list)
+    summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class OverlapJobItem(BaseModel):
+    id: str
+    project_id: str
+    job_id: str
+    layer: OverlapLayer
+    item_id: str
+    item_hash: str = ""
+    status: Literal["pending", "running", "completed", "failed", "skipped"] = "pending"
+    error: str = ""
+    created_at: datetime
+    updated_at: datetime
 
 
 class ResearchSource(BaseModel):

@@ -28,6 +28,8 @@ class PlatformJobService:
         "layer1_generation",
         "layer2_generation",
         "layer3_generation",
+        "layer1_overlap_critic",
+        "layer2_overlap_critic",
         "telemetry_replay",
         "diagnostics_export",
         "assistant_message",
@@ -125,6 +127,8 @@ class PlatformJobService:
             "layer1_generation": self._run_layer1_generation,
             "layer2_generation": self._run_layer2_generation,
             "layer3_generation": self._run_layer3_generation,
+            "layer1_overlap_critic": self._run_overlap_critic,
+            "layer2_overlap_critic": self._run_overlap_critic,
             "telemetry_replay": self._run_telemetry_replay,
             "diagnostics_export": self._run_diagnostics_export,
             "assistant_message": self._run_assistant_message,
@@ -207,6 +211,14 @@ class PlatformJobService:
             thinking_enabled=bool(payload.get("thinking_enabled")),
         )
         return {"created": [expansion.model_dump(mode="json") for expansion in created]}
+
+    def _run_overlap_critic(self, job: PlatformJob) -> dict[str, Any]:
+        if self.services.overlap_service is None:
+            raise ValueError("Overlap critic service is not available.")
+        return self.services.overlap_service.run(
+            job,
+            lambda step, progress: self._checkpoint(job.id, step, progress),
+        )
 
     def _run_telemetry_replay(self, job: PlatformJob) -> dict[str, Any]:
         call_id = str(job.request_payload.get("call_id") or job.scope_id or "")

@@ -144,7 +144,7 @@ export function ProjectHub({
               <div className="project-card-meta">
                 <span><strong>Updated</strong> {formatProjectCardDate(project.updated_at || project.brief_updated_at || project.created_at)}</span>
                 <span><strong>Opened</strong> {formatProjectCardDate(project.last_opened_at)}</span>
-                <span><strong>Tree</strong> {project.node_count || 0} nodes | {project.pillar_count || 0} pillars</span>
+                <span><strong>Map</strong> {project.node_count || 0} nodes | {project.pillar_count || 0} pillars</span>
                 {project.source_project_name ? <span>Cloned from {project.source_project_name}</span> : null}
                 <span>Project {project.id.slice(0, 8)}</span>
               </div>

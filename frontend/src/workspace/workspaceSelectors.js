@@ -4,18 +4,12 @@ export const WORKSPACE_COMPACT_BREAKPOINT = 860;
 export const WORKSPACE_COMPACT_MEDIA = `(max-width: ${WORKSPACE_COMPACT_BREAKPOINT}px)`;
 
 export const LAYER_TABS = [
-  { id: "tree", label: "Tree", statusKey: "tree" },
-  { id: "layer0", label: "Layer 0", statusKey: "layer0" },
-  { id: "layer1", label: "Layer 1", statusKey: "layer1" },
-  { id: "layer2", label: "Layer 2", statusKey: "layer2" },
-  { id: "export", label: "Export", statusKey: "export" },
-];
-
-export const PROGRESS_STEPS = [
-  { id: "idea", label: "Idea", statusKey: "layer0" },
-  { id: "pillars", label: "Pillars", statusKey: "layer1" },
-  { id: "features", label: "Features", statusKey: "layer2" },
-  { id: "export", label: "Export", statusKey: "export" },
+  { id: "map", label: "Map", badge: "", statusKey: "map" },
+  { id: "layer0", label: "Product Idea", badge: "L0", statusKey: "layer0" },
+  { id: "layer1", label: "Pillars", badge: "L1", statusKey: "layer1" },
+  { id: "layer2", label: "Features", badge: "L2", statusKey: "layer2" },
+  { id: "layer3", label: "Sub-features", badge: "L3", statusKey: "layer3" },
+  { id: "export", label: "Export", badge: "", statusKey: "export" },
 ];
 
 export function useIsCompactWorkspace() {
@@ -58,15 +52,21 @@ export function getLayerStatus(snapshot) {
   const kept = keptPillars(snapshot);
   const features = layer2Features(snapshot);
   const approvedFeatures = approvedLayer2Features(snapshot);
+  const expansions = snapshot?.layer3?.expansions || [];
+  const approvedExpansions = expansions.filter((expansion) => expansion.review_state === "approved");
   const layer0Complete = brief?.status === "published";
   const layer1Unlocked = layer0Complete;
   const layer2Unlocked = layer1Unlocked && kept.length > 0;
+  const layer3Unlocked = layer2Unlocked && approvedFeatures.length > 0;
   const allPillarsReviewed = pillars.length > 0 && reviewedPillars(snapshot).length === pillars.length;
   const allFeaturesReviewed = features.length > 0 && features.every((feature) => !["candidate", "needs_review"].includes(feature.status));
+  const allApprovedFeaturesExpanded = approvedFeatures.length > 0 && approvedFeatures.every((feature) => (
+    expansions.some((expansion) => expansion.feature_id === feature.id && expansion.review_state !== "rejected")
+  ));
 
   // Future v2: once upstream edits are allowed after downstream work exists, keep unlocked layers accessible and mark downstream layers needs_review instead of relocking them.
   return {
-    tree: { status: "active", locked: false, label: "Graph" },
+    map: { status: "active", locked: false, label: "Map" },
     layer0: {
       status: layer0Complete ? "complete" : "active",
       locked: false,
@@ -82,22 +82,129 @@ export function getLayerStatus(snapshot) {
       locked: !layer2Unlocked,
       label: !layer2Unlocked ? "Keep Layer 1 pillars to unlock" : allFeaturesReviewed ? "Reviewed" : "Review features",
     },
+    layer3: {
+      status: !layer3Unlocked ? "locked" : allApprovedFeaturesExpanded ? "active" : "needs_review",
+      locked: !layer3Unlocked,
+      label: !layer3Unlocked ? "Approve Layer 2 features to unlock" : allApprovedFeaturesExpanded ? "Feature expansions ready" : "Generate expansions",
+    },
     export: {
-      status: !layer2Unlocked ? "locked" : approvedFeatures.length ? "active" : "needs_review",
+      status: !layer2Unlocked ? "locked" : approvedExpansions.length ? "active" : "needs_review",
       locked: !layer2Unlocked,
-      label: !layer2Unlocked ? "Review earlier layers first" : approvedFeatures.length ? "Ready" : "Approve features first",
+      label: !layer2Unlocked ? "Review earlier layers first" : approvedExpansions.length ? "Layer 3 ready" : approvedFeatures.length ? "Approve expansions for Layer 3 handoff" : "Approve features first",
     },
   };
 }
 
 export function normalizeWorkspaceTab(tabId) {
-  if (!tabId || tabId === "map" || tabId === "overview") return "tree";
-  if (tabId === "layer3") return "layer2";
+  if (!tabId || tabId === "tree" || tabId === "map" || tabId === "overview") return "map";
   return tabId;
 }
 
-function treeNode({ id, name, status, source, tab, entityType, children = [] }) {
-  return { id, name, status, source, tab, entityType, children };
+function scoreNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : null;
+}
+
+function firstScore(...values) {
+  for (const value of values) {
+    const score = scoreNumber(value);
+    if (score !== null) return score;
+  }
+  return null;
+}
+
+function pillarScores(pillar) {
+  const payload = pillar.json_payload || {};
+  const assessment = payload.pillar_assessment || {};
+  const profile = payload.implementation_profile || {};
+  return {
+    strategic: firstScore(assessment.strategic_value_score, payload.strategic_value_score, profile.indexed_score),
+    pillarFit: firstScore(assessment.pillar_quality_score, payload.pillar_quality_score),
+    distinctiveness: firstScore(assessment.distinctiveness_score, payload.distinctiveness_score),
+    competitorCoverage: firstScore(profile.indexed_score, payload.competitor_coverage_score),
+    implementationLeakage: firstScore(profile.indexed_score),
+  };
+}
+
+function featureScores(feature) {
+  return {
+    strategic: scoreNumber(feature.strategic_value_score),
+    pillarFit: scoreNumber(feature.pillar_fit_score),
+    distinctiveness: scoreNumber(feature.distinctiveness_score),
+    competitorCoverage: scoreNumber(feature.competitor_coverage_score),
+    implementationLeakage: scoreNumber(feature.implementation_leakage_score),
+  };
+}
+
+function firstText(...values) {
+  return values.find((value) => typeof value === "string" && value.trim()) || "";
+}
+
+function firstValue(...values) {
+  return values.find((value) => value !== null && value !== undefined && value !== "") || null;
+}
+
+function treeNode({
+  id,
+  name,
+  status,
+  source,
+  tab,
+  entityType,
+  pillarId = "",
+  pillarName = "",
+  layer = 0,
+  layerLabel = "",
+  parentId = "",
+  parentName = "",
+  parentTab = "",
+  breadcrumb = [],
+  description = "",
+  reviewInfo = "",
+  updatedAt = null,
+  featureId = "",
+  scores = {},
+  searchParts = [],
+  children = [],
+}) {
+  const resolvedBreadcrumb = breadcrumb.length ? breadcrumb : [name].filter(Boolean);
+  const searchText = [
+    name,
+    status,
+    source,
+    tab,
+    entityType,
+    layerLabel,
+    pillarName,
+    parentName,
+    description,
+    reviewInfo,
+    ...resolvedBreadcrumb,
+    ...searchParts,
+  ].filter(Boolean).join(" ").toLowerCase();
+  return {
+    id,
+    name,
+    status,
+    source,
+    tab,
+    entityType,
+    pillarId,
+    pillarName,
+    layer,
+    layerLabel: layerLabel || `L${layer}`,
+    parentId,
+    parentName,
+    parentTab,
+    breadcrumb: resolvedBreadcrumb,
+    description,
+    reviewInfo,
+    updatedAt,
+    featureId,
+    scores,
+    searchText,
+    children,
+  };
 }
 
 export function buildTreeFromSnapshot(snapshot) {
@@ -105,6 +212,10 @@ export function buildTreeFromSnapshot(snapshot) {
   const brief = snapshot?.brief || {};
   const pillars = layer1Pillars(snapshot);
   const featuresByPillar = layer2FeaturesByPillar(snapshot);
+  const expansionsByFeatureId = new Map();
+  (snapshot?.layer3?.expansions || []).forEach((expansion) => {
+    expansionsByFeatureId.set(expansion.feature_id, expansion);
+  });
   return treeNode({
     id: "layer0-root",
     name: project.name || brief.product_idea || "Project",
@@ -112,6 +223,18 @@ export function buildTreeFromSnapshot(snapshot) {
     source: "layer0",
     tab: "layer0",
     entityType: "brief",
+    pillarId: "",
+    layer: 0,
+    layerLabel: "L0",
+    parentId: "",
+    parentName: "",
+    parentTab: "",
+    breadcrumb: [project.name || brief.product_idea || "Project"],
+    description: firstText(brief.product_idea, brief.goals, brief.target_users, project.description),
+    reviewInfo: firstText(brief.research_summary, brief.competitive_summary),
+    updatedAt: firstValue(brief.updated_at, project.updated_at, project.created_at),
+    scores: {},
+    searchParts: [brief.product_idea, brief.target_users, brief.goals],
     children: pillars.map((pillar) => treeNode({
       id: pillar.id,
       name: pillar.title,
@@ -119,6 +242,19 @@ export function buildTreeFromSnapshot(snapshot) {
       source: "layer1",
       tab: "layer1",
       entityType: "pillar",
+      pillarId: pillar.id,
+      pillarName: pillar.title,
+      layer: 1,
+      layerLabel: "L1",
+      parentId: "layer0-root",
+      parentName: project.name || brief.product_idea || "Project",
+      parentTab: "layer0",
+      breadcrumb: [project.name || brief.product_idea || "Project", pillar.title],
+      description: firstText(pillar.description, pillar.source, pillar.json_payload?.summary),
+      reviewInfo: firstText(pillar.review_note, pillar.json_payload?.review_note, pillar.json_payload?.pillar_assessment?.rationale),
+      updatedAt: firstValue(pillar.updated_at, pillar.created_at),
+      scores: pillarScores(pillar),
+      searchParts: [pillar.description, pillar.source, pillar.json_payload?.canonical_family],
       children: (featuresByPillar.get(pillar.id) || []).map((feature) => treeNode({
         id: feature.id,
         name: feature.canonical_name,
@@ -126,7 +262,48 @@ export function buildTreeFromSnapshot(snapshot) {
         source: "layer2",
         tab: "layer2",
         entityType: "feature",
-        children: [],
+        pillarId: pillar.id,
+        pillarName: pillar.title,
+        layer: 2,
+        layerLabel: "L2",
+        parentId: pillar.id,
+        parentName: pillar.title,
+        parentTab: "layer1",
+        breadcrumb: [project.name || brief.product_idea || "Project", pillar.title, feature.canonical_name],
+        description: firstText(feature.description, feature.job_story, feature.user_problem, feature.rationale),
+        reviewInfo: firstText(feature.review_note, feature.research_summary, feature.evidence_summary),
+        updatedAt: firstValue(feature.updated_at, feature.created_at, feature.generated_at),
+        featureId: feature.id,
+        scores: featureScores(feature),
+        searchParts: [feature.description, feature.feature_type, feature.granularity_class, pillar.title],
+        children: expansionsByFeatureId.has(feature.id) ? [treeNode({
+          id: expansionsByFeatureId.get(feature.id).id,
+          name: expansionsByFeatureId.get(feature.id).title || `${feature.canonical_name} expansion`,
+          status: expansionsByFeatureId.get(feature.id).review_state || "draft",
+          source: "layer3",
+          tab: "layer3",
+          entityType: "expansion",
+          pillarId: pillar.id,
+          pillarName: pillar.title,
+          layer: 3,
+          layerLabel: "L3",
+          parentId: feature.id,
+          parentName: feature.canonical_name,
+          parentTab: "layer2",
+          breadcrumb: [project.name || brief.product_idea || "Project", pillar.title, feature.canonical_name, expansionsByFeatureId.get(feature.id).title || "Expansion"],
+          description: firstText(
+            expansionsByFeatureId.get(feature.id).narrative,
+            expansionsByFeatureId.get(feature.id).description,
+            expansionsByFeatureId.get(feature.id).intent,
+            expansionsByFeatureId.get(feature.id).summary,
+          ),
+          reviewInfo: firstText(expansionsByFeatureId.get(feature.id).review_note, expansionsByFeatureId.get(feature.id).decision_note),
+          updatedAt: firstValue(expansionsByFeatureId.get(feature.id).updated_at, expansionsByFeatureId.get(feature.id).created_at),
+          featureId: feature.id,
+          scores: {},
+          searchParts: [feature.canonical_name, pillar.title],
+          children: [],
+        })] : [],
       })),
     })),
   });
@@ -149,8 +326,8 @@ export function layer2FeaturesByPillar(snapshot) {
 
 export function getLayerJobState(snapshot, matcher) {
   const jobs = [
-    ...(snapshot?.research_jobs || []).map((job) => ({ ...job, workflow: job.job_type || job.workflow || job.scope })),
     ...(snapshot?.platform_jobs || []),
+    ...(snapshot?.research_jobs || []).map((job) => ({ ...job, workflow: job.job_type || job.workflow || job.scope })),
   ].filter(matcher);
   const active = jobs.find((job) => ["queued", "running"].includes(job.status));
   if (active) return { state: "running", job: active, jobs };
@@ -160,5 +337,27 @@ export function getLayerJobState(snapshot, matcher) {
 }
 
 export function statusLabel(status) {
-  return status.replaceAll("_", " ");
+  const labels = {
+    active: "Draft",
+    approved: "Approved",
+    candidate: "Generated",
+    complete: "Approved",
+    cut: "Rejected",
+    draft: "Draft",
+    exclude: "Rejected",
+    generated: "Generated",
+    include: "Kept",
+    kept: "Kept",
+    locked: "Needs review",
+    merged: "Kept",
+    needs_review: "Needs review",
+    not_generated: "Draft",
+    prioritized: "Kept",
+    published: "Published",
+    rejected: "Rejected",
+    reviewed: "Approved",
+    undecided: "Needs review",
+  };
+  const key = String(status || "draft").toLowerCase();
+  return labels[key] || key.replaceAll("_", " ").replace(/\b\w/g, (match) => match.toUpperCase());
 }

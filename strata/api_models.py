@@ -450,6 +450,12 @@ class AssistantActionDecisionRequest(BaseModel):
     decision: Literal["apply", "reject"]
 
 
+class OverlapVerdictResolutionRequest(BaseModel):
+    action: Literal["accept_merge", "link", "dismiss", "keep_separate", "needs_followup"]
+    note: str = ""
+    resolved_by: str = "user"
+
+
 class AppSnapshotResponse(BaseModel):
     project: dict[str, Any]
     brief: dict[str, Any] | None = None
@@ -463,6 +469,7 @@ class AppSnapshotResponse(BaseModel):
     platform_jobs: list[dict[str, Any]] = Field(default_factory=list)
     research_findings: list[dict[str, Any]] = Field(default_factory=list)
     layer2_graph: dict[str, Any] = Field(default_factory=dict)
+    overlap: dict[str, Any] = Field(default_factory=dict)
     layer3: dict[str, Any] = Field(default_factory=dict)
 
 

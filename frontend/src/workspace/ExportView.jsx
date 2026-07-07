@@ -1,32 +1,37 @@
+import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceActionGroup } from "./WorkspacePage";
+
 export default function ExportView({
   layer2Graph,
   lastExport,
   onExport,
   onLayer2Export,
+  onLayer3Export,
   onProjectArchiveExport,
 }) {
   const exportCount = [lastExport?.markdown_path, lastExport?.json_path].filter(Boolean).length;
 
   return (
-    <section className="workspace-layer-panel" id="workspace-panel-export" role="tabpanel" aria-label="Project exports">
-      <div className="panel project-tool-section">
+    <WorkspacePageLayout
+      id="workspace-panel-export"
+      ariaLabel="Project exports"
+      title="Export"
+      description="Create handoff files and archives once the reviewed product structure is ready to share."
+      status={lastExport ? "published" : layer2Graph?.review_open ? "needs_review" : "draft"}
+      primaryAction={<WorkspaceActionButton primary onClick={onExport}>Export</WorkspaceActionButton>}
+      actions={(
+        <>
+          <WorkspaceActionGroup label="Export">
+            <WorkspaceActionButton secondary onClick={onExport}>Export full project</WorkspaceActionButton>
+            <WorkspaceActionButton secondary onClick={onLayer2Export}>Export Layer 2</WorkspaceActionButton>
+            {onLayer3Export ? <WorkspaceActionButton secondary onClick={onLayer3Export}>Export Layer 3</WorkspaceActionButton> : null}
+            <WorkspaceActionButton secondary onClick={onProjectArchiveExport}>Export archive</WorkspaceActionButton>
+          </WorkspaceActionGroup>
+        </>
+      )}
+    >
+      <div className="project-tool-section">
         <div className="project-tool-section-header">
-          <div>
-            <h3>Exports and handoff</h3>
-            <p className="muted">Create portable outputs once the feature set is reviewed and ready to hand off.</p>
-          </div>
-          {exportCount ? <span className="project-tool-inline-meta">{exportCount} saved path{exportCount === 1 ? "" : "s"}</span> : null}
-        </div>
-        <div className="button-row">
-          <button type="button" onClick={onExport}>
-            Create Full Project Export
-          </button>
-          <button type="button" onClick={onLayer2Export}>
-            Create Layer 2 Export
-          </button>
-          <button type="button" onClick={onProjectArchiveExport}>
-            Export Project Archive
-          </button>
+          {exportCount ? <span className="project-tool-inline-meta">{exportCount} saved path{exportCount === 1 ? "" : "s"}</span> : <span className="project-tool-inline-meta">No saved exports yet</span>}
         </div>
         <p className="muted">Exports are written to the configured local exports folder.</p>
         {lastExport ? (
@@ -45,6 +50,6 @@ export default function ExportView({
           <p className="warning">Layer 2 export includes unresolved review state. Downstream handoff still requires approved features.</p>
         ) : null}
       </div>
-    </section>
+    </WorkspacePageLayout>
   );
 }

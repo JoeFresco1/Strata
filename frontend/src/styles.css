@@ -894,12 +894,15 @@ pre {
 .layer0-brief-form {
   grid-template-columns: repeat(2, minmax(320px, 1fr));
   align-content: start;
+  align-items: start;
   max-width: none;
 }
 
 .layer0-brief-form label {
   display: grid;
   gap: 0.45rem;
+  align-content: start;
+  align-self: start;
   margin: 0;
 }
 
@@ -941,34 +944,55 @@ pre {
 .plan-chat-log {
   max-height: 520px;
   padding: 1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(243, 247, 249, 0.98) 100%);
 }
 
 .chat-turn {
-  padding: 0.75rem;
-  border-radius: 8px;
-  background: #ffffff;
+  display: flex;
+  width: 100%;
+}
+
+.chat-turn-bubble {
+  display: grid;
+  gap: 0.4rem;
+  max-width: min(82%, 760px);
+  padding: 0.85rem 1rem;
+  border-radius: 18px;
   border: 1px solid #e2e8ec;
+  background: #ffffff;
+  box-shadow: 0 10px 22px rgba(23, 32, 38, 0.05);
 }
 
 .chat-turn.user {
+  justify-content: flex-end;
+}
+
+.chat-turn.user .chat-turn-bubble {
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 44%, var(--panel));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 66%, var(--panel)) 0%, #ffffff 100%);
+  border-bottom-right-radius: 6px;
 }
 
 .chat-turn.assistant {
-  border-color: color-mix(in srgb, var(--warning-ink) 24%, var(--border));
-  background: color-mix(in srgb, var(--warning-bg) 32%, var(--panel));
+  justify-content: flex-start;
 }
 
-.chat-turn.starter {
+.chat-turn.assistant .chat-turn-bubble {
+  border-color: color-mix(in srgb, var(--warning-ink) 24%, var(--border));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--warning-bg) 44%, var(--panel)) 0%, #ffffff 100%);
+  border-bottom-left-radius: 6px;
+}
+
+.chat-turn.starter .chat-turn-bubble {
   background: #f8fbfc;
 }
 
-.chat-turn.loading {
+.chat-turn.loading .chat-turn-bubble {
   background: #fbfcfd;
 }
 
-.chat-turn p {
+.chat-turn-bubble p {
   margin: 0.35rem 0 0;
   white-space: pre-wrap;
 }

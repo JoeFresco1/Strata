@@ -20,12 +20,14 @@ const ROUTING_DOMAINS = [
   { key: "layer0", label: "Layer 0" },
   { key: "generation", label: "Generation" },
   { key: "research", label: "Research" },
+  { key: "review", label: "Review" },
   { key: "assistant", label: "Assistant" },
 ];
 const ASSIGNMENT_GROUPS = [
   { title: "Layer 0", routingKey: "layer0", fields: ["layer0_plan", "layer0_extraction", "layer0_research"] },
   { title: "Generation", routingKey: "generation", fields: ["layer1_generation", "layer2_generation"] },
-  { title: "Research & Embeddings", routingKey: "research", fields: ["layer1_research", "layer2_research", "layer1_similarity_embeddings", "research_embeddings"] },
+  { title: "Research & Embeddings", routingKey: "research", fields: ["layer1_research", "layer2_research", "layer1_similarity_embeddings", "layer2_similarity_embeddings", "research_embeddings"] },
+  { title: "Review Critics", routingKey: "review", fields: ["layer1_overlap_critic", "layer2_overlap_critic"] },
   { title: "Assistant", routingKey: "assistant", fields: ["assistant_orchestration", "assistant_synthesis", "assistant_compaction", "assistant_specialists", "assistant_embeddings"] },
 ];
 
@@ -34,6 +36,8 @@ const LLM_ASSIGNMENT_LABELS = {
   layer0_extraction: "Layer 0 Brief Extraction",
   layer1_generation: "Layer 1 Generation",
   layer2_generation: "Layer 2 Generation",
+  layer1_overlap_critic: "Layer 1 Overlap Critic",
+  layer2_overlap_critic: "Layer 2 Overlap Critic",
   layer0_research: "Layer 0 Research Discovery",
   layer1_research: "Layer 1 Research Discovery",
   layer2_research: "Layer 2 Feature Research",
@@ -44,6 +48,7 @@ const LLM_ASSIGNMENT_LABELS = {
 };
 const EMBEDDING_ASSIGNMENT_LABELS = {
   layer1_similarity_embeddings: "Layer 1 Similarity",
+  layer2_similarity_embeddings: "Layer 2 Similarity",
   research_embeddings: "Research Embeddings",
   assistant_embeddings: "Assistant Retrieval",
 };
@@ -52,6 +57,8 @@ const ASSIGNMENT_HELP = {
   layer0_extraction: "Use this model to turn Plan mode messages into structured brief fields.",
   layer1_generation: "Use one or more models to brainstorm and broaden the Layer 1 pillar set.",
   layer2_generation: "Use this model to expand selected pillars into Layer 2 subfeatures.",
+  layer1_overlap_critic: "Reviews existing Layer 1 pillars for overlap after generation or manual edits.",
+  layer2_overlap_critic: "Reviews the full Layer 2 feature graph for deeper overlap and fake novelty.",
   layer0_research: "Use this model to discover and summarize competitor evidence for Layer 0.",
   layer1_research: "Use this model to score how each Layer 1 pillar shows up across competitors.",
   layer2_research: "Use this model to classify competitor evidence across Layer 2 feature batches.",
@@ -60,6 +67,7 @@ const ASSIGNMENT_HELP = {
   assistant_compaction: "Maintains durable summaries when conversations exceed context budgets.",
   assistant_specialists: "Runs bounded Deep-mode and automatically triggered specialist reviews.",
   layer1_similarity_embeddings: "Use this embedding model to measure overlap between Layer 1 pillars.",
+  layer2_similarity_embeddings: "Use this embedding model to shortlist neighboring Layer 2 features for overlap review.",
   research_embeddings: "Use this embedding model to index research pages and compare evidence chunks.",
   assistant_embeddings: "Indexes project entities for semantic assistant retrieval.",
 };
@@ -69,9 +77,9 @@ function defaultRoutingPolicy(intent) {
     return { layer0: "api", generation: "api", research: "api", assistant: "api" };
   }
   if (intent === "blended") {
-    return { layer0: "local", generation: "local", research: "local", assistant: "api" };
+    return { layer0: "local", generation: "local", research: "local", review: "local", assistant: "api" };
   }
-  return { layer0: "local", generation: "local", research: "local", assistant: "local" };
+  return { layer0: "local", generation: "local", research: "local", review: "local", assistant: "local" };
 }
 
 function providerLabel(value) {
@@ -421,7 +429,7 @@ function TaskAssignmentsSection({ settings, onChange }) {
                         <option value="api">Prefer API</option>
                       </select>
                     </label>
-                    {group.routingKey === "assistant" ? (
+                    {["assistant", "review"].includes(group.routingKey) ? (
                       <span className="assignment-parallelism">
                         <label>Local parallelism<input type="number" min="1" max="4" value={concurrencyPolicy.managed_local_parallelism ?? 1} onChange={(event) => updateConcurrency("managed_local_parallelism", Number(event.target.value))} /></label>
                         <label>API parallelism<input type="number" min="1" max="16" value={concurrencyPolicy.remote_parallelism ?? 4} onChange={(event) => updateConcurrency("remote_parallelism", Number(event.target.value))} /></label>

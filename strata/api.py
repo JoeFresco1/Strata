@@ -69,6 +69,7 @@ from strata.api_export import register_export_routes
 from strata.api_jobs import register_job_routes
 from strata.api_layer1 import register_layer1_routes
 from strata.api_lifecycle import register_lifecycle_routes
+from strata.api_overlap import register_overlap_routes
 from strata.api_telemetry import register_telemetry_routes
 from strata.api_setup import register_setup_routes
 from strata.api_support import (
@@ -180,6 +181,7 @@ def create_app() -> FastAPI:
     register_telemetry_routes(app, services)
     register_job_routes(app, services)
     register_layer1_routes(app, services)
+    register_overlap_routes(app, services)
     register_export_routes(app, services)
     @app.get("/api/projects/{project_id}/assistant/conversations")
     def list_assistant_conversations(project_id: str) -> list[dict[str, object]]:

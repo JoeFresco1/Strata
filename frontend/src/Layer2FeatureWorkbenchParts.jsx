@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { COVERAGE_STATUSES, FEATURE_STATUSES, GRANULARITY_CLASSES, splitLines } from "./layer2WorkbenchUtils";
+import { displayStatusLabel, WorkspaceStatusBadge } from "./workspace/WorkspacePage";
 import "./Layer2GraphPanel.css";
 
 export function Layer2FeatureForm({ pillars, onCreate, defaultOwnerId = "" }) {
@@ -42,7 +43,7 @@ export function Layer2FeatureForm({ pillars, onCreate, defaultOwnerId = "" }) {
   }
 
   if (!open) {
-    return <button type="button" onClick={() => setOpen(true)}>Add feature</button>;
+    return <button type="button" className="secondary-button" onClick={() => setOpen(true)}>Add feature</button>;
   }
 
   return (
@@ -82,7 +83,7 @@ export function Layer2FeatureForm({ pillars, onCreate, defaultOwnerId = "" }) {
         <label>
           Status
           <select value={form.status} onChange={(event) => update("status", event.target.value)}>
-            {FEATURE_STATUSES.map((item) => <option key={item} value={item}>{item}</option>)}
+            {FEATURE_STATUSES.map((item) => <option key={item} value={item}>{displayStatusLabel(item)}</option>)}
           </select>
         </label>
       </div>
@@ -99,7 +100,7 @@ export function Layer2FeatureForm({ pillars, onCreate, defaultOwnerId = "" }) {
         <textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} rows={3} />
       </label>
       <div className="button-row">
-        <button type="submit" disabled={!form.canonical_name.trim() || !form.description.trim() || !form.owner_pillar_id}>Save feature</button>
+        <button type="submit" className="secondary-button" disabled={!form.canonical_name.trim() || !form.description.trim() || !form.owner_pillar_id}>Save feature</button>
         <button type="button" className="secondary-button" onClick={() => setOpen(false)}>Cancel</button>
       </div>
     </form>
@@ -158,8 +159,8 @@ export function FeatureDetail({ feature, pillars, onUpdate, onReview, onAddEvide
           <p className="muted">{feature.description || "No description yet."}</p>
         </div>
         <div className="layer2-detail-state">
-          <span className={`status-pill ${feature.status}`}>{feature.status}</span>
-          {feature.layer3_ready ? <span className="status-pill published">Approved</span> : null}
+          <WorkspaceStatusBadge status={feature.status} />
+          {feature.layer3_ready ? <WorkspaceStatusBadge status="approved" /> : null}
         </div>
       </div>
       <div className="brief-grid">
@@ -176,7 +177,7 @@ export function FeatureDetail({ feature, pillars, onUpdate, onReview, onAddEvide
         <label>
           Status
           <select value={form.status || "candidate"} onChange={(event) => update("status", event.target.value)}>
-            {FEATURE_STATUSES.map((item) => <option key={item} value={item}>{item}</option>)}
+            {FEATURE_STATUSES.map((item) => <option key={item} value={item}>{displayStatusLabel(item)}</option>)}
           </select>
         </label>
         <label>
@@ -203,7 +204,7 @@ export function FeatureDetail({ feature, pillars, onUpdate, onReview, onAddEvide
         <textarea value={form.notes || ""} onChange={(event) => update("notes", event.target.value)} rows={3} />
       </label>
       <div className="button-row">
-        <button type="button" onClick={save} disabled={!onUpdate}>Save feature</button>
+        <button type="button" className="secondary-button" onClick={save} disabled={!onUpdate}>Save feature</button>
         <button type="button" className="secondary-button" onClick={() => onReview?.({ action_type: "approve_for_layer3", feature_id: feature.id })} disabled={!onReview}>Accept</button>
         <button type="button" className="secondary-button" onClick={() => onReview?.({ action_type: "cut", feature_id: feature.id })} disabled={!onReview}>Reject</button>
       </div>
@@ -250,7 +251,7 @@ export function FeatureDetail({ feature, pillars, onUpdate, onReview, onAddEvide
           Notes
           <textarea value={evidence.notes} onChange={(event) => setEvidence({ ...evidence, notes: event.target.value })} rows={2} />
         </label>
-        <button type="submit" disabled={!onAddEvidence || !evidence.competitor_name.trim()}>Add evidence</button>
+        <button type="submit" className="secondary-button" disabled={!onAddEvidence || !evidence.competitor_name.trim()}>Add evidence</button>
       </form>
       {feature.evidence?.length ? (
         <ul className="summary-list layer2-evidence-list">

@@ -579,6 +579,7 @@ class PromptTests(unittest.TestCase):
         catalog = load_prompt_catalog()
 
         expected_keys = {
+            "layer1_overlap_critic",
             "layer2_dynamic_coverage_family_discovery",
             "layer2_scope_coverage_critic",
             "layer2_granularity_critic",
@@ -591,6 +592,9 @@ class PromptTests(unittest.TestCase):
         self.assertTrue(expected_keys.issubset(catalog))
         for key in expected_keys:
             self.assertIn("Return valid JSON only", catalog[key])
+        self.assertIn("{{target_item}}", catalog["layer2_overlap_dedupe_critic"])
+        self.assertIn("{{shortlisted_neighbors}}", catalog["layer2_overlap_dedupe_critic"])
+        self.assertIn("same_capability | broader | narrower | merge | link | distinct | fake_novelty", catalog["layer2_overlap_dedupe_critic"])
 
     def test_prompt_catalog_cache_refreshes_after_file_change(self) -> None:
         """Prompt edits on disk should be visible without clearing caches or restarting the API."""

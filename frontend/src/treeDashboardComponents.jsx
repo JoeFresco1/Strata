@@ -42,7 +42,7 @@ function DashboardStats({ stats }) {
         <strong>{stats.overlapEdges}</strong>
       </div>
       <div className="tree-stat">
-        <span>Tree Depth</span>
+        <span>Map Depth</span>
         <strong>{stats.depth}</strong>
       </div>
       {[0, 1, 2, 3].map((layer) => (

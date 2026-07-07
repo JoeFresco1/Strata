@@ -387,6 +387,90 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS layer2_feature_embeddings (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    feature_id TEXT NOT NULL,
+                    embedding_model TEXT NOT NULL,
+                    embedding TEXT,
+                    content_hash TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(feature_id, embedding_model),
+                    FOREIGN KEY(project_id) REFERENCES projects(id),
+                    FOREIGN KEY(feature_id) REFERENCES layer2_features(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS overlap_job_items (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    layer TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    item_hash TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(job_id, item_id),
+                    FOREIGN KEY(project_id) REFERENCES projects(id),
+                    FOREIGN KEY(job_id) REFERENCES platform_jobs(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS overlap_verdicts (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    layer TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    neighbor_id TEXT NOT NULL,
+                    relation TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    rationale TEXT NOT NULL DEFAULT '',
+                    critic_source TEXT NOT NULL DEFAULT 'overlap_critic',
+                    target_hash TEXT NOT NULL DEFAULT '',
+                    neighbor_hash TEXT NOT NULL DEFAULT '',
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id),
+                    FOREIGN KEY(job_id) REFERENCES platform_jobs(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS overlap_clusters (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    layer TEXT NOT NULL,
+                    cluster_id TEXT NOT NULL,
+                    member_ids TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id),
+                    FOREIGN KEY(job_id) REFERENCES platform_jobs(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS overlap_verdict_resolutions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    verdict_id TEXT NOT NULL,
+                    layer TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    neighbor_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    resolved_by TEXT NOT NULL DEFAULT 'user',
+                    target_hash TEXT NOT NULL DEFAULT '',
+                    neighbor_hash TEXT NOT NULL DEFAULT '',
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id),
+                    FOREIGN KEY(verdict_id) REFERENCES overlap_verdicts(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS layer2_coverage_matrix (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
@@ -575,6 +659,24 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
 
                 CREATE INDEX IF NOT EXISTS idx_layer2_relationships_project
                 ON layer2_feature_relationships(project_id, source_feature_id, target_feature_id);
+
+                CREATE INDEX IF NOT EXISTS idx_layer2_feature_embeddings_project
+                ON layer2_feature_embeddings(project_id, feature_id);
+
+                CREATE INDEX IF NOT EXISTS idx_overlap_verdicts_project_layer
+                ON overlap_verdicts(project_id, layer, job_id);
+
+                CREATE INDEX IF NOT EXISTS idx_overlap_job_items_job
+                ON overlap_job_items(job_id, status);
+
+                CREATE INDEX IF NOT EXISTS idx_overlap_clusters_project_layer
+                ON overlap_clusters(project_id, layer, job_id);
+
+                CREATE INDEX IF NOT EXISTS idx_overlap_resolutions_pair
+                ON overlap_verdict_resolutions(project_id, layer, target_id, neighbor_id);
+
+                CREATE INDEX IF NOT EXISTS idx_overlap_resolutions_verdict
+                ON overlap_verdict_resolutions(verdict_id, created_at);
 
                 CREATE INDEX IF NOT EXISTS idx_layer2_review_project
                 ON layer2_review_actions(project_id, created_at);

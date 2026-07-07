@@ -57,6 +57,7 @@ from strata.generation import GenerationService
 from strata.jobs import PlatformJobService
 from strata.layer3_service import validate_product_level_content
 from strata.llm import LlamaCppClient
+from strata.overlap_critic import OverlapCriticRunner
 from strata.research import ResearchService
 from strata.project_settings import (
     DEFAULT_EMBEDDING_PROFILE_ID,
@@ -90,6 +91,7 @@ class AppServices:
     brief_service: BriefService
     research_service: ResearchService
     assistant_service: AssistantService
+    overlap_service: OverlapCriticRunner | None = None
     job_service: PlatformJobService | None = None
 
 
@@ -167,6 +169,7 @@ def _build_services(config: AppConfig | None = None) -> AppServices:
         research_service=ResearchService(db, llm_client, embedding_service, server_manager),
         assistant_service=AssistantService(db, llm_client, assistant_index, server_manager),
     )
+    services.overlap_service = OverlapCriticRunner(services)
     services.job_service = PlatformJobService(services)
     return services
 
@@ -226,6 +229,7 @@ def _project_snapshot(services: AppServices, project_id: str) -> AppSnapshotResp
         platform_jobs=[job.model_dump(mode="json") for job in platform_jobs],
         research_findings=[finding.model_dump(mode="json") for finding in findings],
         layer2_graph=layer2_graph,
+        overlap=services.db.overlap_snapshot(project_id),
         layer3=layer3,
     )
 

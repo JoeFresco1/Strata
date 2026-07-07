@@ -1,6 +1,8 @@
 import { useState } from "react";
 import BriefWorkspace from "../BriefWorkspace";
 import { useIsCompactWorkspace } from "./workspaceSelectors";
+import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceActionGroup } from "./WorkspacePage";
+import WorkspaceJobNotice from "./WorkspaceJobNotice";
 
 function listItems(value) {
   return Array.isArray(value) && value.length ? value : ["Not captured yet"];
@@ -14,37 +16,84 @@ export default function Layer0View({
   onPublish,
   onResearch,
   researchJobState,
+  onCancelJob,
 }) {
   const compact = useIsCompactWorkspace();
   const [previewOpen, setPreviewOpen] = useState(true);
   const liveBrief = brief || {};
   const researchRunning = researchJobState?.state === "running";
-
+  const published = liveBrief.status === "published";
+  const hasLiveBriefContent = Boolean(
+    liveBrief.product_idea?.trim()
+    || liveBrief.target_users?.trim()
+    || liveBrief.constraints?.trim()
+    || liveBrief.notes?.trim()
+    || liveBrief.goals?.length
+    || liveBrief.known_competitors?.length
+    || liveBrief.preferred_directions?.length
+    || liveBrief.rejected_directions?.length
+  );
   return (
-    <section className="workspace-layer-panel layer0-view" id="workspace-panel-layer0" role="tabpanel" aria-label="Layer 0 workspace">
+    <WorkspacePageLayout
+      id="workspace-panel-layer0"
+      ariaLabel="Layer 0 workspace"
+      className="layer0-view"
+      title="Product Idea"
+      description="Shape the product brief, audience, constraints, goals, and known directions before downstream generation."
+      status={liveBrief.status || "draft"}
+      actions={(
+        <WorkspaceActionGroup label="Controls">
+          <div className="layer0-action-row">
+            <div className="layer0-primary-actions">
+              <WorkspaceActionButton
+                secondary
+                onClick={onPublish}
+                disabled={published || !hasLiveBriefContent}
+                disabledReason={
+                  published
+                    ? "This brief is already published."
+                    : !hasLiveBriefContent
+                      ? "Add some Layer 0 brief content before publishing."
+                      : ""
+                }
+              >
+                Publish
+              </WorkspaceActionButton>
+              <WorkspaceActionButton
+                secondary
+                onClick={onResearch}
+                disabled={researchRunning}
+                disabledReason={researchRunning ? "Market research is already running." : ""}
+              >
+                {researchJobState?.state === "failed" ? "Research all" : "Research all"}
+              </WorkspaceActionButton>
+            </div>
+            {!previewOpen ? (
+              <WorkspaceActionButton
+                className="layer0-preview-toggle"
+                secondary
+                onClick={() => setPreviewOpen(true)}
+                disabled={!hasLiveBriefContent}
+                disabledReason={!hasLiveBriefContent ? "Add some brief content before opening the live preview." : ""}
+              >
+                Preview live brief
+              </WorkspaceActionButton>
+            ) : null}
+          </div>
+          {researchJobState?.state === "failed" ? <span className="warning">Latest research failed. Retry when the runtime is ready.</span> : null}
+        </WorkspaceActionGroup>
+      )}
+    >
       <div className={`${compact ? "layer0-split compact" : "layer0-split"} ${previewOpen ? "" : "preview-closed"}`}>
         <div className="layer0-input-pane">
-          {!previewOpen ? (
-            <div className="layer0-preview-reopen">
-              <button type="button" className="secondary-button" onClick={() => setPreviewOpen(true)}>
-                Preview live brief
-              </button>
-            </div>
-          ) : null}
           <BriefWorkspace
             brief={liveBrief}
             conversation={conversation}
             onSave={onSave}
             onChat={onChat}
-            onPublish={onPublish}
             compact
           />
-          <div className="workspace-toolbar panel">
-            <button type="button" className="secondary-button" onClick={onResearch} disabled={researchRunning}>
-              {researchRunning ? "Research running..." : researchJobState?.state === "failed" ? "Retry market research" : "Run market research"}
-            </button>
-            {researchJobState?.state === "failed" ? <span className="warning">Latest research failed. Retry when the runtime is ready.</span> : null}
-          </div>
+          <WorkspaceJobNotice jobState={researchJobState} label="Market research" onCancel={onCancelJob} />
         </div>
         {previewOpen ? (
           <aside className="layer0-preview-pane panel" aria-label="Live Layer 0 brief preview">
@@ -85,6 +134,6 @@ export default function Layer0View({
           </aside>
         ) : null}
       </div>
-    </section>
+    </WorkspacePageLayout>
   );
 }

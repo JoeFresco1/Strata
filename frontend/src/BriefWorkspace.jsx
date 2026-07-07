@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { displayStatusLabel } from "./workspace/WorkspacePage";
 
 // Converts multiline text fields into the array shape expected by the API.
 function textToList(value) {
@@ -121,7 +122,7 @@ function compactPreview(value, limit = 220) {
   return `${text.slice(0, limit - 3).trim()}...`;
 }
 
-function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish, locked = false, unlocked = false, onUnlock, compact = false }) {
+function BriefWorkspace({ brief, conversation, onSave, onChat, locked = false, unlocked = false, onUnlock, compact = false }) {
   const [mode, setMode] = useState("AI Chat");
   const [form, setForm] = useState(brief);
   const [message, setMessage] = useState("");
@@ -189,7 +190,7 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish, locked
       <div className="panel-header">
         <div>
           <h3>Layer 0 Brief</h3>
-          <span className={`status-pill ${brief.status}`}>{brief.status}</span>
+          <span className={`status-pill ${brief.status}`}>{displayStatusLabel(brief.status)}</span>
         </div>
         <div className="segmented">
           {["AI Chat", "Form"].map((item) => (
@@ -207,7 +208,7 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish, locked
             <h4>{payload.product_idea || "Published project brief"}</h4>
             <p className="muted">This published product plan is active in downstream layers. Unlock only when the product direction truly needs to change.</p>
           </div>
-          <button type="button" onClick={onUnlock}>Unlock Layer 0</button>
+          <button type="button" className="secondary-button" onClick={onUnlock}>Unlock Layer 0</button>
         </div>
       ) : null}
 
@@ -243,30 +244,36 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish, locked
             <div ref={chatLogRef} className="chat-log plan-chat-log">
               {!visibleConversation.length ? (
                 <div className="chat-turn assistant starter">
-                  <strong>Strata</strong>
-                  <p>
-                    I can help shape the draft brief before anything gets published. Start with the product idea,
-                    the user problem, or just the rough direction, and I&apos;ll pull structure out as we go.
-                  </p>
-                  <p className="muted">A good first turn is usually the product idea, target user, or what feels most uncertain.</p>
+                  <div className="chat-turn-bubble">
+                    <strong>Strata</strong>
+                    <p>
+                      I can help shape the draft brief before anything gets published. Start with the product idea,
+                      the user problem, or just the rough direction, and I&apos;ll pull structure out as we go.
+                    </p>
+                    <p className="muted">A good first turn is usually the product idea, target user, or what feels most uncertain.</p>
+                  </div>
                 </div>
               ) : null}
               {visibleConversation.map((turn) => {
                 const updates = extractedUpdateBadges(turn);
                 return (
                   <div key={turn.id} className={`chat-turn ${turn.role}`}>
-                    <div className="chat-turn-head">
-                      <strong>{turn.role === "assistant" ? "Strata" : "You"}</strong>
-                      {updates.length ? <span className="chat-turn-meta">Updated: {updates.join(", ")}</span> : null}
+                    <div className="chat-turn-bubble">
+                      <div className="chat-turn-head">
+                        <strong>{turn.role === "assistant" ? "Strata" : "You"}</strong>
+                        {updates.length ? <span className="chat-turn-meta">Updated: {updates.join(", ")}</span> : null}
+                      </div>
+                      <p title={compact ? turn.content : undefined}>{compact ? compactPreview(turn.content) : turn.content}</p>
                     </div>
-                    <p title={compact ? turn.content : undefined}>{compact ? compactPreview(turn.content) : turn.content}</p>
                   </div>
                 );
               })}
               {planState === "sending" ? (
                 <div className="chat-turn assistant loading">
-                  <strong>Strata</strong>
-                  <p>Updating the draft brief and preparing the next question.</p>
+                  <div className="chat-turn-bubble">
+                    <strong>Strata</strong>
+                    <p>Updating the draft brief and preparing the next question.</p>
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -403,7 +410,7 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish, locked
             <textarea disabled={readOnly} value={payload.notes} onChange={(event) => updateField("notes", event.target.value)} rows={4} />
           </label>
           <div className="layer0-brief-actions">
-            {readOnly ? <button type="button" onClick={onUnlock}>Unlock Layer 0</button> : <button type="button" onClick={() => onSave(payload)}>Save Brief</button>}
+            {readOnly ? <button type="button" className="secondary-button" onClick={onUnlock}>Unlock Layer 0</button> : <button type="button" className="secondary-button" onClick={() => onSave(payload)}>Save Brief</button>}
           </div>
         </div>
       ) : null}
@@ -412,10 +419,6 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, onPublish, locked
         <div className="publish-row published-state">
           <span className="status-pill published">{readOnly ? "Locked downstream snapshot" : "Unlocked for editing"}</span>
           <p className="muted">{readOnly ? "Downstream generation uses this published version until you explicitly unlock Layer 0." : "Changes may require downstream review after saving."}</p>
-        </div>
-      ) : !isPublished ? (
-        <div className="publish-row">
-          <button type="button" onClick={onPublish}>Publish to Layer 1</button>
         </div>
       ) : null}
     </div>

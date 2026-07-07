@@ -1,9 +1,9 @@
 export const PROJECT_STAGE_META = {
   Workspace: {
-    kicker: "Product Tree",
+    kicker: "Workspace",
     title: "Shape the product from brief to approved features",
-    body: "Move through Layer 0, Layer 1, and Layer 2 in one continuous product workspace.",
-    short: "Layers 0-2",
+    body: "Move through the product idea, pillars, features, sub-features, and export in one continuous workflow.",
+    short: "Product workflow",
   },
   Analytics: {
     kicker: "Runtime",
@@ -35,7 +35,7 @@ export const HAMBURGER_ACTIONS = [
 ];
 
 export const TABS = [
-  { id: "Workspace", label: "Product Tree" },
+  { id: "Workspace", label: "Workspace" },
   { id: "Analytics", label: "Analytics" },
   { id: "Project", label: "Project Settings" },
 ];

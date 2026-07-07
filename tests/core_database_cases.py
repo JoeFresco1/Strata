@@ -22,6 +22,7 @@ from strata.embeddings import EmbeddingService
 from strata.export import export_layer2_markdown, export_layer3_feature_expansions
 from strata.generation import LAYER2_EXHAUSTION_FAMILIES, LAYER2_LENSES, LAYER2_SURVEY_BUILDER_FAMILIES, GenerationService
 from strata.llm import LLMError, LlamaCppClient
+from strata.overlap_critic import OverlapCriticRunner, OverlapItem, split_oversized_clusters, top_k_for_context
 from strata.layer2_research import Layer2CompetitorSeed, Layer2ResearchMixin
 from strata.layer3_service import validate_product_level_content
 from strata.models import (
@@ -39,6 +40,7 @@ from strata.models import (
 )
 from strata.migrations import apply_migrations, migration_status
 from strata.project_settings import default_project_model_settings, normalize_model_settings
+from strata.project_settings import assignment_domain, default_routing_policy
 from strata.prompts import (
     build_pillar_prompt,
     build_pillar_research_assessment_prompt,
@@ -53,6 +55,272 @@ from requests.exceptions import SSLError
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_overlap_top_k_scales_with_context_window(self) -> None:
+        self.assertLess(top_k_for_context(4096), top_k_for_context(32768))
+
+    def test_overlap_cluster_split_caps_groups_at_eight(self) -> None:
+        member_ids = [f"item-{index}" for index in range(11)]
+        edge_scores = {
+            tuple(sorted((left, right))): 0.9
+            for left in member_ids
+            for right in member_ids
+            if left < right
+        }
+        groups = split_oversized_clusters(member_ids, edge_scores, max_size=8)
+        self.assertTrue(groups)
+        self.assertTrue(all(len(group) <= 8 for group in groups))
+
+    def test_overlap_shortlist_excludes_cut_and_merged_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Overlap", "Find duplicates")
+            active = db.create_node(project_id=project.id, parent_id=None, layer=1, node_type="pillar", title="Survey Builder", description="Create surveys", status="kept")
+            near = db.create_node(project_id=project.id, parent_id=None, layer=1, node_type="pillar", title="Survey Creation", description="Build surveys", status="generated")
+            db.create_node(project_id=project.id, parent_id=None, layer=1, node_type="pillar", title="Deleted Builder", description="Create surveys", status="cut")
+            db.create_node(project_id=project.id, parent_id=None, layer=1, node_type="pillar", title="Merged Builder", description="Create surveys", status="merged")
+            service = type("Services", (), {"db": db})()
+            runner = OverlapCriticRunner(service)
+
+            items = runner._active_items(project.id, "layer1")
+            self.assertEqual({item.id for item in items}, {active.id, near.id})
+            shortlist = runner._lexical_shortlist(items, top_k=4, sim_threshold=0.2)
+            self.assertEqual(shortlist[active.id][0].item.id, near.id)
+
+    def test_overlap_snapshot_uses_latest_completed_and_hides_stale_verdicts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Overlap", "Find duplicates")
+            left = db.create_node(project_id=project.id, parent_id=None, layer=1, node_type="pillar", title="Survey Builder", description="Create surveys", status="kept")
+            right = db.create_node(project_id=project.id, parent_id=None, layer=1, node_type="pillar", title="Survey Creation", description="Build surveys", status="generated")
+            first_job = db.create_platform_job(project_id=project.id, kind="critic", workflow="layer1_overlap_critic", scope="layer1")
+            db.update_platform_job(first_job.id, status="completed", completed_at="2026-01-01T00:00:00+00:00")
+            second_job = db.create_platform_job(project_id=project.id, kind="critic", workflow="layer1_overlap_critic", scope="layer1", dedupe_key="second")
+            db.update_platform_job(second_job.id, status="completed", completed_at="2026-01-02T00:00:00+00:00")
+            hashes = db.current_overlap_item_hashes(project.id, "layer1")
+            db.insert_overlap_verdict(
+                project_id=project.id,
+                job_id=first_job.id,
+                layer="layer1",
+                target_id=left.id,
+                neighbor_id=right.id,
+                relation="merge",
+                confidence=0.9,
+                rationale="Old job",
+                critic_source="overlap_critic",
+                target_hash=hashes[left.id],
+                neighbor_hash=hashes[right.id],
+            )
+            db.insert_overlap_verdict(
+                project_id=project.id,
+                job_id=second_job.id,
+                layer="layer1",
+                target_id=left.id,
+                neighbor_id=right.id,
+                relation="merge",
+                confidence=0.9,
+                rationale="Latest job",
+                critic_source="overlap_critic",
+                target_hash=hashes[left.id],
+                neighbor_hash=hashes[right.id],
+            )
+            snapshot = db.overlap_snapshot(project.id)
+            self.assertEqual(snapshot["layer1"]["latest_completed_job_id"], second_job.id)
+            self.assertEqual(snapshot["layer1"]["verdicts"][0]["rationale"], "Latest job")
+
+            db.update_node(right.id, title="Completely different")
+            self.assertEqual(db.overlap_snapshot(project.id)["layer1"]["verdicts"], [])
+
+    def test_overlap_resolution_state_tracks_active_and_stale_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Overlap", "Find duplicates")
+            left = db.create_node(project_id=project.id, parent_id=None, layer=1, node_type="pillar", title="Survey Builder", description="Create surveys", status="kept")
+            right = db.create_node(project_id=project.id, parent_id=None, layer=1, node_type="pillar", title="Survey Creation", description="Build surveys", status="generated")
+            first_job = db.create_platform_job(project_id=project.id, kind="critic", workflow="layer1_overlap_critic", scope="layer1")
+            db.update_platform_job(first_job.id, status="completed", completed_at="2026-01-01T00:00:00+00:00")
+            hashes = db.current_overlap_item_hashes(project.id, "layer1")
+            verdict = db.insert_overlap_verdict(
+                project_id=project.id,
+                job_id=first_job.id,
+                layer="layer1",
+                target_id=left.id,
+                neighbor_id=right.id,
+                relation="merge",
+                confidence=0.9,
+                rationale="Same builder",
+                critic_source="overlap_critic",
+                target_hash=hashes[left.id],
+                neighbor_hash=hashes[right.id],
+            )
+            db.create_overlap_verdict_resolution(
+                project_id=project.id,
+                verdict_id=verdict.id,
+                layer="layer1",
+                target_id=left.id,
+                neighbor_id=right.id,
+                action="keep_separate",
+                target_hash=hashes[left.id],
+                neighbor_hash=hashes[right.id],
+            )
+            snapshot = db.overlap_snapshot(project.id)["layer1"]
+            self.assertEqual(snapshot["verdicts"][0]["resolution_state"], "resolved")
+            self.assertEqual(snapshot["summary"]["resolved"], 1)
+
+            db.update_node(right.id, description="Build surveys and score responses")
+            second_job = db.create_platform_job(project_id=project.id, kind="critic", workflow="layer1_overlap_critic", scope="layer1", dedupe_key="fresh")
+            db.update_platform_job(second_job.id, status="completed", completed_at="2026-01-02T00:00:00+00:00")
+            fresh_hashes = db.current_overlap_item_hashes(project.id, "layer1")
+            db.insert_overlap_verdict(
+                project_id=project.id,
+                job_id=second_job.id,
+                layer="layer1",
+                target_id=left.id,
+                neighbor_id=right.id,
+                relation="link",
+                confidence=0.7,
+                rationale="Still related",
+                critic_source="overlap_critic",
+                target_hash=fresh_hashes[left.id],
+                neighbor_hash=fresh_hashes[right.id],
+            )
+            fresh_snapshot = db.overlap_snapshot(project.id)["layer1"]
+            self.assertEqual(fresh_snapshot["verdicts"][0]["resolution_state"], "stale_resolution")
+            self.assertEqual(fresh_snapshot["summary"]["stale_resolution"], 1)
+
+    def test_overlap_runner_skips_pairs_with_active_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Overlap", "Find duplicates")
+            left = db.create_node(project_id=project.id, parent_id=None, layer=1, node_type="pillar", title="Survey Builder", description="Create surveys", status="kept")
+            right = db.create_node(project_id=project.id, parent_id=None, layer=1, node_type="pillar", title="Survey Creation", description="Build surveys", status="generated")
+            job = db.create_platform_job(project_id=project.id, kind="critic", workflow="layer1_overlap_critic", scope="layer1")
+            hashes = db.current_overlap_item_hashes(project.id, "layer1")
+            verdict = db.insert_overlap_verdict(
+                project_id=project.id,
+                job_id=job.id,
+                layer="layer1",
+                target_id=left.id,
+                neighbor_id=right.id,
+                relation="merge",
+                confidence=0.9,
+                rationale="Same builder",
+                critic_source="overlap_critic",
+                target_hash=hashes[left.id],
+                neighbor_hash=hashes[right.id],
+            )
+            db.create_overlap_verdict_resolution(
+                project_id=project.id,
+                verdict_id=verdict.id,
+                layer="layer1",
+                target_id=left.id,
+                neighbor_id=right.id,
+                action="dismiss",
+                target_hash=hashes[left.id],
+                neighbor_hash=hashes[right.id],
+            )
+            runner = OverlapCriticRunner(type("Services", (), {"db": db})())
+            target = OverlapItem(id=left.id, title=left.title, description=left.description or "", status=left.status)
+            neighbor = OverlapItem(id=right.id, title=right.title, description=right.description or "", status=right.status)
+
+            filtered = runner._filter_resolved_neighbors(
+                project.id,
+                "layer1",
+                target,
+                [type("NeighborStub", (), {"item": neighbor, "score": 0.9})()],
+                db._stable_overlap_hash(target.text),
+            )
+
+            self.assertEqual(filtered, [])
+
+    def test_overlap_review_routing_is_visible_not_blended_special_case(self) -> None:
+        self.assertEqual(assignment_domain("layer1_overlap_critic"), "review")
+        self.assertEqual(assignment_domain("layer2_overlap_critic"), "review")
+        self.assertIn("review", default_routing_policy("blended"))
+
+    def test_overlap_api_enqueue_dedupes_active_jobs_and_returns_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "specforge.db"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, embeddings_enabled=False)
+            with (
+                patch("strata.api.AppConfig", return_value=config),
+                patch("strata.jobs.PlatformJobService.run_job", return_value=None),
+                TestClient(create_app()) as client,
+            ):
+                created = client.post("/api/projects", json={"name": "Overlap", "idea": "Find duplicates"})
+                project_id = created.json()["id"]
+                db = Database(db_path)
+                db.set_app_setting("setup_completed", "true")
+                db.set_app_setting("provider_readiness", json.dumps({"ready": True, "message": "Ready for tests."}))
+
+                first = client.post(f"/api/projects/{project_id}/overlap/layer1")
+                second = client.post(f"/api/projects/{project_id}/overlap/layer1")
+
+                self.assertEqual(first.status_code, 200)
+                self.assertEqual(second.status_code, 200)
+                self.assertEqual(first.json()["job"]["id"], second.json()["job"]["id"])
+                self.assertIn("snapshot", first.json())
+                self.assertIn("overlap", first.json()["snapshot"])
+
+    def test_overlap_api_resolution_records_layer2_link(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "specforge.db"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, embeddings_enabled=False)
+            with (
+                patch("strata.api.AppConfig", return_value=config),
+                TestClient(create_app()) as client,
+            ):
+                created = client.post("/api/projects", json={"name": "Overlap", "idea": "Find duplicates"})
+                project_id = created.json()["id"]
+                db = Database(db_path)
+                db.set_app_setting("setup_completed", "true")
+                db.set_app_setting("provider_readiness", json.dumps({"ready": True, "message": "Ready for tests."}))
+                pillar = db.create_node(project_id=project_id, parent_id=None, layer=1, node_type="pillar", title="Survey", description="Survey workflows", status="kept")
+                first = db.create_layer2_feature(
+                    project_id=project_id,
+                    canonical_name="Survey Builder",
+                    description="Create surveys",
+                    feature_type="workflow",
+                    owner_pillar_id=pillar.id,
+                    candidate_source_ids=[],
+                    status="kept",
+                )
+                second = db.create_layer2_feature(
+                    project_id=project_id,
+                    canonical_name="Survey Designer",
+                    description="Design surveys",
+                    feature_type="workflow",
+                    owner_pillar_id=pillar.id,
+                    candidate_source_ids=[],
+                    status="kept",
+                )
+                job = db.create_platform_job(project_id=project_id, kind="critic", workflow="layer2_overlap_critic", scope="layer2")
+                db.update_platform_job(job.id, status="completed", completed_at="2026-01-01T00:00:00+00:00")
+                hashes = db.current_overlap_item_hashes(project_id, "layer2")
+                verdict = db.insert_overlap_verdict(
+                    project_id=project_id,
+                    job_id=job.id,
+                    layer="layer2",
+                    target_id=first.id,
+                    neighbor_id=second.id,
+                    relation="link",
+                    confidence=0.8,
+                    rationale="Related creation workflows",
+                    critic_source="overlap_critic",
+                    target_hash=hashes[first.id],
+                    neighbor_hash=hashes[second.id],
+                )
+
+                response = client.post(
+                    f"/api/projects/{project_id}/overlap/layer2/verdicts/{verdict.id}/resolve",
+                    json={"action": "link"},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertEqual(payload["resolution"]["action"], "link")
+                relationships = Database(db_path).list_layer2_relationships(project_id)
+                self.assertTrue(any(relationship.relationship_type == "overlaps_with" for relationship in relationships))
+
     def test_schema_migrations_are_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "specforge.db")

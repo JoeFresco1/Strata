@@ -1,4 +1,5 @@
 import { layer1Pillars, layer2FeaturesByPillar, statusLabel } from "./workspaceSelectors";
+import WorkspacePageLayout, { WorkspaceStatusBadge } from "./WorkspacePage";
 
 function chipClass(status) {
   if (["kept", "prioritized", "approved"].includes(status)) return "kept";
@@ -13,19 +14,19 @@ export default function MapView({ snapshot, layerStatus, onNavigate }) {
   const rows = [
     {
       key: "layer0",
-      title: "Layer 0",
+      title: "Product Idea",
       body: snapshot?.brief?.product_idea || snapshot?.project?.idea || "Start with the product plan.",
       chips: snapshot?.brief ? [{ id: "layer0-root", label: "Product brief", status: snapshot.brief.status, tab: "layer0" }] : [],
     },
     {
       key: "layer1",
-      title: "Layer 1",
+      title: "Pillars",
       body: "Pillars approved or rejected from the product brief.",
       chips: pillars.map((pillar) => ({ id: pillar.id, label: pillar.title, status: pillar.status, tab: "layer1" })),
     },
     {
       key: "layer2",
-      title: "Layer 2",
+      title: "Features",
       body: "Feature candidates grouped below their Layer 1 owner.",
       chips: [...featuresByPillar.values()].flat().map((feature) => ({
         id: feature.id,
@@ -37,7 +38,14 @@ export default function MapView({ snapshot, layerStatus, onNavigate }) {
   ];
 
   return (
-    <section className="workspace-map" id="workspace-panel-overview" role="tabpanel" aria-label="Project Overview">
+    <WorkspacePageLayout
+      id="workspace-panel-map"
+      ariaLabel="Project map"
+      className="workspace-map"
+      title="Map"
+      description="Review the product idea, pillars, and features in one overview."
+      status="draft"
+    >
       {rows.map((row) => {
         const state = layerStatus[row.key] || { status: "locked", label: "Locked" };
         return (
@@ -51,7 +59,7 @@ export default function MapView({ snapshot, layerStatus, onNavigate }) {
                   <h3>{row.title}</h3>
                   <p className="muted">{row.body}</p>
                 </div>
-                <span className={`status-pill ${state.status}`}>{state.label || statusLabel(state.status)}</span>
+                <WorkspaceStatusBadge status={state.status}>{state.label || statusLabel(state.status)}</WorkspaceStatusBadge>
               </div>
               {row.chips.length ? (
                 <div className="workspace-chip-row">
@@ -74,6 +82,6 @@ export default function MapView({ snapshot, layerStatus, onNavigate }) {
           </article>
         );
       })}
-    </section>
+    </WorkspacePageLayout>
   );
 }

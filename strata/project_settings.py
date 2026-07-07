@@ -13,6 +13,8 @@ PROJECT_LLM_ASSIGNMENTS = (
     "layer0_extraction",
     "layer1_generation",
     "layer2_generation",
+    "layer1_overlap_critic",
+    "layer2_overlap_critic",
     "layer3_generation",
     "layer0_research",
     "layer1_research",
@@ -25,6 +27,7 @@ PROJECT_LLM_ASSIGNMENTS = (
 
 PROJECT_EMBEDDING_ASSIGNMENTS = (
     "layer1_similarity_embeddings",
+    "layer2_similarity_embeddings",
     "research_embeddings",
     "assistant_embeddings",
 )
@@ -32,7 +35,7 @@ PROJECT_EMBEDDING_ASSIGNMENTS = (
 DEFAULT_LLM_PROFILE_ID = "default-chat"
 DEFAULT_EMBEDDING_PROFILE_ID = "default-embedding"
 EXECUTION_INTENTS = {"local_first", "api_first", "blended"}
-ROUTING_DOMAINS = ("layer0", "generation", "research", "assistant")
+ROUTING_DOMAINS = ("layer0", "generation", "research", "review", "assistant")
 ROUTING_PREFERENCES = {"local", "api"}
 DEFAULT_CONCURRENCY_POLICY = {
     "managed_local_parallelism": 1,
@@ -43,6 +46,8 @@ ASSIGNMENT_TO_DOMAIN = {
     "layer0_extraction": "layer0",
     "layer1_generation": "generation",
     "layer2_generation": "generation",
+    "layer1_overlap_critic": "review",
+    "layer2_overlap_critic": "review",
     "layer3_generation": "generation",
     "layer0_research": "research",
     "layer1_research": "research",
@@ -63,6 +68,7 @@ def default_routing_policy(execution_intent: str) -> dict[str, str]:
             "layer0": "local",
             "generation": "local",
             "research": "local",
+            "review": "local",
             "assistant": "api",
         }
     return {domain: "local" for domain in ROUTING_DOMAINS}
@@ -109,6 +115,8 @@ def _base_model_settings(config: AppConfig) -> dict[str, Any]:
             "layer0_extraction": DEFAULT_LLM_PROFILE_ID,
             "layer1_generation": [DEFAULT_LLM_PROFILE_ID],
             "layer2_generation": DEFAULT_LLM_PROFILE_ID,
+            "layer1_overlap_critic": DEFAULT_LLM_PROFILE_ID,
+            "layer2_overlap_critic": DEFAULT_LLM_PROFILE_ID,
             "layer3_generation": DEFAULT_LLM_PROFILE_ID,
             "layer0_research": DEFAULT_LLM_PROFILE_ID,
             "layer1_research": DEFAULT_LLM_PROFILE_ID,
@@ -118,6 +126,7 @@ def _base_model_settings(config: AppConfig) -> dict[str, Any]:
             "assistant_compaction": DEFAULT_LLM_PROFILE_ID,
             "assistant_specialists": DEFAULT_LLM_PROFILE_ID,
             "layer1_similarity_embeddings": DEFAULT_EMBEDDING_PROFILE_ID,
+            "layer2_similarity_embeddings": DEFAULT_EMBEDDING_PROFILE_ID,
             "research_embeddings": DEFAULT_EMBEDDING_PROFILE_ID,
             "assistant_embeddings": DEFAULT_EMBEDDING_PROFILE_ID,
         },

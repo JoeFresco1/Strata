@@ -206,7 +206,10 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [activeProjectId, workspaceState, snapshot?.project?.lifecycle_state]);
   useEffect(() => {
-    const hasActiveResearch = (snapshot?.research_jobs || []).some((job) => ["queued", "running"].includes(job.status));
+    const hasActiveResearch = [
+      ...(snapshot?.research_jobs || []),
+      ...(snapshot?.platform_jobs || []),
+    ].some((job) => ["queued", "running"].includes(job.status));
     if (!activeProjectId || !hasActiveResearch) return undefined;
     let cancelled = false;
     let timer;
@@ -228,7 +231,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeProjectId, snapshot?.research_jobs]);
+  }, [activeProjectId, snapshot?.research_jobs, snapshot?.platform_jobs]);
   async function refreshProjects(next = {}) {
     const state = next.state || projectLifecycleState;
     const query = next.query ?? projectSearchQuery;
@@ -491,6 +494,57 @@ export default function App() {
     }
   }
 
+  async function handleLayer1OverlapCritic() {
+    setError("");
+    try {
+      await apiFetch(`/projects/${activeProjectId}/overlap/layer1`, { method: "POST" });
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
+      setStatusMessage("Layer 1 overlap critic queued.");
+      await refreshProjects();
+    } catch (criticError) {
+      setError(criticError.message);
+    }
+  }
+
+  async function handleLayer2OverlapCritic() {
+    setError("");
+    try {
+      await apiFetch(`/projects/${activeProjectId}/overlap/layer2`, { method: "POST" });
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
+      setStatusMessage("Layer 2 overlap critic queued.");
+      await refreshProjects();
+    } catch (criticError) {
+      setError(criticError.message);
+    }
+  }
+
+  async function handleOverlapResolution(layer, verdictId, payload) {
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/overlap/${layer}/verdicts/${verdictId}/resolve`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage(`Overlap verdict resolved: ${payload.action.replaceAll("_", " ")}.`);
+    } catch (resolutionError) {
+      setError(resolutionError.message);
+      throw resolutionError;
+    }
+  }
+
+  async function handleCancelJob(jobId) {
+    if (!activeProjectId || !jobId) return;
+    setError("");
+    try {
+      await apiFetch(`/projects/${activeProjectId}/jobs/${jobId}/cancel`, { method: "POST" });
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
+      setStatusMessage("Job cancellation requested.");
+    } catch (cancelError) {
+      setError(cancelError.message);
+    }
+  }
+
   async function handleLayer1PillarCreate(payload) {
     setError("");
     try {
@@ -612,6 +666,53 @@ export default function App() {
     }
   }
 
+  async function handleGenerateLayer3(featureIds = []) {
+    // Queues Layer 3 Feature Expansion generation for approved Layer 2 features.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/generate/layer3`, {
+        method: "POST",
+        body: JSON.stringify({ feature_ids: featureIds, thinking_enabled: false }),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage(`Layer 3 generation queued for ${featureIds.length} feature${featureIds.length === 1 ? "" : "s"}.`);
+    } catch (generationError) {
+      setError(generationError.message);
+      throw generationError;
+    }
+  }
+
+  async function handleLayer3ExpansionUpdate(expansionId, payload) {
+    // Persists edits to Layer 3 feature intent, groups, options, overlap notes, and questions.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage("Layer 3 expansion saved.");
+    } catch (updateError) {
+      setError(updateError.message);
+      throw updateError;
+    }
+  }
+
+  async function handleLayer3Review(expansionId, action) {
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}/review`, {
+        method: "POST",
+        body: JSON.stringify({ action, note: "" }),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage(`Layer 3 expansion marked ${action}.`);
+    } catch (reviewError) {
+      setError(reviewError.message);
+      throw reviewError;
+    }
+  }
+
   async function handleCompetitiveSettings(payload) {
     // Saves the competitor set used by the Layer 2 matrix.
     setError("");
@@ -682,7 +783,7 @@ export default function App() {
     [workspaceTree, workspaceState?.selected_entity_id],
   );
   const assistantScope = assistantScopeFor(activeTab, selectedWorkspaceEntity);
-  const currentTabLabel = activeTab === "Analytics" ? "Analytics" : activeTab === "Project" ? "Project Settings" : "Product Tree";
+  const currentTabLabel = activeTab === "Analytics" ? "Analytics" : activeTab === "Project" ? "Project Settings" : "Workspace";
 
   if (bootstrapLoading && !config) {
     return <div className="app-loading-screen"><div className="loading-spinner" /><strong>Loading Strata</strong><span>Connecting to the local workspace...</span></div>;
@@ -701,6 +802,21 @@ export default function App() {
 
   function navigateFromAssistant(layer, citation = {}) {
     applyAssistantNavigation({ layer, citation, setActiveTab, setWorkspaceState });
+  }
+
+  async function handleLayer3Export() {
+    // Exports approved Layer 3 Feature Expansions as the downstream handoff JSON.
+    setError("");
+    try {
+      const payload = await apiFetch(`/projects/${activeProjectId}/export/layer3`, {
+        method: "POST",
+      });
+      setLastExport({ kind: "Layer 3", ...payload });
+      setStatusMessage(`Layer 3 exported to ${payload.json_path}`);
+    } catch (exportError) {
+      setError(exportError.message);
+      throw exportError;
+    }
   }
   const assistantBubbleHidden = Boolean(workspaceState?.map_state?.layout?.assistant_bubble_hidden);
   function setAssistantBubbleHidden(hidden) {
@@ -804,7 +920,7 @@ export default function App() {
                 className={activeTab === "Workspace" ? "secondary-button project-content-button active" : "secondary-button project-content-button"}
                 onClick={() => setActiveTab("Workspace")}
               >
-                Product Tree
+                Workspace
               </button>
               <button
                 type="button"
@@ -909,17 +1025,26 @@ export default function App() {
                   handleExport={handleExport}
                   handleGenerateLayer1={handleGenerateLayer1}
                   handleGenerateLayer2={handleGenerateLayer2}
+                  handleGenerateLayer3={handleGenerateLayer3}
+                  handleLayer1OverlapCritic={handleLayer1OverlapCritic}
                   handleLayer1PillarCreate={handleLayer1PillarCreate}
                   handleLayer2Export={handleLayer2Export}
                   handleLayer2FeatureCreate={handleLayer2FeatureCreate}
+                  handleLayer2OverlapCritic={handleLayer2OverlapCritic}
                   handleLayer2Research={handleLayer2Research}
                   handleLayer2Review={handleLayer2Review}
+                  handleLayer3ExpansionUpdate={handleLayer3ExpansionUpdate}
+                  handleLayer3Export={handleLayer3Export}
+                  handleLayer3Review={handleLayer3Review}
                   handleNodeSave={handleNodeSave}
+                  handleOverlapResolution={handleOverlapResolution}
                   handleProjectArchiveExport={handleProjectArchiveExport}
                   handlePlanChat={handlePlanChat}
                   handlePublishBrief={handlePublishBrief}
                   handleRerunLayer0Research={handleRerunLayer0Research}
                   handleRerunLayer1Research={handleRerunLayer1Research}
+                  handleCancelJob={handleCancelJob}
+                  competitiveIntelligenceEnabled={competitiveIntelligenceEnabled}
                   lastExport={lastExport}
                   layer2Graph={layer2Graph}
                   project={project}

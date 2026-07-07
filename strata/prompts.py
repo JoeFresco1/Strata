@@ -303,6 +303,27 @@ def build_layer2_graph_critic_prompt(
     )
 
 
+def build_overlap_critic_prompt(
+    *,
+    layer: str,
+    product_idea: str,
+    target_item: dict[str, Any],
+    shortlisted_neighbors: list[dict[str, Any]],
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    """Render the target-plus-neighbors overlap critic prompt for Layer 1 or Layer 2."""
+    prompt_key = "layer1_overlap_critic" if layer == "layer1" else "layer2_overlap_dedupe_critic"
+    return render_prompt(
+        prompt_key,
+        {
+            "product_idea": product_idea,
+            "target_item": json.dumps(target_item, indent=2),
+            "shortlisted_neighbors": json.dumps(shortlisted_neighbors, indent=2),
+        },
+        prompt_catalog=prompt_catalog,
+    )
+
+
 def build_critic_prompt(
     *,
     layer_name: str,
