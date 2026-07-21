@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -21,7 +22,9 @@ from strata.db_embeddings import DatabaseEmbeddingMixin
 from strata.db_data_ownership import DataOwnershipDatabaseMixin
 from strata.db_jobs import PlatformJobDatabaseMixin
 from strata.db_lifecycle import ProjectLifecycleDatabaseMixin
+from strata.dependency_db import DependencyDatabaseMixin
 from strata.db_overlap import OverlapDatabaseMixin
+from strata.critic_db import CriticDatabaseMixin
 from strata.assistant_db import AssistantDatabaseMixin
 from strata.db_rows import DatabaseRowMixin
 from strata.db_research import ResearchDatabaseMixin
@@ -53,12 +56,13 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class Database(ProjectLifecycleDatabaseMixin, DataOwnershipDatabaseMixin, TelemetryDatabaseMixin, PlatformJobDatabaseMixin, OverlapDatabaseMixin, AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin, ResearchDatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
+class Database(ProjectLifecycleDatabaseMixin, DependencyDatabaseMixin, DataOwnershipDatabaseMixin, TelemetryDatabaseMixin, PlatformJobDatabaseMixin, OverlapDatabaseMixin, CriticDatabaseMixin, AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin, ResearchDatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
     """Store SpecForge state in either PostgreSQL or SQLite through one stable API."""
 
     def __init__(self, target: str | Path, *, postgres_admin_url: str | None = None):
         """Configure the database backend and initialize required schema objects."""
         self.target = target
+        self._transaction_state = threading.local()
         self.postgres_admin_url = postgres_admin_url
         self.is_postgres = self._is_postgres_target(target)
         self.param = "%s" if self.is_postgres else "?"
@@ -75,16 +79,56 @@ class Database(ProjectLifecycleDatabaseMixin, DataOwnershipDatabaseMixin, Teleme
     @contextmanager
     def connect(self) -> Iterable[Any]:
         """Open a database connection with the correct row format for the active backend."""
-        if self.is_postgres:
-            connection = psycopg.connect(self.database_url, row_factory=dict_row)
-            register_vector(connection)
-        else:
-            connection = sqlite3.connect(self.db_path)
-            connection.row_factory = sqlite3.Row
+        ambient = getattr(self._transaction_state, "connection", None)
+        if ambient is not None:
+            yield ambient
+            return
+        connection = self._open_connection()
         try:
             yield connection
             connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
+            connection.close()
+
+    def _open_connection(self) -> Any:
+        """Create one backend connection without applying transaction ownership semantics."""
+        if self.is_postgres:
+            connection = psycopg.connect(self.database_url, row_factory=dict_row)
+            try:
+                register_vector(connection)
+            except psycopg.ProgrammingError as exc:
+                # A brand-new PostgreSQL database has no vector type until schema
+                # initialization creates the pgvector extension on this connection.
+                if "vector type not found" not in str(exc).lower():
+                    connection.close()
+                    raise
+        else:
+            connection = sqlite3.connect(self.db_path)
+            connection.row_factory = sqlite3.Row
+        return connection
+
+    @contextmanager
+    def unit_of_work(self) -> Iterable[Any]:
+        """Share one transaction across nested persistence helpers for an authoritative command."""
+        ambient = getattr(self._transaction_state, "connection", None)
+        if ambient is not None:
+            yield ambient
+            return
+        connection = self._open_connection()
+        self._transaction_state.connection = connection
+        try:
+            if not self.is_postgres:
+                connection.execute("BEGIN IMMEDIATE")
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            self._transaction_state.connection = None
             connection.close()
 
     def initialize(self) -> None:
@@ -177,6 +221,7 @@ class Database(ProjectLifecycleDatabaseMixin, DataOwnershipDatabaseMixin, Teleme
         product_idea: str,
         known_competitors: list[str],
         constraints: str,
+        problem: str = "",
         target_users: str = "",
         goals: list[str] | None = None,
         preferred_directions: list[str] | None = None,
@@ -198,15 +243,16 @@ class Database(ProjectLifecycleDatabaseMixin, DataOwnershipDatabaseMixin, Teleme
             self._execute(
                 f"""
                 INSERT INTO project_briefs (
-                    id, project_id, product_idea, known_competitors, constraints, target_users,
+                    id, project_id, product_idea, problem, known_competitors, constraints, target_users,
                     goals, preferred_directions, rejected_directions, notes, status, created_at, updated_at
                 )
-                VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
+                VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
                 """,
                 (
                     brief_id,
                     project_id,
                     product_idea,
+                    problem,
                     self._dump_json(known_competitors),
                     constraints,
                     target_users,
@@ -225,6 +271,7 @@ class Database(ProjectLifecycleDatabaseMixin, DataOwnershipDatabaseMixin, Teleme
                 f"""
                 UPDATE project_briefs
                 SET product_idea = {self.param},
+                    problem = {self.param},
                     known_competitors = {self.param},
                     constraints = {self.param},
                     target_users = {self.param},
@@ -238,6 +285,7 @@ class Database(ProjectLifecycleDatabaseMixin, DataOwnershipDatabaseMixin, Teleme
                 """,
                 (
                     product_idea,
+                    problem,
                     self._dump_json(known_competitors),
                     constraints,
                     target_users,
@@ -260,7 +308,20 @@ class Database(ProjectLifecycleDatabaseMixin, DataOwnershipDatabaseMixin, Teleme
         )
         if row is None:
             return None
-        return self._row_to_project_brief(row)
+        brief = self._row_to_project_brief(row)
+        if "brief_heads" not in self._table_names():
+            return brief
+        head = self._fetchone(f"SELECT * FROM brief_heads WHERE project_id = {self.param}", (project_id,))
+        if head is None:
+            return brief
+        draft_id = str(head["current_draft_revision_id"] or "")
+        draft = self._fetchone(f"SELECT revision_number, content_hash FROM brief_revisions WHERE id = {self.param}", (draft_id,)) if draft_id else None
+        return brief.model_copy(update={
+            "current_draft_revision_id": draft_id or None,
+            "current_published_revision_id": str(head["current_published_revision_id"] or "") or None,
+            "revision_number": int(draft["revision_number"]) if draft else int(head["revision_counter"]),
+            "content_hash": str(draft["content_hash"]) if draft else "",
+        })
 
     def get_app_setting(self, key: str) -> str | None:
         """Fetch a persisted app-level setting value."""
@@ -711,12 +772,15 @@ class Database(ProjectLifecycleDatabaseMixin, DataOwnershipDatabaseMixin, Teleme
                     now,
                 ),
             )
-        return self.get_project_memory(
+        memory = self.get_project_memory(
             project_id=project_id,
             scope=scope,
             scope_id=scope_id,
             memory_type=memory_type,
         )
+        if "artifact_dependencies" in self._table_names():
+            self.register_project_memory_lineage(memory)
+        return memory
 
     def get_project_memory(
         self,

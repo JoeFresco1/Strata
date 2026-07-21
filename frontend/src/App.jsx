@@ -315,7 +315,7 @@ export default function App() {
     try {
       await apiFetch(`/nodes/${nodeId}`, {
         method: "PATCH",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.nodes?.find((item) => item.id === nodeId)?.state_token, request_id: crypto.randomUUID() }),
       });
       applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
       setStatusMessage("Node updated.");
@@ -330,7 +330,7 @@ export default function App() {
     try {
       await apiFetch(`/projects/${activeProjectId}/brief`, {
         method: "PATCH",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.brief?.state_token, request_id: crypto.randomUUID() }),
       });
       applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
     } catch (saveError) {
@@ -343,7 +343,7 @@ export default function App() {
     try {
       const payload = await apiFetch(`/projects/${activeProjectId}/brief/chat`, {
         method: "POST",
-        body: JSON.stringify({ message, request_id: requestId }),
+        body: JSON.stringify({ message, request_id: requestId, expected_state_token: snapshot?.brief?.state_token }),
       });
       applySnapshot({
         ...snapshot,
@@ -360,7 +360,8 @@ export default function App() {
     // Locks Layer 0 for downstream generation and queues initial research.
     setError("");
     try {
-      const payload = await apiFetch(`/projects/${activeProjectId}/brief/publish`, {
+      const query = new URLSearchParams({ expected_state_token: snapshot?.brief?.state_token || "", request_id: crypto.randomUUID() });
+      const payload = await apiFetch(`/projects/${activeProjectId}/brief/publish?${query}`, {
         method: "POST",
       });
       applySnapshot(payload.snapshot);
@@ -387,7 +388,7 @@ export default function App() {
     try {
       await apiFetch(`/projects/${activeProjectId}/research/layer1`, {
         method: "POST",
-        body: JSON.stringify({ pillar_ids: pillarIds }),
+        body: JSON.stringify({ pillar_ids: pillarIds, request_id: crypto.randomUUID() }),
       });
       applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
       setStatusMessage("Layer 1 research queued.");
@@ -410,6 +411,7 @@ export default function App() {
           total_cap: layer1TotalCap,
           min_new_items_per_round: layer1MinNew,
           stale_rounds_to_stop: 2,
+          request_id: crypto.randomUUID(),
         }),
       });
       setLastSummary({
@@ -444,6 +446,7 @@ export default function App() {
           total_cap: layer2TotalCap,
           min_new_items_per_round: layer2MinNew,
           stale_rounds_to_stop: 2,
+          request_id: crypto.randomUUID(),
         }),
       });
       setLastSummary({
@@ -470,7 +473,12 @@ export default function App() {
     try {
       const payload = await apiFetch(`/projects/${activeProjectId}/layer2/review`, {
         method: "POST",
-        body: JSON.stringify(action),
+        body: JSON.stringify({
+          ...action,
+          expected_state_token: snapshot?.layer2_graph?.features?.find((item) => item.id === action.feature_id)?.state_token,
+          expected_target_state_token: snapshot?.layer2_graph?.features?.find((item) => item.id === action.target_feature_id)?.state_token,
+          request_id: crypto.randomUUID(),
+        }),
       });
       applySnapshot(payload.snapshot);
       setStatusMessage(`Layer 2 action recorded: ${action.action_type}.`);
@@ -484,7 +492,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer2/features`, {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, request_id: crypto.randomUUID() }),
       });
       applySnapshot(response.snapshot);
       setStatusMessage("Layer 2 feature added.");
@@ -523,7 +531,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/overlap/${layer}/verdicts/${verdictId}/resolve`, {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.overlap?.[layer]?.verdicts?.find((item) => item.id === verdictId)?.state_token, request_id: crypto.randomUUID() }),
       });
       applySnapshot(response.snapshot);
       setStatusMessage(`Overlap verdict resolved: ${payload.action.replaceAll("_", " ")}.`);
@@ -550,7 +558,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer1/pillars`, {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.brief?.state_token, request_id: crypto.randomUUID() }),
       });
       applySnapshot(response.snapshot);
       setStatusMessage("Layer 1 pillar added.");
@@ -565,7 +573,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer2/features/${featureId}`, {
         method: "PATCH",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.layer2_graph?.features?.find((item) => item.id === featureId)?.state_token, request_id: crypto.randomUUID() }),
       });
       applySnapshot(response.snapshot);
       setStatusMessage("Layer 2 feature updated.");
@@ -581,7 +589,11 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer2/bulk`, {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          ...payload,
+          expected_state_tokens: Object.fromEntries((payload.feature_ids || []).map((id) => [id, snapshot?.layer2_graph?.features?.find((item) => item.id === id)?.state_token || ""])),
+          request_id: crypto.randomUUID(),
+        }),
       });
       applySnapshot(response.snapshot);
       setStatusMessage(`Bulk Layer 2 action recorded: ${payload.action_type}.`);
@@ -592,11 +604,16 @@ export default function App() {
   }
 
   async function handleBulkNodeStatus(nodeIds, status) {
-    await Promise.all(nodeIds.map((nodeId) => apiFetch(`/nodes/${nodeId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ status }),
-    })));
-    applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
+    const response = await apiFetch(`/projects/${activeProjectId}/layer1/bulk`, {
+      method: "POST",
+      body: JSON.stringify({
+        pillar_ids: nodeIds,
+        status,
+        expected_state_tokens: Object.fromEntries(nodeIds.map((id) => [id, snapshot?.nodes?.find((item) => item.id === id)?.state_token || ""])),
+        request_id: crypto.randomUUID(),
+      }),
+    });
+    applySnapshot(response.snapshot);
   }
 
   async function handleBulkFeatureStatus(featureIds, status) {
@@ -613,6 +630,8 @@ export default function App() {
         action_type,
         feature_id: featureId,
         payload: action_type === "prioritize" ? { priority: "high" } : {},
+        expected_state_token: snapshot?.layer2_graph?.features?.find((item) => item.id === featureId)?.state_token,
+        request_id: crypto.randomUUID(),
       }),
     })));
     applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
@@ -625,6 +644,9 @@ export default function App() {
         action_type: "merge",
         feature_id: featureId,
         target_feature_id: targetFeatureId,
+        expected_state_token: snapshot?.layer2_graph?.features?.find((item) => item.id === featureId)?.state_token,
+        expected_target_state_token: snapshot?.layer2_graph?.features?.find((item) => item.id === targetFeatureId)?.state_token,
+        request_id: crypto.randomUUID(),
         payload: { rationale: "Reviewer combined this feature into the selected winner." },
       }),
     });
@@ -653,7 +675,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/research/layer2`, {
         method: "POST",
-        body: JSON.stringify({ feature_ids: featureIds }),
+        body: JSON.stringify({ feature_ids: featureIds, request_id: crypto.randomUUID() }),
       });
       applySnapshot({
         ...snapshot,
@@ -672,7 +694,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/generate/layer3`, {
         method: "POST",
-        body: JSON.stringify({ feature_ids: featureIds, thinking_enabled: false }),
+        body: JSON.stringify({ feature_ids: featureIds, thinking_enabled: false, request_id: crypto.randomUUID() }),
       });
       applySnapshot(response.snapshot);
       setStatusMessage(`Layer 3 generation queued for ${featureIds.length} feature${featureIds.length === 1 ? "" : "s"}.`);
@@ -688,7 +710,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}`, {
         method: "PATCH",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.layer3?.expansions?.find((item) => item.id === expansionId)?.active_revision_id, request_id: crypto.randomUUID() }),
       });
       applySnapshot(response.snapshot);
       setStatusMessage("Layer 3 expansion saved.");
@@ -703,13 +725,66 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}/review`, {
         method: "POST",
-        body: JSON.stringify({ action, note: "" }),
+        body: JSON.stringify({ action, note: "", expected_state_token: snapshot?.layer3?.expansions?.find((item) => item.id === expansionId)?.active_revision_id, request_id: crypto.randomUUID() }),
       });
       applySnapshot(response.snapshot);
       setStatusMessage(`Layer 3 expansion marked ${action}.`);
     } catch (reviewError) {
       setError(reviewError.message);
       throw reviewError;
+    }
+  }
+
+  async function handleLayer3CandidateApply(expansionId, candidateRevisionId, expectedActiveRevisionId, selectedSections = []) {
+    // Applies a reviewed candidate with optimistic concurrency and an idempotent command key.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}/candidates/${candidateRevisionId}/apply`, {
+        method: "POST",
+        body: JSON.stringify({
+          expected_active_revision_id: expectedActiveRevisionId || null,
+          request_id: crypto.randomUUID(),
+          selected_sections: selectedSections,
+          actor: "user",
+        }),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage(selectedSections.length ? "Selected Layer 3 sections applied." : "Layer 3 candidate accepted.");
+    } catch (candidateError) {
+      setError(candidateError.message);
+      throw candidateError;
+    }
+  }
+
+  async function handleLayer3CandidateReject(expansionId, candidateRevisionId) {
+    // Rejects only the candidate revision; the active expansion remains unchanged.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}/candidates/${candidateRevisionId}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ request_id: crypto.randomUUID(), expected_active_revision_id: snapshot?.layer3?.expansions?.find((item) => item.id === expansionId)?.active_revision_id, note: "", actor: "user" }),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage("Layer 3 candidate rejected.");
+    } catch (candidateError) {
+      setError(candidateError.message);
+      throw candidateError;
+    }
+  }
+
+  async function handleLayer3RevisionRestore(expansionId, revisionId, expectedActiveRevisionId) {
+    // Restores earlier accepted content as a new revision instead of rewinding history.
+    setError("");
+    try {
+      const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}/revisions/${revisionId}/restore`, {
+        method: "POST",
+        body: JSON.stringify({ expected_active_revision_id: expectedActiveRevisionId, request_id: crypto.randomUUID(), actor: "user" }),
+      });
+      applySnapshot(response.snapshot);
+      setStatusMessage("Earlier Layer 3 revision restored as the new active revision.");
+    } catch (restoreError) {
+      setError(restoreError.message);
+      throw restoreError;
     }
   }
 
@@ -771,7 +846,7 @@ export default function App() {
   const layer1Enabled = brief?.status === "published";
   const normalizedProjectQuery = projectSearchQuery.trim().toLowerCase();
   const visibleProjects = normalizedProjectQuery
-    ? projects.filter((item) => `${item.name || ""} ${item.idea || ""}`.toLowerCase().includes(normalizedProjectQuery))
+    ? projects.filter((item) => `${item.name || ""} ${item.idea || ""} ${item.id || ""}`.toLowerCase().includes(normalizedProjectQuery))
     : projects;
   const sortedProjects = sortProjects(visibleProjects, sortOrder);
   const workspaceTree = useMemo(
@@ -982,6 +1057,7 @@ export default function App() {
             onArchiveProject={handleArchiveProject}
             onUnarchiveProject={handleUnarchiveProject}
             onImportProject={() => setShowImportProject(true)}
+            errorMessage={error}
           />
         ) : projectLoading ? (
           <div className="project-loading-state" aria-live="polite">
@@ -1030,10 +1106,14 @@ export default function App() {
                   handleLayer1PillarCreate={handleLayer1PillarCreate}
                   handleLayer2Export={handleLayer2Export}
                   handleLayer2FeatureCreate={handleLayer2FeatureCreate}
+                  handleLayer2FeatureUpdate={handleLayer2FeatureUpdate}
                   handleLayer2OverlapCritic={handleLayer2OverlapCritic}
                   handleLayer2Research={handleLayer2Research}
                   handleLayer2Review={handleLayer2Review}
                   handleLayer3ExpansionUpdate={handleLayer3ExpansionUpdate}
+                  handleLayer3CandidateApply={handleLayer3CandidateApply}
+                  handleLayer3CandidateReject={handleLayer3CandidateReject}
+                  handleLayer3RevisionRestore={handleLayer3RevisionRestore}
                   handleLayer3Export={handleLayer3Export}
                   handleLayer3Review={handleLayer3Review}
                   handleNodeSave={handleNodeSave}

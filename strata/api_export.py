@@ -9,6 +9,7 @@ from strata.api_models import ExportResponse
 from strata.api_support import AppServices
 from strata.export import export_layer2_markdown, export_layer3_feature_expansions, export_project
 from strata.layer3_service import validate_product_level_content
+from strata.freshness import FreshnessValidationService
 
 
 def register_export_routes(app: FastAPI, services: AppServices) -> None:
@@ -71,6 +72,11 @@ def register_export_routes(app: FastAPI, services: AppServices) -> None:
             ]
             if stale_expansion_ids:
                 raise ValueError("Approved Layer 3 expansions have Layer 2 sources that are no longer approved.")
+            freshness = FreshnessValidationService(services.db).validate_layer3_export(
+                project_id, [str(expansion["id"]) for expansion in approved_expansions],
+            )
+            if not freshness["coherent"]:
+                raise ValueError("Layer 3 export is blocked because selected revisions are stale or have mixed/missing lineage: " + "; ".join(freshness["actionable_reasons"]))
             for expansion in approved_expansions:
                 validate_product_level_content(expansion)
             output_path = export_layer3_feature_expansions(
@@ -82,6 +88,6 @@ def register_export_routes(app: FastAPI, services: AppServices) -> None:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"json_path": str(output_path), "approved_expansion_count": sum(
+        return {"json_path": str(output_path), "freshness": freshness, "approved_expansion_count": sum(
             1 for expansion in layer3.get("expansions", []) if expansion.get("review_state") == "approved"
         )}

@@ -16,6 +16,8 @@ PROJECT_ARCHIVE_VERSION = 1
 
 DIRECT_PROJECT_TABLES = [
     "project_briefs",
+    "brief_heads",
+    "brief_revisions",
     "project_model_settings",
     "project_workspace_state",
     "project_telemetry_settings",
@@ -43,18 +45,28 @@ DIRECT_PROJECT_TABLES = [
     "layer2_feature_evidence",
     "layer2_competitive_settings",
     "layer2_review_actions",
+    "artifact_authority_actions",
+    "critic_findings",
+    "command_executions",
     "assistant_conversations",
     "assistant_messages",
     "assistant_documents",
     "assistant_action_proposals",
     "layer3_feature_expansions",
     "layer3_expansion_actions",
+    "layer3_expansion_revisions",
+    "layer3_expansion_heads",
+    "layer3_revision_actions",
+    "artifact_dependencies",
+    "artifact_freshness_states",
+    "artifact_stale_transitions",
 ]
 
 DEPENDENT_TABLES = {
     "layer2_feature_aliases": ("feature_id", "layer2_features", "id"),
     "assistant_runs": ("assistant_message_id", "assistant_messages", "id"),
     "assistant_specialist_runs": ("assistant_run_id", "assistant_runs", "id"),
+    "layer3_expansion_revision_states": ("revision_id", "layer3_expansion_revisions", "id"),
 }
 
 CLONE_EXCLUDED_TABLES = {
@@ -233,31 +245,36 @@ class ProjectLifecycleDatabaseMixin:
             for row in rows:
                 if row.get("id"):
                     id_map.setdefault(str(row["id"]), str(uuid.uuid4()))
-        self._execute(
-            f"""
-            INSERT INTO projects (
-                id, name, idea, created_at, updated_at, last_opened_at, archived_at,
-                lifecycle_state, source_project_id
-            ) VALUES ({', '.join([self.param] * 9)})
-            """,
-            (
-                new_project_id,
-                name,
-                source_project.get("idea", ""),
-                now,
-                now,
-                None,
-                None,
-                "active",
-                source_project_id,
-            ),
-        )
-        for table in self._archive_insert_order(tables):
-            rows = tables.get(table, [])
-            if table == "project_model_settings":
-                rows = [self._sanitize_imported_model_settings(row, warnings) for row in rows]
-            for row in rows:
-                self._insert_imported_row(table, row, new_project_id, id_map, now)
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    f"""
+                    INSERT INTO projects (
+                        id, name, idea, created_at, updated_at, last_opened_at, archived_at,
+                        lifecycle_state, source_project_id
+                    ) VALUES ({', '.join([self.param] * 9)})
+                    """,
+                    (
+                        new_project_id,
+                        name,
+                        source_project.get("idea", ""),
+                        now,
+                        now,
+                        None,
+                        None,
+                        "active",
+                        source_project_id,
+                    ),
+                )
+                for table in self._archive_insert_order(tables):
+                    rows = tables.get(table, [])
+                    if table == "project_model_settings":
+                        rows = [self._sanitize_imported_model_settings(row, warnings) for row in rows]
+                    for row in rows:
+                        self._insert_imported_row(table, row, new_project_id, id_map, now, cursor=cursor)
+            finally:
+                cursor.close()
         return {
             "project": self.get_project(new_project_id),
             "lifecycle_warnings": warnings,
@@ -281,19 +298,26 @@ class ProjectLifecycleDatabaseMixin:
         return {"purged_project_id": project_id, "deleted_artifacts": deleted_artifacts}
 
     def _delete_project_rows(self, project_id: str) -> None:
+        """Delete all project-scoped rows in one transaction so deferred integrity checks see the final state."""
         source_ids: dict[str, set[str]] = {}
         project_tables = self._purge_project_tables()
         for table in project_tables:
             rows = self._project_table_rows(table, project_id)
             source_ids[table] = {str(row["id"]) for row in rows if row.get("id")}
-        for table, (column, source_table, _) in DEPENDENT_TABLES.items():
-            if table not in self._table_names():
-                continue
-            for source_id in source_ids.get(source_table, set()):
-                self._execute(f"DELETE FROM {table} WHERE {column} = {self.param}", (source_id,))
-        for table in reversed(project_tables):
-            if table in self._table_names():
-                self._execute(f"DELETE FROM {table} WHERE project_id = {self.param}", (project_id,))
+        table_names = self._table_names()
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            try:
+                for table, (column, source_table, _) in DEPENDENT_TABLES.items():
+                    if table not in table_names:
+                        continue
+                    for source_id in source_ids.get(source_table, set()):
+                        cursor.execute(f"DELETE FROM {table} WHERE {column} = {self.param}", (source_id,))
+                for table in reversed(project_tables):
+                    if table in table_names:
+                        cursor.execute(f"DELETE FROM {table} WHERE project_id = {self.param}", (project_id,))
+            finally:
+                cursor.close()
 
     def _purge_project_tables(self) -> list[str]:
         """Return all discovered project-scoped tables while preserving known FK order."""
@@ -319,7 +343,17 @@ class ProjectLifecycleDatabaseMixin:
             rows.extend(self._plain_row(row) for row in self._fetchall(f"SELECT * FROM {table} WHERE {column} = {self.param}", (source_id,)))
         return rows
 
-    def _insert_imported_row(self, table: str, row: dict[str, Any], project_id: str, id_map: dict[str, str], now: str) -> None:
+    def _insert_imported_row(
+        self,
+        table: str,
+        row: dict[str, Any],
+        project_id: str,
+        id_map: dict[str, str],
+        now: str,
+        *,
+        cursor: Any | None = None,
+    ) -> None:
+        """Insert one remapped archive row, reusing the caller's transaction when provided."""
         if table not in self._table_names():
             return
         columns = self._table_columns(table)
@@ -330,6 +364,8 @@ class ProjectLifecycleDatabaseMixin:
             old_id = str(row["id"])
             id_map.setdefault(old_id, str(uuid.uuid4()))
             payload["id"] = id_map[old_id]
+        if table == "layer3_revision_actions" and "request_id" in columns:
+            payload["request_id"] = f"import:{uuid.uuid4()}"
         if "created_at" in columns:
             payload["created_at"] = now
         if "updated_at" in columns:
@@ -344,14 +380,17 @@ class ProjectLifecycleDatabaseMixin:
             return
         placeholders = ", ".join([self.param] * len(insert_columns))
         values = tuple(self._prepare_lifecycle_import_value(column, payload[column]) for column in insert_columns)
-        self._execute(
-            f"INSERT INTO {table} ({', '.join(insert_columns)}) VALUES ({placeholders})",
-            values,
-        )
+        query = f"INSERT INTO {table} ({', '.join(insert_columns)}) VALUES ({placeholders})"
+        if cursor is not None:
+            cursor.execute(query, values)
+        else:
+            self._execute(query, values)
 
     def _archive_insert_order(self, tables: dict[str, list[dict[str, Any]]]) -> list[str]:
         preferred = [
             "project_briefs",
+            "brief_heads",
+            "brief_revisions",
             "project_model_settings",
             "project_workspace_state",
             "project_telemetry_settings",
@@ -379,8 +418,18 @@ class ProjectLifecycleDatabaseMixin:
             "layer2_feature_evidence",
             "layer2_competitive_settings",
             "layer2_review_actions",
+            "artifact_authority_actions",
+            "critic_findings",
+            "command_executions",
             "layer3_feature_expansions",
             "layer3_expansion_actions",
+            "layer3_expansion_heads",
+            "layer3_expansion_revisions",
+            "layer3_expansion_revision_states",
+            "layer3_revision_actions",
+            "artifact_dependencies",
+            "artifact_freshness_states",
+            "artifact_stale_transitions",
             "assistant_conversations",
             "assistant_messages",
             "assistant_documents",
@@ -416,7 +465,12 @@ class ProjectLifecycleDatabaseMixin:
     def _table_columns(self, table: str) -> list[str]:
         if self.is_postgres:
             rows = self._fetchall(
-                "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s ORDER BY ordinal_position",
+                """
+                SELECT column_name AS name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = %s AND is_generated = 'NEVER'
+                ORDER BY ordinal_position
+                """,
                 (table,),
             )
         else:

@@ -10,6 +10,7 @@ from strata.layer2_constants import (
 )
 from strata.models import Layer2CoverageAssessmentResponse, Node
 from strata.prompts import build_layer2_coverage_prompt
+from strata.critic_policy import CriticAuthorityPolicy, CriticDisposition
 
 
 class Layer2CoverageMixin:
@@ -144,12 +145,29 @@ class Layer2CoverageMixin:
 
     def _apply_layer2_drift_flags(self, project_id: str, drifted_feature_ids: list[str]) -> None:
         """Mark critic-identified drift as needs_review without deleting provenance."""
+        policy = CriticAuthorityPolicy(self.db)
         for feature_id in drifted_feature_ids:
             try:
                 feature = self.db.get_layer2_feature(feature_id)
             except ValueError:
                 continue
             if feature.project_id != project_id:
+                continue
+            authority = policy.evaluate(
+                project_id=project_id, artifact_type="layer2_feature", artifact_id=feature.id,
+                current_review_state=feature.status, current_actor="model", current_origin="model_critic",
+                proposed_action="route_for_review", source_freshness="unknown",
+                is_new_unreviewed_candidate=feature.status == "candidate",
+            )
+            if authority.disposition != CriticDisposition.AUTOMATIC_ROUTING:
+                self.db.create_critic_finding(
+                    project_id=project_id, artifact_type="layer2_feature", artifact_id=feature.id,
+                    critic_type="layer2_coverage_critic", category="scope_drift", severity="medium",
+                    explanation="Coverage critic identified possible scope drift.",
+                    evidence={"feature_id": feature.id, "status": feature.status},
+                    recommended_action="Review scope and decide whether to reroute this feature.",
+                    source_payload={"feature_id": feature.id, "category": "scope_drift"},
+                )
                 continue
             self.db.update_layer2_feature(
                 feature.id,

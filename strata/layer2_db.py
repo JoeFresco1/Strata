@@ -572,9 +572,12 @@ class Layer2DatabaseMixin(Layer2WorkbenchDatabaseMixin):
                     now,
                 ),
             )
-            return self._row_to_layer2_coverage_matrix(
+            result = self._row_to_layer2_coverage_matrix(
                 self._fetchone(f"SELECT * FROM layer2_coverage_matrix WHERE id = {self.param}", (row_id,))
             )
+            if "artifact_dependencies" in self._table_names():
+                self.register_coverage_lineage(result)
+            return result
         self._execute(
             f"""
             UPDATE layer2_coverage_matrix
@@ -598,9 +601,12 @@ class Layer2DatabaseMixin(Layer2WorkbenchDatabaseMixin):
                 self._row_value(existing, "id"),
             ),
         )
-        return self._row_to_layer2_coverage_matrix(
+        result = self._row_to_layer2_coverage_matrix(
             self._fetchone(f"SELECT * FROM layer2_coverage_matrix WHERE id = {self.param}", (self._row_value(existing, "id"),))
         )
+        if "artifact_dependencies" in self._table_names():
+            self.register_coverage_lineage(result)
+        return result
 
     def list_layer2_coverage_matrix(self, project_id: str, *, pillar_id: str | None = None) -> list[Layer2CoverageMatrixRow]:
         """Return Layer 2 exhaustion rows for a project or one pillar."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,11 @@ from strata.api_models import (
     ProjectCreateRequest,
     ProjectUpdateRequest,
 )
-from strata.api_support import AppServices, _load_app_model_settings
+from strata.api_support import AppServices, _command_http_error, _load_app_model_settings
+from strata.command_types import (
+    ActorType, ArchiveProject, CommandActor, CommandError, CommandOrigin,
+    ImportProjectArchive, UnarchiveProject, UpdateBriefDraft, UpdateProjectMetadata,
+)
 from strata.project_settings import default_project_model_settings
 
 
@@ -56,18 +61,20 @@ def register_lifecycle_routes(app: FastAPI, services: AppServices) -> None:
 
     @app.get("/api/projects")
     def list_projects(state: str = "active", query: str = "", sort: str = "updated") -> list[dict[str, object]]:
-        return [_project_summary_payload(project) for project in services.db.list_projects(state=state, query=query, sort=sort)]
+        return [_project_summary_payload(project, services) for project in services.db.list_projects(state=state, query=query, sort=sort)]
 
     @app.post("/api/projects")
     def create_project(request: ProjectCreateRequest) -> dict[str, object]:
-        project = services.db.create_project(request.name.strip(), request.idea.strip())
-        services.db.upsert_project_model_settings(
-            project_id=project.id,
-            **default_project_model_settings(services.config, _load_app_model_settings(services)),
-        )
-        services.brief_service.update_brief(
-            project.id,
-            {
+        with services.db.unit_of_work():
+            project = services.db.create_project(request.name.strip(), request.idea.strip())
+            services.db.upsert_project_model_settings(
+                project_id=project.id,
+                **default_project_model_settings(services.config, _load_app_model_settings(services)),
+            )
+            brief = services.brief_service.ensure_brief(project.id)
+            services.command_service.handle(UpdateBriefDraft(
+                project_id=project.id, actor=CommandActor.human_ui(), expected_state_token=services.command_service.brief_state_token(brief),
+                idempotency_key=str(uuid.uuid4()), updates={
                 "product_idea": request.idea,
                 "known_competitors": request.known_competitors,
                 "constraints": request.constraints,
@@ -76,33 +83,45 @@ def register_lifecycle_routes(app: FastAPI, services: AppServices) -> None:
                 "preferred_directions": request.preferred_directions,
                 "rejected_directions": request.rejected_directions,
                 "notes": request.notes,
-            },
-        )
+                },
+            ))
         return project.model_dump(mode="json")
 
     @app.patch("/api/projects/{project_id}")
     def update_project(project_id: str, request: ProjectUpdateRequest) -> dict[str, object]:
         try:
-            project = services.db.update_project_metadata(project_id, name=request.name.strip(), idea=request.idea.strip())
+            result = services.command_service.handle(UpdateProjectMetadata(
+                project_id=project_id, actor=CommandActor.human_ui(), expected_state_token=request.expected_state_token,
+                idempotency_key=request.request_id or str(uuid.uuid4()), name=request.name, idea=request.idea,
+            ))
+            project = {**result.data["project"], "state_token": result.state_token}
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return project.model_dump(mode="json")
+        return project
 
     @app.post("/api/projects/{project_id}/archive")
-    def archive_project(project_id: str) -> dict[str, object]:
+    def archive_project(project_id: str, expected_state_token: str | None = None, request_id: str | None = None) -> dict[str, object]:
         try:
-            project = services.db.archive_project(project_id)
+            result = services.command_service.handle(ArchiveProject(project_id=project_id, actor=CommandActor.human_ui(), expected_state_token=expected_state_token, idempotency_key=request_id or str(uuid.uuid4())))
+            project = {**result.data["project"], "state_token": result.state_token}
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return project.model_dump(mode="json")
+        return project
 
     @app.post("/api/projects/{project_id}/unarchive")
-    def unarchive_project(project_id: str) -> dict[str, object]:
+    def unarchive_project(project_id: str, expected_state_token: str | None = None, request_id: str | None = None) -> dict[str, object]:
         try:
-            project = services.db.unarchive_project(project_id)
+            result = services.command_service.handle(UnarchiveProject(project_id=project_id, actor=CommandActor.human_ui(), expected_state_token=expected_state_token, idempotency_key=request_id or str(uuid.uuid4())))
+            project = {**result.data["project"], "state_token": result.state_token}
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return project.model_dump(mode="json")
+        return project
 
     @app.post("/api/projects/{project_id}/clone")
     def clone_project(project_id: str, request: ProjectCloneRequest) -> dict[str, object]:
@@ -129,17 +148,21 @@ def register_lifecycle_routes(app: FastAPI, services: AppServices) -> None:
         if not path.exists():
             raise HTTPException(status_code=404, detail=f"Project archive not found: {path}")
         try:
-            result = services.db.import_project_archive(path)
+            result = services.command_service.handle(ImportProjectArchive(
+                project_id="import", actor=CommandActor(actor_id="archive_import", actor_type=ActorType.IMPORT, origin=CommandOrigin.IMPORT),
+                idempotency_key=request.request_id or str(uuid.uuid4()), archive_path=str(path),
+            )).data
         except (ValueError, zipfile.BadZipFile) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return ProjectArchiveImportResponse(
-            project=result["project"].model_dump(mode="json"),
+            project=result["project"],
             lifecycle_warnings=result.get("lifecycle_warnings", []),
         )
 
 
-def _project_summary_payload(project: dict[str, Any]) -> dict[str, object]:
-    return {
+def _project_summary_payload(project: dict[str, Any], services: AppServices) -> dict[str, object]:
+    """Serialize a project list row and attach its canonical concurrency token."""
+    payload = {
         **project,
         "created_at": project["created_at"].isoformat(),
         "updated_at": project["updated_at"].isoformat() if project.get("updated_at") else None,
@@ -147,6 +170,8 @@ def _project_summary_payload(project: dict[str, Any]) -> dict[str, object]:
         "archived_at": project["archived_at"].isoformat() if project.get("archived_at") else None,
         "brief_updated_at": project["brief_updated_at"].isoformat() if project.get("brief_updated_at") else None,
     }
+    payload["state_token"] = services.command_service.project_state_token(services.db.get_project(str(project["id"])))
+    return payload
 
 
 def _project_id_from_path(path: str) -> str | None:

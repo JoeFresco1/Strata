@@ -1,10 +1,27 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import "./ProjectShell.css";
 
-// Formats project timestamps consistently inside the project library.
-function formatProjectCardDate(value) {
+function formatExactDate(value) {
   if (!value) return "Never";
-  return new Date(value).toLocaleString();
+  return new Date(value).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatRelativeDate(value) {
+  if (!value) return "Never opened";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown date";
+  const today = new Date();
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dayDelta = Math.round((startOfDate - startOfToday) / 86400000);
+  if (dayDelta === 0) return "today";
+  if (dayDelta === -1) return "yesterday";
+  if (dayDelta > -7 && dayDelta < 0) return `${Math.abs(dayDelta)} days ago`;
+  return formatExactDate(value);
 }
 
 function viewLabel(state) {
@@ -28,11 +45,203 @@ function sortLabel(sortOrder) {
 function projectResultSummary(projects, lifecycleState, trimmedSearch) {
   const count = projects.length;
   const noun = count === 1 ? "project" : "projects";
-  const view = viewLabel(lifecycleState).toLowerCase();
+  const view = lifecycleState === "all" ? "total" : lifecycleState;
   if (trimmedSearch) {
-    return `${count} ${noun} matching "${trimmedSearch}" in ${view}.`;
+    return `${count} ${noun} matching "${trimmedSearch}"`;
   }
-  return `${count} ${view.toLowerCase()}.`;
+  return `${count} ${view} ${noun}`;
+}
+
+function ProjectLibraryToolbar({
+  lifecycleState,
+  onLifecycleStateChange,
+  sortOrder,
+  onSortOrderChange,
+  searchQuery,
+  onSearchQueryChange,
+  onCreateProject,
+  onImportProject,
+}) {
+  const [draftSearch, setDraftSearch] = useState(searchQuery);
+  const trimmedDraftSearch = draftSearch.trim();
+
+  useEffect(() => {
+    setDraftSearch(searchQuery);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (draftSearch !== searchQuery) onSearchQueryChange(draftSearch);
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [draftSearch, onSearchQueryChange, searchQuery]);
+
+  function clearSearch() {
+    setDraftSearch("");
+    onSearchQueryChange("");
+  }
+
+  return (
+    <div className="library-toolbar">
+      <div className="library-filter-bar" aria-label="Project library filters">
+        <div className="project-search-wrap">
+          <input
+            className="project-search"
+            value={draftSearch}
+            onChange={(event) => setDraftSearch(event.target.value)}
+            placeholder="Search by project name, description, or ID..."
+            aria-label="Search projects by name, description, or ID"
+          />
+          {trimmedDraftSearch ? (
+            <button type="button" className="project-search-clear" onClick={clearSearch} aria-label="Clear project search" title="Clear project search">
+              Clear
+            </button>
+          ) : null}
+        </div>
+        <label className="compact-select library-select">
+          <span>View</span>
+          <select value={lifecycleState} onChange={(event) => onLifecycleStateChange(event.target.value)} aria-label="Project view">
+            <option value="active">{viewLabel("active")}</option>
+            <option value="archived">{viewLabel("archived")}</option>
+            <option value="all">{viewLabel("all")}</option>
+          </select>
+        </label>
+        <label className="compact-select library-select">
+          <span>Sort</span>
+          <select value={sortOrder} onChange={(event) => onSortOrderChange(event.target.value)} aria-label="Project sort">
+            <option value="updated">{sortLabel("updated")}</option>
+            <option value="last_opened">{sortLabel("last_opened")}</option>
+            <option value="newest">{sortLabel("newest")}</option>
+            <option value="oldest">{sortLabel("oldest")}</option>
+            <option value="name">{sortLabel("name")}</option>
+          </select>
+        </label>
+      </div>
+      <div className="library-primary-actions">
+        <button type="button" onClick={onCreateProject}>Create new project</button>
+        <button type="button" className="secondary-button" onClick={onImportProject}>Import</button>
+      </div>
+    </div>
+  );
+}
+
+function ProjectCardActions({ project, onEditProject, onCloneProject, onArchiveProject, onUnarchiveProject }) {
+  const [open, setOpen] = useState(false);
+  const menuId = useId();
+
+  function handleArchive() {
+    const confirmed = window.confirm(`Archive "${project.name}"? You can restore it from the archived view.`);
+    if (confirmed) onArchiveProject(project);
+    setOpen(false);
+  }
+
+  function handleUnarchive() {
+    onUnarchiveProject(project);
+    setOpen(false);
+  }
+
+  return (
+    <div
+      className="project-card-secondary-actions"
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") setOpen(false);
+      }}
+    >
+      <button
+        type="button"
+        className="secondary-button project-card-menu-trigger"
+        aria-expanded={open}
+        aria-controls={menuId}
+        aria-label={`More actions for ${project.name}`}
+        onClick={() => setOpen((current) => !current)}
+      >
+        More
+      </button>
+      {open ? (
+        <div id={menuId} className="project-card-menu" role="menu">
+          <button type="button" role="menuitem" onClick={() => { onCloneProject(project); setOpen(false); }}>Duplicate</button>
+          <button type="button" role="menuitem" onClick={() => { onEditProject(project); setOpen(false); }}>Rename or edit</button>
+          {project.lifecycle_state === "archived" ? (
+            <button type="button" role="menuitem" onClick={handleUnarchive}>Unarchive</button>
+          ) : (
+            <button type="button" role="menuitem" className="project-danger-action" onClick={handleArchive}>Archive</button>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProjectCard({ project, onOpenProject, onEditProject, onCloneProject, onArchiveProject, onUnarchiveProject }) {
+  const updatedAt = project.updated_at || project.brief_updated_at || project.created_at;
+  const openedAt = project.last_opened_at;
+  const leadingDate = openedAt
+    ? { label: "Opened", value: formatRelativeDate(openedAt), title: formatExactDate(openedAt) }
+    : { label: "Updated", value: formatRelativeDate(updatedAt), title: formatExactDate(updatedAt) };
+  const mapSummary = `${project.node_count || 0} nodes · ${project.pillar_count || 0} pillars`;
+  const status = project.brief_status || "draft";
+
+  return (
+    <article
+      className={`project-card ${project.lifecycle_state === "archived" ? "archived" : ""}`}
+      onClick={() => onOpenProject(project.id)}
+      title={`Project ID: ${project.id}`}
+    >
+      <div className="project-card-head">
+        <div className="project-title-row">
+          <strong>{project.name}</strong>
+          <span className={`status-pill project-brief-status ${status}`}>{status}</span>
+          {project.lifecycle_state === "archived" ? <span className="status-pill archived">archived</span> : null}
+        </div>
+      </div>
+      <p className="project-card-description">{project.idea}</p>
+      <div className="project-card-meta" aria-label={`${project.name} metadata`}>
+        <span title={leadingDate.title}>{leadingDate.label} {leadingDate.value}</span>
+        <span>{mapSummary}</span>
+        {project.source_project_name ? <span className="project-source-note">Cloned from {project.source_project_name}</span> : null}
+      </div>
+      <div className="project-card-actions">
+        <button type="button" onClick={(event) => { event.stopPropagation(); onOpenProject(project.id); }}>Open</button>
+        <ProjectCardActions
+          project={project}
+          onEditProject={onEditProject}
+          onCloneProject={onCloneProject}
+          onArchiveProject={onArchiveProject}
+          onUnarchiveProject={onUnarchiveProject}
+        />
+      </div>
+    </article>
+  );
+}
+
+function ProjectGrid({ projects, resultSummary, ...actions }) {
+  return (
+    <div className="project-grid" aria-label={resultSummary}>
+      {projects.map((project) => (
+        <ProjectCard key={project.id} project={project} {...actions} />
+      ))}
+    </div>
+  );
+}
+
+function ProjectEmptyState({ trimmedSearch, lifecycleState, onSearchQueryChange, onCreateProject, onImportProject }) {
+  const isSearchEmpty = Boolean(trimmedSearch);
+  return (
+    <div className="panel library-empty-state">
+      <strong>{isSearchEmpty ? "No projects match your search" : lifecycleState === "archived" ? "No archived projects" : "No projects yet"}</strong>
+      <p className="muted">
+        {isSearchEmpty
+          ? `No ${viewLabel(lifecycleState).toLowerCase()} match "${trimmedSearch}".`
+          : "Create your first project or import an archive to get started."}
+      </p>
+      <div className="button-row compact">
+        {isSearchEmpty ? <button type="button" className="secondary-button" onClick={() => onSearchQueryChange("")}>Clear search</button> : null}
+        <button type="button" onClick={onCreateProject}>Create new project</button>
+        {!isSearchEmpty ? <button type="button" className="secondary-button" onClick={onImportProject}>Import archive</button> : null}
+      </div>
+    </div>
+  );
 }
 
 export function ProjectHub({
@@ -51,6 +260,7 @@ export function ProjectHub({
   onArchiveProject,
   onUnarchiveProject,
   onImportProject,
+  errorMessage = "",
 }) {
   const trimmedSearch = searchQuery.trim();
   const resultSummary = projectResultSummary(projects, lifecycleState, trimmedSearch);
@@ -62,55 +272,33 @@ export function ProjectHub({
           <h1>Project Library</h1>
           <p className="muted">Open a project to keep building, or create a new one and jump straight into Layer 0.</p>
         </div>
-        <div className="hub-toolbar">
-          <div className="library-control-row">
-            <label className="compact-select">
-              View
-              <select value={lifecycleState} onChange={(event) => onLifecycleStateChange(event.target.value)} aria-label="Project view">
-                <option value="active">{viewLabel("active")}</option>
-                <option value="archived">{viewLabel("archived")}</option>
-                <option value="all">{viewLabel("all")}</option>
-              </select>
-            </label>
-            <label className="compact-select">
-              Sort
-              <select value={sortOrder} onChange={(event) => onSortOrderChange(event.target.value)} aria-label="Project sort">
-                <option value="updated">{sortLabel("updated")}</option>
-                <option value="last_opened">{sortLabel("last_opened")}</option>
-                <option value="newest">{sortLabel("newest")}</option>
-                <option value="oldest">{sortLabel("oldest")}</option>
-                <option value="name">{sortLabel("name")}</option>
-              </select>
-            </label>
-          </div>
-          <div className="hub-actions">
-            <div className="library-command-row">
-              <button type="button" onClick={onCreateProject}>Create new project</button>
-              <details className="library-menu">
-                <summary aria-label="More library actions" title="More library actions">More</summary>
-                <div className="library-menu-panel">
-                  <button type="button" className="secondary-button" onClick={onImportProject}>Import Project Archive</button>
-                </div>
-              </details>
-            </div>
-            <div className="project-search-wrap">
-              <input className="project-search" value={searchQuery} onChange={(event) => onSearchQueryChange(event.target.value)} placeholder="Search projects" aria-label="Search projects" />
-              {trimmedSearch ? (
-                <button type="button" className="project-search-clear" onClick={() => onSearchQueryChange("")} aria-label="Clear project search" title="Clear project search">
-                  x
-                </button>
-              ) : null}
-            </div>
-          </div>
-        </div>
+        <ProjectLibraryToolbar
+          lifecycleState={lifecycleState}
+          onLifecycleStateChange={onLifecycleStateChange}
+          sortOrder={sortOrder}
+          onSortOrderChange={onSortOrderChange}
+          searchQuery={searchQuery}
+          onSearchQueryChange={onSearchQueryChange}
+          onCreateProject={onCreateProject}
+          onImportProject={onImportProject}
+        />
       </div>
       <div className="library-status-row" aria-live="polite">
-        <span>{loading ? "Loading projects..." : resultSummary}</span>
-        <span>{viewLabel(lifecycleState)} | {sortLabel(sortOrder)}</span>
+        <span className="library-status-count">{loading ? "Loading projects..." : resultSummary}</span>
+        <span className="library-status-meta" aria-label="Current project filters">
+          <span className="status-pill library-status-pill">{viewLabel(lifecycleState)}</span>
+          <span className="status-pill library-status-pill">{sortLabel(sortOrder)}</span>
+        </span>
       </div>
+      {errorMessage && !loading ? (
+        <div className="library-error-state" role="status">
+          <strong>Projects could not refresh.</strong>
+          <span>{errorMessage}</span>
+        </div>
+      ) : null}
       {loading ? (
         <div className="project-grid" aria-label="Loading projects">
-          {[0, 1, 2].map((item) => (
+          {[0, 1, 2, 3, 4, 5].map((item) => (
             <article key={item} className="project-card project-card-skeleton" aria-hidden="true">
               <div className="project-skeleton-line title" />
               <div className="project-skeleton-line" />
@@ -123,56 +311,23 @@ export function ProjectHub({
           ))}
         </div>
       ) : projects.length ? (
-        <div className="project-grid" aria-label={resultSummary}>
-          {projects.map((project) => (
-            <article key={project.id} className={`project-card ${project.lifecycle_state === "archived" ? "archived" : ""}`}>
-              <div className="project-card-head">
-                <div className="project-title-row">
-                  <strong>{project.name}</strong>
-                  <button type="button" className="icon-button project-title-edit" onClick={() => onEditProject(project)} aria-label={`Edit name and library summary for ${project.name}`} title="Edit name and summary">
-                    <svg aria-hidden="true" className="project-title-edit-mark" viewBox="0 0 16 16" focusable="false">
-                      <path d="M3 11.8 3.7 9l6.9-6.9a1.7 1.7 0 0 1 2.4 0l.9.9a1.7 1.7 0 0 1 0 2.4L7 12.3l-2.8.7H3v-1.2Zm1.7-.3 1.5-.4 6.8-6.8a.3.3 0 0 0 0-.4l-.9-.9a.3.3 0 0 0-.4 0L4.9 9.8l-.4 1.5.2.2Z" />
-                    </svg>
-                  </button>
-                </div>
-                <div className="project-status-row">
-                  {project.lifecycle_state === "archived" ? <span className="status-pill archived">archived</span> : null}
-                  <span className={`status-pill ${project.brief_status || "draft"}`}>{project.brief_status || "draft"}</span>
-                </div>
-              </div>
-              <p>{project.idea}</p>
-              <div className="project-card-meta">
-                <span><strong>Updated</strong> {formatProjectCardDate(project.updated_at || project.brief_updated_at || project.created_at)}</span>
-                <span><strong>Opened</strong> {formatProjectCardDate(project.last_opened_at)}</span>
-                <span><strong>Map</strong> {project.node_count || 0} nodes | {project.pillar_count || 0} pillars</span>
-                {project.source_project_name ? <span>Cloned from {project.source_project_name}</span> : null}
-                <span>Project {project.id.slice(0, 8)}</span>
-              </div>
-              <div className="project-card-actions">
-                <button type="button" onClick={() => onOpenProject(project.id)}>Open</button>
-                <button type="button" className="secondary-button" onClick={() => onCloneProject(project)}>Duplicate</button>
-                {project.lifecycle_state === "archived" ? (
-                  <button type="button" className="secondary-button" onClick={() => onUnarchiveProject(project)}>Unarchive</button>
-                ) : (
-                  <button type="button" className="secondary-button" onClick={() => onArchiveProject(project)}>Archive</button>
-                )}
-              </div>
-            </article>
-          ))}
-        </div>
+        <ProjectGrid
+          projects={projects}
+          resultSummary={resultSummary}
+          onOpenProject={onOpenProject}
+          onEditProject={onEditProject}
+          onCloneProject={onCloneProject}
+          onArchiveProject={onArchiveProject}
+          onUnarchiveProject={onUnarchiveProject}
+        />
       ) : (
-        <div className="panel library-empty-state">
-          <strong>{trimmedSearch ? "No matching projects" : lifecycleState === "archived" ? "No archived projects" : "No projects yet"}</strong>
-          <p className="muted">
-            {trimmedSearch
-              ? `No ${viewLabel(lifecycleState).toLowerCase()} match "${trimmedSearch}". Clear the search or switch views to keep looking.`
-              : "Create the first project to capture a product idea and begin Layer 0 planning."}
-          </p>
-          <div className="button-row compact">
-            {trimmedSearch ? <button type="button" className="secondary-button" onClick={() => onSearchQueryChange("")}>Clear Search</button> : null}
-            <button type="button" onClick={onCreateProject}>Create new project</button>
-          </div>
-        </div>
+        <ProjectEmptyState
+          trimmedSearch={trimmedSearch}
+          lifecycleState={lifecycleState}
+          onSearchQueryChange={onSearchQueryChange}
+          onCreateProject={onCreateProject}
+          onImportProject={onImportProject}
+        />
       )}
     </section>
   );

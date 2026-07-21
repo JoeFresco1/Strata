@@ -1,4 +1,4 @@
-import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceActionGroup } from "./WorkspacePage";
+import WorkspacePageLayout, { WorkspaceActionButton } from "./WorkspacePage";
 
 export default function ExportView({
   layer2Graph,
@@ -17,23 +17,21 @@ export default function ExportView({
       title="Export"
       description="Create handoff files and archives once the reviewed product structure is ready to share."
       status={lastExport ? "published" : layer2Graph?.review_open ? "needs_review" : "draft"}
-      primaryAction={<WorkspaceActionButton primary onClick={onExport}>Export</WorkspaceActionButton>}
+      primaryAction={null}
       actions={(
-        <>
-          <WorkspaceActionGroup label="Export">
-            <WorkspaceActionButton secondary onClick={onExport}>Export full project</WorkspaceActionButton>
+        <div className="export-secondary-actions">
+          <WorkspaceActionButton primary onClick={onExport}>Export full project</WorkspaceActionButton>
+          <span className="workspace-action-divider" aria-hidden="true" />
+          <span className="workspace-card-label">Other formats</span>
+          <div className="button-row">
             <WorkspaceActionButton secondary onClick={onLayer2Export}>Export Layer 2</WorkspaceActionButton>
             {onLayer3Export ? <WorkspaceActionButton secondary onClick={onLayer3Export}>Export Layer 3</WorkspaceActionButton> : null}
             <WorkspaceActionButton secondary onClick={onProjectArchiveExport}>Export archive</WorkspaceActionButton>
-          </WorkspaceActionGroup>
-        </>
+          </div>
+        </div>
       )}
     >
-      <div className="project-tool-section">
-        <div className="project-tool-section-header">
-          {exportCount ? <span className="project-tool-inline-meta">{exportCount} saved path{exportCount === 1 ? "" : "s"}</span> : <span className="project-tool-inline-meta">No saved exports yet</span>}
-        </div>
-        <p className="muted">Exports are written to the configured local exports folder.</p>
+      <section className="export-history">
         {lastExport ? (
           <div className="export-result" role="status">
             <strong>{lastExport.kind} export created</strong>
@@ -41,15 +39,12 @@ export default function ExportView({
             <span>JSON: {lastExport.json_path}</span>
           </div>
         ) : (
-          <div className="panel guided-empty-state">
-            <strong>No exports created yet.</strong>
-            <p className="muted">Use one of the export actions above after you finish the Layer 2 review pass.</p>
-          </div>
+          <p className="muted">No exports yet. Your handoff files will appear here after you export the full project or a focused layer.</p>
         )}
         {layer2Graph?.review_open ? (
           <p className="warning">Layer 2 export includes unresolved review state. Downstream handoff still requires approved features.</p>
         ) : null}
-      </div>
+      </section>
     </WorkspacePageLayout>
   );
 }

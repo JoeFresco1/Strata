@@ -350,7 +350,7 @@ class GenerationHelperTests(unittest.TestCase):
 
         self.assertEqual(status, "needs_review")
 
-    def test_layer3_generation_persists_feature_expansion(self) -> None:
+    def test_layer3_generation_persists_candidate_without_activating_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "specforge.db")
             project = db.create_project("Test", "A useful product")
@@ -422,11 +422,12 @@ class GenerationHelperTests(unittest.TestCase):
             snapshot = db.layer3_snapshot(project.id)
 
             self.assertEqual(len(created), 1)
-            self.assertEqual(created[0].parent_pillar_id, pillar.id)
-            self.assertEqual(created[0].feature_id, feature.id)
-            self.assertEqual(created[0].review_state, "draft")
-            self.assertEqual(snapshot["expansions"][0]["expansion_groups"][0]["options"][0]["overlaps_feature_ids"], [sibling.id])
-            self.assertEqual(snapshot["expansions"][0]["open_questions"], ["How should multiple matches be resolved?"])
+            self.assertEqual(created[0]["payload"]["parent_pillar_id"], pillar.id)
+            self.assertEqual(created[0]["payload"]["feature_id"], feature.id)
+            self.assertEqual(created[0]["workflow_state"], "candidate")
+            self.assertEqual(snapshot["expansions"], [])
+            self.assertEqual(snapshot["candidates"][0]["payload"]["expansion_groups"][0]["options"][0]["overlaps_feature_ids"], [sibling.id])
+            self.assertEqual(snapshot["candidates"][0]["payload"]["open_questions"], ["How should multiple matches be resolved?"])
 
     def test_layer3_review_and_export_feature_expansions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { LAYER_TABS, statusLabel } from "./workspaceSelectors";
 
 function tabStatusText(tab, state, locked) {
@@ -19,6 +20,15 @@ function isCompleteState(state) {
 }
 
 export default function LayerTabBar({ activeTab, layerStatus, onTabChange }) {
+  const activeTabRef = useRef(null);
+
+  useEffect(() => {
+    // Keeps the selected workflow step visible when compact navigation scrolls horizontally.
+    if (window.matchMedia("(max-width: 860px)").matches) {
+      activeTabRef.current?.scrollIntoView({ block: "nearest", inline: "center" });
+    }
+  }, [activeTab]);
+
   return (
     <div className="workspace-layer-tabs" role="tablist" aria-label="Project workflow">
       {LAYER_TABS.map((tab) => {
@@ -35,6 +45,7 @@ export default function LayerTabBar({ activeTab, layerStatus, onTabChange }) {
             role="tab"
             aria-selected={activeTab === tab.id}
             aria-controls={`workspace-panel-${tab.id}`}
+            ref={activeTab === tab.id ? activeTabRef : null}
             className={activeTab === tab.id ? `workspace-layer-tab selected ${state.status}` : `workspace-layer-tab ${state.status}`}
             disabled={locked}
             title={locked ? disabledTitle : `${tab.label}: ${state.label}`}

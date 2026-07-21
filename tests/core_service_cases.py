@@ -225,7 +225,7 @@ class BriefServiceTests(unittest.TestCase):
         class StubClient:
             def generate_json(self, **_: object):
                 class Response:
-                    parsed_json = {"updates": {"known_competitors": ["Acme"], "goals": ["Faster review"]}}
+                    parsed_json = {"updates": {"problem": "Slow manual review", "known_competitors": ["Acme"], "goals": ["Faster review"]}}
                 return Response()
 
             def generate_text(self, **_: object) -> str:
@@ -240,10 +240,26 @@ class BriefServiceTests(unittest.TestCase):
             reply, brief, guidance = service.append_plan_turn(project.id, "Competitor is Acme.")
 
             self.assertIn("What became clearer", reply)
+            self.assertEqual(brief.problem, "Slow manual review")
             self.assertEqual(brief.known_competitors, ["Acme"])
             self.assertEqual(brief.goals, ["Faster review"])
             self.assertIn("target users", guidance["assistant_message"])
             self.assertEqual(len(db.list_brief_conversation(project.id)), 2)
+
+    def test_publish_preserves_problem_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            service = BriefService(db, MagicMock())  # type: ignore[arg-type]
+
+            service.update_brief(project.id, {
+                "product_idea": "A useful product",
+                "problem": "Manual workflows are slow and inconsistent.",
+            })
+            published = service.publish(project.id)
+
+            self.assertEqual(published.status, "published")
+            self.assertEqual(published.problem, "Manual workflows are slow and inconsistent.")
 
     def test_plan_turn_request_id_is_idempotent(self) -> None:
         class StubClient:

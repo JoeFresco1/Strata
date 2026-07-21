@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from strata.assistant_index import AssistantIndexService
+from strata.command_types import state_token
 from strata.db import Database
 from strata.execution_policy import (
     effective_execution_intent,
@@ -570,15 +571,25 @@ class AssistantService:
             node = self.db.get_node(str(payload.get("node_id", "")))
             if node.project_id != project_id:
                 raise ValueError("Node belongs to another project.")
-            return {"node_id": node.id, "status": node.status, "title": node.title}
+            token = state_token({"id": node.id, "title": node.title, "description": node.description, "status": node.status, "priority": node.priority, "json_payload": node.json_payload})
+            return {"node_id": node.id, "status": node.status, "title": node.title, "state_token": token}
         if action_type in {"layer2_review", "update_layer2_feature"}:
             feature = self.db.get_layer2_feature(str(payload.get("feature_id", "")))
             if feature.project_id != project_id:
                 raise ValueError("Feature belongs to another project.")
-            return {"feature_id": feature.id, "status": feature.status, "updated_at": feature.updated_at.isoformat()}
+            token = state_token({"id": feature.id, "updated_at": feature.updated_at.isoformat(), "canonical_name": feature.canonical_name, "description": feature.description, "feature_type": str(feature.feature_type), "granularity_class": str(feature.granularity_class), "owner_pillar_id": feature.owner_pillar_id, "status": feature.status, "aliases": feature.aliases, "metadata": feature.metadata})
+            expected = {"feature_id": feature.id, "status": feature.status, "updated_at": feature.updated_at.isoformat(), "state_token": token}
+            target_id = str(payload.get("target_feature_id") or "")
+            if target_id:
+                target = self.db.get_layer2_feature(target_id)
+                if target.project_id != project_id:
+                    raise ValueError("Target feature belongs to another project.")
+                expected["target_state_token"] = state_token({"id": target.id, "updated_at": target.updated_at.isoformat(), "canonical_name": target.canonical_name, "description": target.description, "feature_type": str(target.feature_type), "granularity_class": str(target.granularity_class), "owner_pillar_id": target.owner_pillar_id, "status": target.status, "aliases": target.aliases, "metadata": target.metadata})
+            return expected
         if action_type == "update_brief":
             brief = self.db.get_project_brief(project_id)
-            return {"status": brief.status if brief else "missing", "updated_at": brief.updated_at.isoformat() if brief else None}
+            token = state_token({"id": brief.id, "status": brief.status, "updated_at": brief.updated_at.isoformat(), "product_idea": brief.product_idea, "problem": brief.problem, "target_users": brief.target_users, "goals": brief.goals, "constraints": brief.constraints, "preferred_directions": brief.preferred_directions, "rejected_directions": brief.rejected_directions, "notes": brief.notes}) if brief else ""
+            return {"status": brief.status if brief else "missing", "updated_at": brief.updated_at.isoformat() if brief else None, "state_token": token}
         self.db.get_project(project_id)
         return {"project_id": project_id}
 

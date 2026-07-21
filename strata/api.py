@@ -1,5 +1,6 @@
 from __future__ import annotations
 import threading
+import uuid
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,6 +10,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from strata.api_models import (
     AssistantActionDecisionRequest,
+    CriticFindingResolutionRequest,
     AssistantConversationCreateRequest,
     AssistantConversationUpdateRequest,
     AssistantMessageCreateRequest,
@@ -26,7 +28,10 @@ from strata.api_models import (
     Layer2ReviewActionRequest,
     Layer2ResearchStartRequest,
     Layer3ExpansionUpdateRequest,
+    Layer3CandidateApplyRequest,
+    Layer3CandidateRejectRequest,
     Layer3GenerateRequest,
+    Layer3RevisionRestoreRequest,
     Layer3ReviewRequest,
     ModelProfileResponse,
     NodeUpdateRequest,
@@ -40,6 +45,33 @@ from strata.api_models import (
 from strata.assistant_index import AssistantIndexService
 from strata.assistant_service import AssistantService
 from strata.brief import BriefService
+from strata.command_types import (
+    AcceptLayer3Candidate,
+    AppendBriefPlanTurn,
+    ApproveFeature,
+    BulkResolveFeatureReview,
+    CommandActor,
+    CommandError,
+    CreateFeature,
+    CutFeature,
+    DismissCriticFinding,
+    EditFeature,
+    EditLayer3ActiveRevision,
+    EditPillar,
+    KeepFeature,
+    PartiallyAcceptLayer3Candidate,
+    PublishBrief,
+    RejectLayer3Candidate,
+    RequestLayer1Generation,
+    RequestLayer2Generation,
+    RequestLayer3Generation,
+    RequestResearch,
+    ReviewLayer3ActiveRevision,
+    ResolveCriticFinding,
+    ResolveFeatureReview,
+    RestoreLayer3Revision,
+    UpdateBriefDraft,
+)
 from strata.config import (
     AppConfig,
     EMBEDDING_MODEL_PRESETS,
@@ -51,6 +83,7 @@ from strata.config import (
 from strata.db import Database
 from strata.embeddings import EmbeddingService
 from strata.generation import GenerationService
+from strata.layer3_db import Layer3RevisionConflict
 from strata.layer3_service import validate_product_level_content
 from strata.llm import LlamaCppClient
 from strata.research import ResearchService
@@ -75,17 +108,14 @@ from strata.api_setup import register_setup_routes
 from strata.api_support import (
     AppServices,
     _apply_runtime_provider_update,
-    _apply_layer2_review_action,
     _build_services as _build_services_support,
+    _command_http_error,
     _ensure_project_model_settings,
     _execute_assistant_action,
     _get_project_layer2_feature,
     _load_app_model_settings,
     _persist_app_model_settings,
     _project_snapshot,
-    _record_layer2_merge,
-    _record_layer2_relationship,
-    _remove_layer2_relationship,
     _resolve_layer1_profiles,
     _sync_default_app_profiles,
     _valid_layer2_status,
@@ -341,6 +371,10 @@ def create_app() -> FastAPI:
             else:
                 result = _execute_assistant_action(services, proposal, background_tasks)
                 updated = services.db.update_assistant_action_proposal(proposal.id, status="applied", result=result)
+        except CommandError as exc:
+            if proposal is not None and proposal.status == "pending" and request.decision == "apply":
+                services.db.update_assistant_action_proposal(proposal.id, status="failed", result={"error": exc.message, "code": exc.code})
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             if proposal is not None and proposal.status == "pending" and request.decision == "apply":
                 services.db.update_assistant_action_proposal(
@@ -406,25 +440,35 @@ def create_app() -> FastAPI:
     def update_project_brief(project_id: str, request: ProjectBriefUpdateRequest) -> dict[str, object]:
         """Update the canonical Layer 0 draft brief from Form mode."""
         try:
-            brief = services.brief_service.update_brief(project_id, request.model_dump())
+            payload = request.model_dump(exclude={"expected_state_token", "request_id"})
+            result = services.command_service.handle(UpdateBriefDraft(
+                project_id=project_id, actor=CommandActor.human_ui(),
+                idempotency_key=request.request_id or str(uuid.uuid4()),
+                expected_state_token=request.expected_state_token, updates=payload,
+            ))
+            brief = result.data["brief"]
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return brief.model_dump(mode="json")
+        return brief
 
     @app.post("/api/projects/{project_id}/brief/chat", response_model=Layer0ChatResponse)
     def append_layer0_chat(project_id: str, request: Layer0ChatRequest) -> Layer0ChatResponse:
         """Append a Plan-mode chat turn and extract fields into the same draft brief."""
         try:
-            reply, brief, guidance = services.brief_service.append_plan_turn(
-                project_id,
-                request.message,
-                request.request_id,
-            )
+            result = services.command_service.handle(AppendBriefPlanTurn(
+                project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()),
+                expected_state_token=request.expected_state_token, message=request.message,
+            ))
+            reply, brief, guidance = result.data["reply"], result.data["brief"], result.data["guidance"]
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return Layer0ChatResponse(
             reply=reply,
-            brief=brief.model_dump(mode="json"),
+            brief={**brief, "state_token": result.state_token},
             conversation=[
                 turn.model_dump(mode="json")
                 for turn in services.db.list_brief_conversation(project_id)
@@ -433,43 +477,33 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/api/projects/{project_id}/brief/publish", response_model=PublishBriefResponse)
-    def publish_project_brief(project_id: str, background_tasks: BackgroundTasks) -> PublishBriefResponse:
+    def publish_project_brief(project_id: str, background_tasks: BackgroundTasks, expected_state_token: str | None = None, request_id: str | None = None) -> PublishBriefResponse:
         """Publish Layer 0 and start local competitor research."""
         try:
-            brief = services.brief_service.publish(project_id)
-            if services.research_service.competitive_intelligence_enabled(project_id):
-                research_job = services.research_service.enqueue_layer0(project_id, reason="publish")
-                job = services.job_service.enqueue(
-                    project_id=project_id,
-                    kind="research",
-                    workflow="research",
-                    scope="layer0",
-                    request_payload={"research_job_id": research_job.id, "research_job_type": research_job.job_type},
-                    dedupe_key=f"research:{research_job.id}",
-                )
-                background_tasks.add_task(services.job_service.run_job, job.id)
+            result = services.command_service.handle(PublishBrief(
+                project_id=project_id, actor=CommandActor.human_ui(), expected_state_token=expected_state_token,
+                idempotency_key=request_id or str(uuid.uuid4()),
+            ))
+            brief = result.data["brief"]
+            for job_id in result.data.get("job_ids", []):
+                background_tasks.add_task(services.job_service.run_job, job_id)
             snapshot = _project_snapshot(services, project_id).model_dump(mode="json")
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return PublishBriefResponse(brief=brief.model_dump(mode="json"), snapshot=snapshot)
+        return PublishBriefResponse(brief=brief, snapshot=snapshot)
 
     @app.post("/api/projects/{project_id}/research/layer0")
     def rerun_layer0_research(project_id: str, background_tasks: BackgroundTasks) -> dict[str, object]:
         """Rerun the Layer 0 local competitor landscape job."""
         try:
-            job = services.research_service.enqueue_layer0(project_id, reason="manual_rerun")
-            platform_job = services.job_service.enqueue(
-                project_id=project_id,
-                kind="research",
-                workflow="research",
-                scope="layer0",
-                request_payload={"research_job_id": job.id, "research_job_type": job.job_type},
-                dedupe_key=f"research:{job.id}",
-            )
-            background_tasks.add_task(services.job_service.run_job, platform_job.id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"job": job.model_dump(mode="json"), "platform_job": platform_job.model_dump(mode="json")}
+            result = services.command_service.handle(RequestResearch(project_id=project_id, actor=CommandActor.human_ui(), layer="layer0"))
+            for job_id in result.data["job_ids"]:
+                background_tasks.add_task(services.job_service.run_job, job_id)
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
+        return {"job": result.data["research_jobs"][0], "platform_job": result.data["jobs"][0]}
 
     @app.post("/api/projects/{project_id}/research/layer1")
     def rerun_layer1_research(
@@ -484,22 +518,12 @@ def create_app() -> FastAPI:
         ]
         jobs = []
         try:
-            for pillar_id in pillar_ids:
-                job = services.research_service.enqueue_layer1(project_id, pillar_id, reason="manual_rerun")
-                jobs.append(job)
-                platform_job = services.job_service.enqueue(
-                    project_id=project_id,
-                    kind="research",
-                    workflow="research",
-                    scope="layer1",
-                    scope_id=pillar_id,
-                    request_payload={"research_job_id": job.id, "research_job_type": job.job_type},
-                    dedupe_key=f"research:{job.id}",
-                )
-                background_tasks.add_task(services.job_service.run_job, platform_job.id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"jobs": [job.model_dump(mode="json") for job in jobs]}
+            result = services.command_service.handle(RequestResearch(project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()), layer="layer1", artifact_ids=tuple(pillar_ids)))
+            for job_id in result.data["job_ids"]:
+                background_tasks.add_task(services.job_service.run_job, job_id)
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
+        return {"jobs": result.data["research_jobs"]}
 
     @app.post("/api/projects/{project_id}/research/layer2")
     def rerun_layer2_research(
@@ -509,49 +533,33 @@ def create_app() -> FastAPI:
     ) -> dict[str, object]:
         """Research selected Layer 2 features or the complete active feature set."""
         try:
-            job = services.research_service.enqueue_layer2(
-                project_id,
-                feature_ids=request.feature_ids or None,
-                reason="manual_rerun",
-            )
-            platform_job = services.job_service.enqueue(
-                project_id=project_id,
-                kind="research",
-                workflow="research",
-                scope="layer2",
-                request_payload={"research_job_id": job.id, "research_job_type": job.job_type},
-                dedupe_key=f"research:{job.id}",
-            )
-            background_tasks.add_task(services.job_service.run_job, platform_job.id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"job": job.model_dump(mode="json"), "platform_job": platform_job.model_dump(mode="json")}
+            result = services.command_service.handle(RequestResearch(project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()), layer="layer2", artifact_ids=tuple(request.feature_ids)))
+            for job_id in result.data["job_ids"]:
+                background_tasks.add_task(services.job_service.run_job, job_id)
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
+        return {"job": result.data["research_jobs"][0], "platform_job": result.data["jobs"][0]}
 
     @app.patch("/api/nodes/{node_id}")
     def update_node(node_id: str, request: NodeUpdateRequest) -> dict[str, object]:
         """Update editable node fields from the review workflow."""
         try:
             before = services.db.get_node(node_id)
-            node = services.db.update_node(
-                node_id,
-                title=request.title.strip() if request.title is not None else None,
-                description=request.description.strip() if request.description is not None else None,
-                status=request.status,
+            if before.layer != 1 or before.node_type != "pillar":
+                raise ValueError("Only canonical Layer 1 pillars may be mutated through this route.")
+            result = services.command_service.handle(EditPillar(
+                project_id=before.project_id, actor=CommandActor.human_ui(),
+                idempotency_key=request.request_id or str(uuid.uuid4()),
+                expected_state_token=request.expected_state_token, pillar_id=node_id,
+                title=request.title, description=request.description, status=request.status,
                 priority=request.priority,
-            )
-            if node.node_type == "pillar" and node.layer == 1:
-                node = services.generation_service.refresh_pillar_semantic_metadata(node.id)
-                if request.title is not None or request.description is not None:
-                    payload = dict(node.json_payload or {})
-                    if before.title != node.title or (before.description or "") != (node.description or ""):
-                        payload["research_stale"] = {
-                            "scope": "layer1",
-                            "reason": "pillar_content_changed",
-                        }
-                        node = services.db.update_node(node.id, json_payload=payload)
+            ))
+            node = result.data["pillar"]
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return node.model_dump(mode="json")
+        return node
 
     @app.post("/api/projects/{project_id}/generate/layer1")
     def generate_layer1(
@@ -562,19 +570,18 @@ def create_app() -> FastAPI:
         """Run Layer 1 pillar broadening with the selected model sequence."""
         try:
             _resolve_layer1_profiles(services.config, request.model_aliases)
-            job = services.job_service.enqueue(
-                project_id=project_id,
-                kind="generation",
-                workflow="layer1_generation",
-                scope="layer1",
-                request_payload=request.model_dump(mode="json"),
-                dedupe_key=f"generation:layer1:{project_id}:{request.model_dump_json()}",
-            )
-            background_tasks.add_task(services.job_service.run_job, job.id)
+            result = services.command_service.handle(RequestLayer1Generation(
+                project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()),
+                payload=request.model_dump(mode="json", exclude={"request_id"}),
+            ))
+            job = result.data["job"]
+            background_tasks.add_task(services.job_service.run_job, job["id"])
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
-            "job": job.model_dump(mode="json"),
+            "job": job,
             "snapshot": _project_snapshot(services, project_id).model_dump(mode="json"),
         }
 
@@ -586,19 +593,20 @@ def create_app() -> FastAPI:
     ) -> dict[str, object]:
         """Run graph-native Layer 2 feature generation for selected kept pillars."""
         try:
-            job = services.job_service.enqueue(
-                project_id=project_id,
-                kind="generation",
-                workflow="layer2_generation",
-                scope="layer2",
-                request_payload=request.model_dump(mode="json"),
-                dedupe_key=f"generation:layer2:{project_id}:{request.model_dump_json()}",
-            )
-            background_tasks.add_task(services.job_service.run_job, job.id)
+            payload = request.model_dump(mode="json", exclude={"request_id"})
+            if not payload["pillar_ids"]:
+                payload["pillar_ids"] = [item.id for item in services.db.list_nodes(project_id, parent_id=None, layer=1, node_type="pillar") if item.status in {"kept", "prioritized"}]
+            result = services.command_service.handle(RequestLayer2Generation(
+                project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()), payload=payload,
+            ))
+            job = result.data["job"]
+            background_tasks.add_task(services.job_service.run_job, job["id"])
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {
-            "job": job.model_dump(mode="json"),
+            "job": job,
             "snapshot": _project_snapshot(services, project_id).model_dump(mode="json"),
         }
 
@@ -606,7 +614,17 @@ def create_app() -> FastAPI:
     def review_layer2_feature(project_id: str, request: Layer2ReviewActionRequest) -> dict[str, object]:
         """Apply a review decision to the Layer 2 graph and keep rejected concepts in negative memory."""
         try:
-            _apply_layer2_review_action(services, project_id, request)
+            if not request.feature_id:
+                raise ValueError("A feature is required for this review action.")
+            services.command_service.handle(ResolveFeatureReview(
+                project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()),
+                expected_state_token=request.expected_state_token, feature_id=request.feature_id,
+                action=request.action_type, payload={**request.payload, "expected_target_state_token": request.expected_target_state_token},
+                target_feature_id=request.target_feature_id, owner_pillar_id=request.owner_pillar_id,
+                relationship_type=request.relationship_type, title=request.title, description=request.description,
+            ))
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
@@ -615,31 +633,14 @@ def create_app() -> FastAPI:
     def create_layer2_feature(project_id: str, request: Layer2FeatureCreateRequest) -> dict[str, object]:
         """Manually add one Layer 2 feature into the review workbench."""
         try:
-            services.db.get_project(project_id)
-            _validate_layer2_owner_pillar(services, project_id, request.owner_pillar_id)
-            feature = services.db.create_layer2_feature(
-                project_id=project_id,
-                canonical_name=request.canonical_name.strip(),
-                description=request.description.strip(),
-                feature_type=request.feature_type.strip() or "capability",
-                granularity_class=request.granularity_class.strip() or "feature",
-                owner_pillar_id=request.owner_pillar_id,
-                candidate_source_ids=[],
-                aliases=request.aliases,
-                status=_valid_layer2_status(request.status),
-                metadata={
-                    "source": "manual",
-                    "coverage_family": request.coverage_family,
-                    "priority": request.priority,
-                    "notes": request.notes,
-                },
-            )
-            services.db.record_layer2_review_action(
-                project_id=project_id,
-                feature_id=feature.id,
-                action_type="manual_add",
-                payload={"source": "manual_feature_add"},
-            )
+            services.command_service.handle(CreateFeature(
+                project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()),
+                canonical_name=request.canonical_name, description=request.description, owner_pillar_id=request.owner_pillar_id,
+                feature_type=request.feature_type, granularity_class=request.granularity_class, aliases=tuple(request.aliases),
+                status=request.status, coverage_family=request.coverage_family, priority=request.priority, notes=request.notes,
+            ))
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
@@ -648,21 +649,13 @@ def create_app() -> FastAPI:
     def update_layer2_feature(project_id: str, feature_id: str, request: Layer2FeatureUpdateRequest) -> dict[str, object]:
         """Inline-edit one Layer 2 feature from the workbench drawer/table."""
         try:
-            feature = _get_project_layer2_feature(services, project_id, feature_id)
-            if request.owner_pillar_id:
-                _validate_layer2_owner_pillar(services, project_id, request.owner_pillar_id)
-            services.db.update_layer2_feature(
-                feature.id,
-                canonical_name=request.canonical_name.strip() if request.canonical_name is not None else None,
-                description=request.description.strip() if request.description is not None else None,
-                feature_type=request.feature_type.strip() if request.feature_type is not None else None,
-                granularity_class=request.granularity_class.strip() if request.granularity_class is not None else None,
-                owner_pillar_id=request.owner_pillar_id,
-                status=_valid_layer2_status(request.status) if request.status is not None else None,
-                coverage_family=request.coverage_family,
-                priority=request.priority,
-                notes=request.notes,
-            )
+            updates = request.model_dump(exclude_none=True, exclude={"expected_state_token", "request_id"})
+            services.command_service.handle(EditFeature(
+                project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()),
+                expected_state_token=request.expected_state_token, feature_id=feature_id, updates=updates,
+            ))
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
@@ -671,18 +664,13 @@ def create_app() -> FastAPI:
     def bulk_layer2_action(project_id: str, request: Layer2BulkActionRequest) -> dict[str, object]:
         """Apply one review action to many Layer 2 features."""
         try:
-            if not request.feature_ids:
-                raise ValueError("Select at least one feature for a bulk action.")
-            status = "approved" if request.action_type == "approve_for_layer3" else _valid_layer2_status(request.action_type)
-            for feature_id in request.feature_ids:
-                feature = _get_project_layer2_feature(services, project_id, feature_id)
-                services.db.update_layer2_feature(feature.id, status=status)
-                services.db.record_layer2_review_action(
-                    project_id=project_id,
-                    feature_id=feature.id,
-                    action_type=request.action_type,
-                    payload={**request.payload, "source": "bulk_action"},
-                )
+            services.command_service.handle(BulkResolveFeatureReview(
+                project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()),
+                feature_ids=tuple(request.feature_ids), action=request.action_type,
+                expected_state_tokens=request.expected_state_tokens, payload=request.payload,
+            ))
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
@@ -728,19 +716,18 @@ def create_app() -> FastAPI:
             if not request.feature_ids:
                 raise ValueError("Select at least one approved Layer 2 feature.")
             _validate_layer3_layer2_gate(services, project_id, request.feature_ids)
-            job = services.job_service.enqueue(
-                project_id=project_id,
-                kind="generation",
-                workflow="layer3_generation",
-                scope="layer3",
-                request_payload=request.model_dump(mode="json"),
-                dedupe_key=f"generation:layer3:{project_id}:{request.model_dump_json()}",
-            )
-            background_tasks.add_task(services.job_service.run_job, job.id)
+            result = services.command_service.handle(RequestLayer3Generation(
+                project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()),
+                feature_ids=tuple(request.feature_ids), thinking_enabled=request.thinking_enabled,
+            ))
+            job = result.data["job"]
+            background_tasks.add_task(services.job_service.run_job, job["id"])
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
-            "job": job.model_dump(mode="json"),
+            "job": job,
             "snapshot": _project_snapshot(services, project_id).model_dump(mode="json"),
         }
 
@@ -751,7 +738,7 @@ def create_app() -> FastAPI:
             expansion = services.db.get_layer3_expansion(expansion_id)
             if expansion.project_id != project_id:
                 raise ValueError("Layer 3 expansion belongs to another project.")
-            updates = request.model_dump(exclude_none=True)
+            updates = request.model_dump(exclude_none=True, exclude={"expected_state_token", "request_id"})
             if not updates:
                 raise ValueError("Provide at least one Layer 3 expansion field to update.")
             validate_product_level_content(updates)
@@ -770,40 +757,120 @@ def create_app() -> FastAPI:
                 ]
                 if invalid_targets:
                     raise ValueError("Layer 3 overlap links require active Layer 2 feature targets.")
-            updates["review_state"] = "needs_review"
-            services.db.update_layer3_expansion(expansion_id, **updates)
-            services.db.record_layer3_expansion_action(
-                project_id=project_id,
-                expansion_id=expansion_id,
-                action_type="edit",
-                payload={"fields": sorted(request.model_dump(exclude_none=True))},
-            )
+            services.command_service.handle(EditLayer3ActiveRevision(
+                project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()),
+                expected_state_token=request.expected_state_token, expansion_id=expansion_id, updates=updates,
+            ))
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
 
+    @app.get("/api/projects/{project_id}/critic-findings")
+    def list_critic_findings(project_id: str) -> dict[str, object]:
+        """Return model challenges that were prevented from mutating human-owned artifacts."""
+        try:
+            services.db.get_project(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        findings = services.db.list_critic_findings(project_id)
+        return {"findings": [{**item, "state_token": services.command_service.finding_state_token(item)} for item in findings]}
+
+    @app.post("/api/projects/{project_id}/critic-findings/{finding_id}/resolve")
+    def resolve_critic_finding(project_id: str, finding_id: str, request: CriticFindingResolutionRequest) -> dict[str, object]:
+        """Record a human finding resolution; artifact changes still use their explicit command route."""
+        try:
+            command_cls = DismissCriticFinding if request.action == "dismissed" else ResolveCriticFinding
+            kwargs = dict(
+                project_id=project_id, actor=CommandActor.human_ui(request.resolved_by),
+                idempotency_key=request.request_id or str(uuid.uuid4()), expected_state_token=request.expected_state_token,
+                finding_id=finding_id, note=request.note,
+            )
+            if command_cls is ResolveCriticFinding:
+                kwargs["resolution"] = request.action
+            result = services.command_service.handle(command_cls(**kwargs))
+            finding = result.data["finding"]
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"finding": finding, "snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
     @app.post("/api/projects/{project_id}/layer3/expansions/{expansion_id}/review")
     def review_layer3_expansion(project_id: str, expansion_id: str, request: Layer3ReviewRequest) -> dict[str, object]:
         try:
-            expansion = services.db.get_layer3_expansion(expansion_id)
-            if expansion.project_id != project_id:
-                raise ValueError("Layer 3 expansion belongs to another project.")
-            if request.action == "approve":
-                feature = services.db.get_layer2_feature(expansion.feature_id)
-                if feature.project_id != project_id or feature.status != "approved":
-                    raise ValueError("The source Layer 2 feature must still be approved before approving its expansion.")
-                validate_product_level_content(expansion.model_dump(mode="json"))
             state = {"approve": "approved", "reject": "rejected", "needs_review": "needs_review"}[request.action]
-            services.db.update_layer3_expansion(expansion_id, review_state=state)
-            services.db.record_layer3_expansion_action(
-                project_id=project_id,
-                expansion_id=expansion_id,
-                action_type=request.action,
-                payload={"note": request.note},
-            )
+            services.command_service.handle(ReviewLayer3ActiveRevision(
+                project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()),
+                expected_state_token=request.expected_state_token, expansion_id=expansion_id, review_state=state, note=request.note,
+            ))
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
+    @app.post("/api/projects/{project_id}/layer3/expansions/{expansion_id}/candidates/{candidate_revision_id}/apply")
+    def apply_layer3_candidate(
+        project_id: str,
+        expansion_id: str,
+        candidate_revision_id: str,
+        request: Layer3CandidateApplyRequest,
+    ) -> dict[str, object]:
+        """Atomically accept a full candidate or only explicitly selected top-level sections."""
+        try:
+            command_cls = PartiallyAcceptLayer3Candidate if request.selected_sections else AcceptLayer3Candidate
+            kwargs = dict(project_id=project_id, actor=CommandActor.human_ui(request.actor), idempotency_key=request.request_id,
+                          expected_state_token=request.expected_active_revision_id, expansion_id=expansion_id,
+                          candidate_revision_id=candidate_revision_id)
+            if request.selected_sections:
+                kwargs["selected_sections"] = tuple(request.selected_sections)
+            result = services.command_service.handle(command_cls(**kwargs)).data
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"result": result, "snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
+    @app.post("/api/projects/{project_id}/layer3/expansions/{expansion_id}/candidates/{candidate_revision_id}/reject")
+    def reject_layer3_candidate(
+        project_id: str,
+        expansion_id: str,
+        candidate_revision_id: str,
+        request: Layer3CandidateRejectRequest,
+    ) -> dict[str, object]:
+        """Reject a candidate while leaving the current active expansion untouched."""
+        try:
+            result = services.command_service.handle(RejectLayer3Candidate(
+                project_id=project_id, actor=CommandActor.human_ui(request.actor), idempotency_key=request.request_id,
+                expected_state_token=request.expected_active_revision_id, expansion_id=expansion_id,
+                candidate_revision_id=candidate_revision_id, note=request.note,
+            )).data
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"result": result, "snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
+
+    @app.post("/api/projects/{project_id}/layer3/expansions/{expansion_id}/revisions/{revision_id}/restore")
+    def restore_layer3_revision(
+        project_id: str,
+        expansion_id: str,
+        revision_id: str,
+        request: Layer3RevisionRestoreRequest,
+    ) -> dict[str, object]:
+        """Restore an earlier accepted revision by creating a new active revision atomically."""
+        try:
+            result = services.command_service.handle(RestoreLayer3Revision(
+                project_id=project_id, actor=CommandActor.human_ui(request.actor), idempotency_key=request.request_id,
+                expected_state_token=request.expected_active_revision_id, expansion_id=expansion_id, revision_id=revision_id,
+            )).data
+        except CommandError as exc:
+            raise _command_http_error(exc) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"result": result, "snapshot": _project_snapshot(services, project_id).model_dump(mode="json")}
 
     frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     if frontend_dist.exists():

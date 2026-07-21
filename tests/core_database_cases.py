@@ -17,6 +17,7 @@ from strata.assistant_index import AssistantIndexService
 from strata.assistant_service import AssistantService
 from strata.api_models import Layer2FeatureCreateRequest, Layer2FeatureEvidenceRequest
 from strata.db import Database
+from strata.command_types import state_token
 from strata.diagnostics import Redactor, diagnostics_content_hash
 from strata.embeddings import EmbeddingService
 from strata.export import export_layer2_markdown, export_layer3_feature_expansions
@@ -312,7 +313,7 @@ class DatabaseTests(unittest.TestCase):
 
                 response = client.post(
                     f"/api/projects/{project_id}/overlap/layer2/verdicts/{verdict.id}/resolve",
-                    json={"action": "link"},
+                    json={"action": "link", "expected_state_token": state_token({"target": hashes[first.id], "neighbor": hashes[second.id], "verdict": verdict.id})},
                 )
 
                 self.assertEqual(response.status_code, 200)
@@ -324,9 +325,9 @@ class DatabaseTests(unittest.TestCase):
     def test_schema_migrations_are_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "specforge.db")
-            self.assertEqual(apply_migrations(db), [1])
+            self.assertEqual(apply_migrations(db), [1, 2, 3, 4, 5, 6])
             self.assertEqual(apply_migrations(db), [])
-            self.assertEqual(migration_status(db)["current_version"], 1)
+            self.assertEqual(migration_status(db)["current_version"], 6)
 
     def test_telemetry_aggregates_usage_and_honors_body_retention(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -462,7 +463,8 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(created.status_code, 200)
                 project_id = created.json()["id"]
 
-                archived = client.post(f"/api/projects/{project_id}/archive")
+                snapshot = client.get(f"/api/projects/{project_id}").json()
+                archived = client.post(f"/api/projects/{project_id}/archive", params={"expected_state_token": snapshot["project"]["state_token"]})
                 self.assertEqual(archived.status_code, 200)
                 self.assertEqual(archived.json()["lifecycle_state"], "archived")
 
@@ -472,11 +474,12 @@ class DatabaseTests(unittest.TestCase):
                 )
                 self.assertEqual(blocked.status_code, 409)
 
-                unarchived = client.post(f"/api/projects/{project_id}/unarchive")
+                archived_token = client.get("/api/projects?state=archived").json()[0]["state_token"]
+                unarchived = client.post(f"/api/projects/{project_id}/unarchive", params={"expected_state_token": archived_token})
                 self.assertEqual(unarchived.status_code, 200)
                 allowed = client.patch(
                     f"/api/projects/{project_id}",
-                    json={"name": "Archive Guard Restored", "idea": "Lifecycle test"},
+                    json={"name": "Archive Guard Restored", "idea": "Lifecycle test", "expected_state_token": unarchived.json()["state_token"]},
                 )
                 self.assertEqual(allowed.status_code, 200)
                 self.assertEqual(allowed.json()["name"], "Archive Guard Restored")
@@ -675,12 +678,14 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(created.status_code, 200)
                 project_id = created.json()["id"]
 
-                edited = client.patch(f"/api/projects/{project_id}", json={"name": "Lifecycle Edited", "idea": "Library summary"})
+                initial = client.get(f"/api/projects/{project_id}").json()
+                edited = client.patch(f"/api/projects/{project_id}", json={"name": "Lifecycle Edited", "idea": "Library summary", "expected_state_token": initial["project"]["state_token"]})
                 self.assertEqual(edited.status_code, 200)
                 self.assertEqual(edited.json()["name"], "Lifecycle Edited")
 
                 self.assertEqual(len(client.get("/api/projects?state=active").json()), 1)
-                archived = client.post(f"/api/projects/{project_id}/archive")
+                active_snapshot = client.get(f"/api/projects/{project_id}").json()
+                archived = client.post(f"/api/projects/{project_id}/archive", params={"expected_state_token": active_snapshot["project"]["state_token"]})
                 self.assertEqual(archived.status_code, 200)
                 self.assertEqual(archived.json()["lifecycle_state"], "archived")
                 self.assertEqual(client.get("/api/projects?state=active").json(), [])
@@ -700,7 +705,8 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(clone.status_code, 200)
                 self.assertEqual(clone.json()["source_project_id"], project_id)
 
-                unarchived = client.post(f"/api/projects/{project_id}/unarchive")
+                archived_token = client.get("/api/projects?state=archived").json()[0]["state_token"]
+                unarchived = client.post(f"/api/projects/{project_id}/unarchive", params={"expected_state_token": archived_token})
                 self.assertEqual(unarchived.status_code, 200)
                 self.assertEqual(unarchived.json()["lifecycle_state"], "active")
 
@@ -772,13 +778,14 @@ class DatabaseTests(unittest.TestCase):
                     f"/api/projects/{project_id}/layer1/pillars",
                     json={"title": "Workflow Intelligence", "description": "High-level known area"},
                 )
-                self.assertEqual(draft_response.status_code, 400)
+                self.assertEqual(draft_response.status_code, 422)
 
                 snapshot = client.get(f"/api/projects/{project_id}").json()
                 settings = snapshot["project_model_settings"]
                 settings["competitive_intelligence_enabled"] = False
                 self.assertEqual(client.patch(f"/api/projects/{project_id}/settings/models", json=settings).status_code, 200)
-                self.assertEqual(client.post(f"/api/projects/{project_id}/brief/publish").status_code, 200)
+                publish_snapshot = client.get(f"/api/projects/{project_id}").json()
+                self.assertEqual(client.post(f"/api/projects/{project_id}/brief/publish", params={"expected_state_token": publish_snapshot["brief"]["state_token"]}).status_code, 200)
 
                 response = client.post(
                     f"/api/projects/{project_id}/layer1/pillars",
@@ -869,6 +876,7 @@ class DatabaseTests(unittest.TestCase):
             brief = db.upsert_project_brief(
                 project_id=project.id,
                 product_idea="A useful product",
+                problem="Manual workflows are scattered and unclear.",
                 known_competitors=["Alpha"],
                 constraints="Local only",
                 target_users="Operators",
@@ -885,6 +893,7 @@ class DatabaseTests(unittest.TestCase):
             )
 
             self.assertEqual(brief.status, "draft")
+            self.assertEqual(db.get_project_brief(project.id).problem, "Manual workflows are scattered and unclear.")
             self.assertEqual(db.get_project_brief(project.id).known_competitors, ["Alpha"])
             self.assertEqual(db.list_brief_conversation(project.id)[0].id, turn.id)
 

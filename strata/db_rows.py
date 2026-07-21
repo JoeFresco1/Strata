@@ -62,6 +62,7 @@ class DatabaseRowMixin:
             id=row["id"],
             project_id=row["project_id"],
             product_idea=row["product_idea"],
+            problem=row["problem"],
             known_competitors=self._load_json_list(row["known_competitors"]),
             constraints=row["constraints"],
             target_users=row["target_users"],

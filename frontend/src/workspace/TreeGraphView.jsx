@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Tree from "react-d3-tree";
 import { buildTreeFromSnapshot, statusLabel } from "./workspaceSelectors";
-import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceActionGroup, WorkspaceStatusBadge } from "./WorkspacePage";
+import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceFilterField, WorkspaceStatusBadge } from "./WorkspacePage";
 
 const DEFAULT_DEPTH = 2;
 const DEFAULT_ZOOM = 0.82;
@@ -345,66 +345,38 @@ export default function TreeGraphView({
       className="tree-graph-view"
       title="Map"
       description="Explore the product idea, pillars, features, and sub-features as one product hierarchy."
-      status="draft"
+      status={null}
       primaryAction={null}
-      actions={(
-        <div className="map-actions-stack">
-          <WorkspaceActionGroup label="View controls">
-            <div className="map-control-line" role="group" aria-label="Map view controls">
-              <div className="map-control-segment">
-                <WorkspaceActionButton secondary onClick={fitToView}>Fit view</WorkspaceActionButton>
-                <WorkspaceActionButton secondary onClick={resetView}>Reset view</WorkspaceActionButton>
-              </div>
-              <div className="map-control-segment">
-                <WorkspaceActionButton secondary onClick={() => remountWithDepth(undefined)}>Expand all</WorkspaceActionButton>
-                <WorkspaceActionButton secondary onClick={() => remountWithDepth(0)}>Collapse all</WorkspaceActionButton>
-              </div>
-              <div className="map-control-segment">
-                <WorkspaceActionButton secondary onClick={() => changeZoom(ZOOM_STEP)} aria-label="Zoom in">Zoom in</WorkspaceActionButton>
-                <span className="tree-zoom-readout" aria-live="polite">{Math.round(zoom * 100)}%</span>
-                <WorkspaceActionButton secondary onClick={() => changeZoom(-ZOOM_STEP)} aria-label="Zoom out">Zoom out</WorkspaceActionButton>
-              </div>
-            </div>
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Filter controls">
-            <div className="map-filter-line">
-              <label>
-                Filter by layer
-                <select value={layerFilter} onChange={(event) => setLayerFilter(event.target.value)} aria-label="Filter product map by layer">
-                  {LAYER_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                </select>
-              </label>
-              <label>
-                Filter by pillar
-                <select value={pillarFilter} onChange={(event) => setPillarFilter(event.target.value)} aria-label="Filter product map by pillar">
-                  <option value="all">All pillars</option>
-                  {pillars.map((pillar) => <option key={pillar.id} value={pillar.id}>{pillar.name}</option>)}
-                </select>
-              </label>
-              <label>
-                Filter by status
-                <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter product map by status">
-                  <option value="all">All statuses</option>
-                  {statuses.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
-                </select>
-              </label>
-              <label>
-                Heatmap
-                <select value={heatmapMode} onChange={(event) => setHeatmapMode(event.target.value)} aria-label="Choose map heatmap metric">
-                  {HEATMAP_MODES.map((mode) => <option key={mode.id} value={mode.id}>{mode.label}</option>)}
-                </select>
-              </label>
-            </div>
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Search">
-            <label className="map-search-line">
-              <span>Search map</span>
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a pillar, feature, or note" aria-label="Search product map" />
-            </label>
-          </WorkspaceActionGroup>
-        </div>
+      actions={null}
+      filters={(
+        <>
+          <WorkspaceFilterField label="Search map" className="workspace-filter-search">
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a pillar, feature, or note" aria-label="Search product map" />
+          </WorkspaceFilterField>
+          <WorkspaceFilterField label="Layer">
+            <select value={layerFilter} onChange={(event) => setLayerFilter(event.target.value)} aria-label="Filter product map by layer">
+              {LAYER_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </select>
+          </WorkspaceFilterField>
+          <WorkspaceFilterField label="Pillar">
+            <select value={pillarFilter} onChange={(event) => setPillarFilter(event.target.value)} aria-label="Filter product map by pillar">
+              <option value="all">All pillars</option>
+              {pillars.map((pillar) => <option key={pillar.id} value={pillar.id}>{pillar.name}</option>)}
+            </select>
+          </WorkspaceFilterField>
+          <WorkspaceFilterField label="Status">
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter product map by status">
+              <option value="all">All statuses</option>
+              {statuses.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
+            </select>
+          </WorkspaceFilterField>
+          <WorkspaceFilterField label="Heatmap">
+            <select value={heatmapMode} onChange={(event) => setHeatmapMode(event.target.value)} aria-label="Choose map heatmap metric">
+              {HEATMAP_MODES.map((mode) => <option key={mode.id} value={mode.id}>{mode.label}</option>)}
+            </select>
+          </WorkspaceFilterField>
+        </>
       )}
-      filters={null}
       details={renderDetails()}
     >
       <section className="map-canvas-panel">
@@ -425,6 +397,18 @@ export default function TreeGraphView({
         </div>
         {filteredTree ? (
           <div ref={wrapperRef} className="tree-graph-canvas">
+            <div className="map-branch-controls" role="group" aria-label="Map branch controls">
+              <button type="button" className="secondary-button" onClick={() => remountWithDepth(undefined)}>Expand all</button>
+              <button type="button" className="secondary-button" onClick={() => remountWithDepth(0)}>Collapse all</button>
+            </div>
+            <div className="map-canvas-controls" role="group" aria-label="Map zoom controls">
+              <button type="button" className="map-icon-button" onClick={() => changeZoom(-ZOOM_STEP)} aria-label="Zoom out" title="Zoom out">−</button>
+              <span className="tree-zoom-readout" aria-live="polite">{Math.round(zoom * 100)}%</span>
+              <button type="button" className="map-icon-button" onClick={() => changeZoom(ZOOM_STEP)} aria-label="Zoom in" title="Zoom in">+</button>
+              <span className="map-control-divider" aria-hidden="true" />
+              <button type="button" className="map-icon-button" onClick={fitToView} aria-label="Fit map to view" title="Fit map to view">⛶</button>
+              <button type="button" className="map-icon-button" onClick={resetView} aria-label="Reset map view and filters" title="Reset map view and filters">↺</button>
+            </div>
             <Tree
               key={treeKey}
               data={filteredTree}

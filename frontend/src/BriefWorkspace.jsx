@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { displayStatusLabel } from "./workspace/WorkspacePage";
 
-// Converts multiline text fields into the array shape expected by the API.
 function textToList(value) {
   return value
     .split("\n")
@@ -9,75 +8,12 @@ function textToList(value) {
     .filter(Boolean);
 }
 
-// Converts persisted array fields back into editable textarea text.
 function listToText(value) {
   return Array.isArray(value) ? value.join("\n") : "";
 }
 
-// Builds the readiness checklist shown beside the Layer 0 brief editor.
-function briefProgressItems(brief) {
-  return [
-    {
-      label: "Product Idea",
-      ready: Boolean(brief?.product_idea?.trim()),
-      summary: brief?.product_idea?.trim() || "Still open",
-    },
-    {
-      label: "Target Users",
-      ready: Boolean(brief?.target_users?.trim()),
-      summary: brief?.target_users?.trim() || "Still open",
-    },
-    {
-      label: "Constraints",
-      ready: Boolean(brief?.constraints?.trim()),
-      summary: brief?.constraints?.trim() || "Still open",
-    },
-    {
-      label: "Goals",
-      ready: Boolean(brief?.goals?.length),
-      summary: brief?.goals?.slice(0, 2).join(", ") || "Still open",
-    },
-    {
-      label: "Competitors",
-      ready: Boolean(brief?.known_competitors?.length),
-      summary: brief?.known_competitors?.slice(0, 2).join(", ") || "Still open",
-    },
-  ];
-}
-
-// Chooses contextual Plan-mode starter prompts from the current brief gaps.
-function planSuggestionsFromBrief(brief) {
-  if (!brief?.product_idea?.trim()) {
-    return [
-      "Help me frame the product idea before we lock the brief.",
-      "Ask me the questions you need to understand the product direction.",
-      "Help me shape the first version of this idea for a real target user.",
-    ];
-  }
-  if (!brief?.target_users?.trim()) {
-    return [
-      "Help me narrow the target users for this product.",
-      "Ask me questions that separate primary users from edge users.",
-      "Pressure test who this is really for and who it is not for.",
-    ];
-  }
-  if (!brief?.known_competitors?.length) {
-    return [
-      "Help me brainstorm likely competitors or substitutes.",
-      "What products should we compare against before publishing?",
-      "Ask me enough questions to map the competitor landscape.",
-    ];
-  }
-  return [
-    "Review the brief and tell me what is still weak.",
-    "Ask me the next most important question before Layer 1.",
-    "Challenge the assumptions in this product direction.",
-  ];
-}
-
-// Extracts which fields the assistant updated during a Plan-mode exchange.
 function extractedUpdateBadges(turn) {
-  const updates = turn.extracted_updates?.updates || {};
+  const updates = turn.extracted_updates?.updates || turn.extracted_updates?.brief_updates || {};
   return Object.entries(updates)
     .filter(([, value]) => {
       if (Array.isArray(value)) return value.length;
@@ -86,7 +22,6 @@ function extractedUpdateBadges(turn) {
     .map(([key]) => key.replaceAll("_", " "));
 }
 
-// Returns the latest assistant guidance block from the Layer 0 conversation.
 function latestPlanGuidance(conversation) {
   const assistantTurns = conversation.filter((turn) => turn.role === "assistant");
   const latest = assistantTurns[assistantTurns.length - 1];
@@ -94,7 +29,6 @@ function latestPlanGuidance(conversation) {
 }
 
 function collapseLegacyDuplicatePairs(conversation) {
-  // Suppress already-persisted adjacent duplicate exchanges while new requests use durable IDs.
   const visible = [];
   for (let index = 0; index < conversation.length; index += 1) {
     const current = conversation[index];
@@ -122,55 +56,131 @@ function compactPreview(value, limit = 220) {
   return `${text.slice(0, limit - 3).trim()}...`;
 }
 
-function BriefWorkspace({ brief, conversation, onSave, onChat, locked = false, unlocked = false, onUnlock, compact = false }) {
-  const [mode, setMode] = useState("AI Chat");
-  const [form, setForm] = useState(brief);
+function normalizeBriefPayload(source = {}) {
+  return {
+    product_idea: source.product_idea || "",
+    problem: source.problem || "",
+    target_users: source.target_users || "",
+    constraints: source.constraints || "",
+    goals: Array.isArray(source.goals) ? source.goals : textToList(source.goals || ""),
+    known_competitors: Array.isArray(source.known_competitors) ? source.known_competitors : textToList(source.known_competitors || ""),
+    preferred_directions: Array.isArray(source.preferred_directions) ? source.preferred_directions : textToList(source.preferred_directions || ""),
+    rejected_directions: Array.isArray(source.rejected_directions) ? source.rejected_directions : textToList(source.rejected_directions || ""),
+    notes: source.notes || "",
+  };
+}
+
+function briefProgressItems(brief) {
+  return [
+    {
+      label: "Product summary",
+      ready: Boolean(brief?.product_idea?.trim()),
+      summary: brief?.product_idea?.trim() || "Still open",
+    },
+    {
+      label: "Problem",
+      ready: Boolean(brief?.problem?.trim()),
+      summary: brief?.problem?.trim() || "Still open",
+    },
+    {
+      label: "Target users",
+      ready: Boolean(brief?.target_users?.trim()),
+      summary: brief?.target_users?.trim() || "Still open",
+    },
+    {
+      label: "Constraints",
+      ready: Boolean(brief?.constraints?.trim()),
+      summary: brief?.constraints?.trim() || "Still open",
+    },
+    {
+      label: "Goals",
+      ready: Boolean(brief?.goals?.length),
+      summary: brief?.goals?.slice(0, 2).join(", ") || "Still open",
+    },
+    {
+      label: "Competitors",
+      ready: Boolean(brief?.known_competitors?.length),
+      summary: brief?.known_competitors?.slice(0, 2).join(", ") || "Still open",
+    },
+  ];
+}
+
+function actionPrompts(brief) {
+  const openGoals = !brief.goals?.length;
+  const openCompetitors = !brief.known_competitors?.length;
+  const openProblem = !brief.problem?.trim();
+  return {
+    weakSpots: "Review the current brief, point out the weakest spots, and tell me what I should tighten before publishing.",
+    nextQuestion: "Ask me the next most important question to make this brief publish-ready.",
+    improveClarity: openProblem
+      ? "Help me clarify the product idea and the exact problem this product should solve first."
+      : "Improve the clarity of this brief and rewrite any muddy parts into sharper product language.",
+    generateMissing: openGoals || openCompetitors
+      ? "Generate draft content for the missing brief fields based on what we already know, and clearly flag assumptions."
+      : "Regenerate the brief into a tighter, cleaner version and flag any missing or weak fields.",
+    regenerate: "Regenerate the current brief into a clearer, tighter draft and call out anything that still needs review.",
+  };
+}
+
+const MODE_OPTIONS = [
+  { id: "Form", label: "Guided form" },
+  { id: "AI Chat", label: "AI chat" },
+];
+
+const FORM_FIELDS = [
+  { key: "product_idea", label: "Product summary", rows: 4 },
+  { key: "target_users", label: "Target users", rows: 4 },
+  { key: "problem", label: "Problem", rows: 4 },
+  { key: "constraints", label: "Constraints", rows: 4 },
+  { key: "goals", label: "Goals", rows: 4, list: true },
+  { key: "known_competitors", label: "Competitors", rows: 4, list: true },
+  { key: "preferred_directions", label: "Preferred directions", rows: 4, list: true },
+  { key: "rejected_directions", label: "Rejected directions", rows: 4, list: true },
+];
+
+export default function BriefWorkspace({
+  brief,
+  conversation,
+  onSave,
+  onChat,
+  onProceed,
+  canProceed = false,
+  proceedDisabledReason = "",
+  compact = false,
+}) {
+  const [mode, setMode] = useState("Form");
+  const [form, setForm] = useState(() => normalizeBriefPayload(brief));
   const [message, setMessage] = useState("");
   const [planState, setPlanState] = useState("idle");
-  const [snapshotOpen, setSnapshotOpen] = useState(!compact);
   const chatLogRef = useRef(null);
   const sendingRef = useRef(false);
+  const conversationItems = Array.isArray(conversation) ? conversation : [];
 
   useEffect(() => {
-    setForm(brief);
+    setForm(normalizeBriefPayload(brief));
   }, [brief]);
 
   useEffect(() => {
-    if (!chatLogRef.current) {
-      return;
-    }
+    if (!chatLogRef.current) return;
     chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
-  }, [conversation.length, planState]);
+  }, [conversationItems.length, planState]);
 
-  // Keeps form state local until the user saves or publishes the brief.
   function updateField(field, value) {
-    setForm({ ...form, [field]: value });
+    setForm((current) => ({ ...current, [field]: value }));
   }
 
-  const payload = {
-    product_idea: form.product_idea || "",
-    known_competitors: Array.isArray(form.known_competitors) ? form.known_competitors : textToList(form.known_competitors || ""),
-    constraints: form.constraints || "",
-    target_users: form.target_users || "",
-    goals: Array.isArray(form.goals) ? form.goals : textToList(form.goals || ""),
-    preferred_directions: Array.isArray(form.preferred_directions) ? form.preferred_directions : textToList(form.preferred_directions || ""),
-    rejected_directions: Array.isArray(form.rejected_directions) ? form.rejected_directions : textToList(form.rejected_directions || ""),
-    notes: form.notes || "",
-  };
-  const progressItems = briefProgressItems(payload);
-  const guidance = latestPlanGuidance(conversation);
-  const visibleConversation = collapseLegacyDuplicatePairs(conversation);
-  const suggestions = guidance?.next_questions?.length ? guidance.next_questions : planSuggestionsFromBrief(payload);
-  const visibleSuggestions = compact ? suggestions.slice(0, 2) : suggestions;
-  const isPublished = brief.status === "published";
-  const readOnly = locked && !unlocked;
+  const payload = normalizeBriefPayload(form);
+  const savedPayload = normalizeBriefPayload(brief);
+  const isDirty = JSON.stringify(payload) !== JSON.stringify(savedPayload);
+  const visibleConversation = collapseLegacyDuplicatePairs(conversationItems);
+  const guidance = latestPlanGuidance(conversationItems);
+  const progressItems = briefProgressItems(savedPayload);
+  const prompts = actionPrompts(savedPayload);
+  const isPublished = brief?.status === "published";
 
-  // Sends a Plan-mode message and lets the backend extract structured brief fields.
   async function sendPlanMessage(nextMessage) {
     const clean = nextMessage.trim();
-    if (!clean || sendingRef.current) {
-      return;
-    }
+    if (!clean || sendingRef.current) return;
     sendingRef.current = true;
     setPlanState("sending");
     try {
@@ -185,245 +195,202 @@ function BriefWorkspace({ brief, conversation, onSave, onChat, locked = false, u
     }
   }
 
+  function queuePrompt(prompt, nextMode = "AI Chat") {
+    setMode(nextMode);
+    setMessage(prompt);
+  }
+
   return (
-    <div className={compact ? "panel brief-workspace compact" : "panel brief-workspace"}>
-      <div className="panel-header">
+    <div className={`panel brief-workspace brief-editor-shell${compact ? " compact" : ""}`}>
+      <div className="brief-editor-header">
         <div>
-          <h3>Layer 0 Brief</h3>
-          <span className={`status-pill ${brief.status}`}>{displayStatusLabel(brief.status)}</span>
+          <span className="workspace-eyebrow">Layer 0 brief editor</span>
+          <h3>Brief editor</h3>
+          <p className="muted">Use the form for canonical edits and AI chat for refinement. The saved brief on the right stays the source of truth.</p>
         </div>
-        <div className="segmented">
-          {["AI Chat", "Form"].map((item) => (
-            <button key={item} type="button" className={mode === item ? "active" : ""} onClick={() => setMode(item)}>
-              {item}
-            </button>
-          ))}
+        <div className="brief-editor-header-side">
+          <span className={`status-pill ${brief?.status || "draft"}`}>{displayStatusLabel(brief?.status)}</span>
+          <div className="segmented brief-mode-toggle" aria-label="Brief editor mode">
+            {MODE_OPTIONS.map((item) => (
+              <button key={item.id} type="button" className={mode === item.id ? "active" : ""} onClick={() => setMode(item.id)}>
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {mode === "AI Chat" && readOnly ? (
-        <div className="published-brief-summary">
-          <div>
-            <span className="status-pill published">Layer 0 locked</span>
-            <h4>{payload.product_idea || "Published project brief"}</h4>
-            <p className="muted">This published product plan is active in downstream layers. Unlock only when the product direction truly needs to change.</p>
-          </div>
-          <button type="button" className="secondary-button" onClick={onUnlock}>Unlock Layer 0</button>
+      <section className="brief-editor-section brief-actions-toolbar" aria-label="Brief actions">
+        <span className="workspace-card-label">Actions</span>
+        <div className="brief-suggested-actions">
+          <button type="button" className="secondary-button" onClick={() => queuePrompt(prompts.weakSpots)}>Review weak spots</button>
+          <button type="button" className="secondary-button" onClick={() => queuePrompt(prompts.nextQuestion)}>Ask next question</button>
+          <button type="button" className="secondary-button" onClick={() => queuePrompt(prompts.improveClarity)}>Improve clarity</button>
+          <button type="button" onClick={() => queuePrompt(prompts.generateMissing)}>Generate missing brief fields</button>
         </div>
-      ) : null}
+      </section>
 
-      {mode === "AI Chat" && !readOnly ? (
-        <div className="plan-workspace">
-          <div className="plan-chat-panel">
-            <div className="plan-mode-header">
-              <div>
-                <h4>Product Plan Conversation</h4>
-                <p className="muted">
-                  {isPublished
-                    ? "Layer 0 is unlocked for this session. Changes may require downstream review."
-                    : "Use this like a working session with an intake agent. The assistant should help discover the brief, ask follow-up questions, and keep the draft moving toward publish."}
-                </p>
-              </div>
-              <div className="plan-chip-row">
-                {visibleSuggestions.map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    type="button"
-                    className="preset-chip"
-                    title={compact ? suggestion : undefined}
-                    onClick={() => {
-                      setMessage(suggestion);
-                    }}
-                  >
-                    {compact ? compactPreview(suggestion, 76) : suggestion}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div ref={chatLogRef} className="chat-log plan-chat-log">
-              {!visibleConversation.length ? (
-                <div className="chat-turn assistant starter">
-                  <div className="chat-turn-bubble">
-                    <strong>Strata</strong>
-                    <p>
-                      I can help shape the draft brief before anything gets published. Start with the product idea,
-                      the user problem, or just the rough direction, and I&apos;ll pull structure out as we go.
-                    </p>
-                    <p className="muted">A good first turn is usually the product idea, target user, or what feels most uncertain.</p>
-                  </div>
-                </div>
-              ) : null}
-              {visibleConversation.map((turn) => {
-                const updates = extractedUpdateBadges(turn);
-                return (
-                  <div key={turn.id} className={`chat-turn ${turn.role}`}>
-                    <div className="chat-turn-bubble">
-                      <div className="chat-turn-head">
-                        <strong>{turn.role === "assistant" ? "Strata" : "You"}</strong>
-                        {updates.length ? <span className="chat-turn-meta">Updated: {updates.join(", ")}</span> : null}
-                      </div>
-                      <p title={compact ? turn.content : undefined}>{compact ? compactPreview(turn.content) : turn.content}</p>
-                    </div>
-                  </div>
-                );
-              })}
-              {planState === "sending" ? (
-                <div className="chat-turn assistant loading">
-                  <div className="chat-turn-bubble">
-                    <strong>Strata</strong>
-                    <p>Updating the draft brief and preparing the next question.</p>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            <form
-              className="plan-composer"
-              onSubmit={(event) => {
-                event.preventDefault();
-                sendPlanMessage(message);
-              }}
-            >
-              <label>
-                Message
-                <textarea
-                  value={message}
-                  onChange={(event) => setMessage(event.target.value)}
-                  rows={5}
-                  placeholder="Describe the product, answer the assistant, or ask it to challenge the brief."
-                />
-              </label>
-              <div className="panel-header">
-                <p className="muted plan-composer-note">
-                  {isPublished
-                    ? "Layer 0 is unlocked for this session. Save carefully and review downstream layers after changes."
-                    : "The draft updates continuously. Layer 1 stays locked until this version is published."}
-                </p>
-                <button type="submit" disabled={planState === "sending" || !message.trim()}>
-                  {planState === "sending" ? "Thinking..." : "Send"}
-                </button>
-              </div>
-            </form>
-          </div>
-
-          {!compact ? <aside className={snapshotOpen ? "plan-brief-sidebar" : "plan-brief-sidebar collapsed"}>
-            {!snapshotOpen ? (
-              <button type="button" className="snapshot-reopen-tab" onClick={() => setSnapshotOpen(true)}>
-                Open Brief Snapshot
-              </button>
-            ) : null}
-            {guidance ? (
-              <div className="plan-sidebar-section">
-                <div className="panel-header">
-                  <h4>Agent Focus</h4>
-                  <span className="status-pill">{guidance.confidence}</span>
-                </div>
-                <p className="muted">{guidance.recap}</p>
-                <div className="plan-focus-card">
-                  <span>Current focus</span>
-                  <strong>{guidance.focus_area.replaceAll("_", " ")}</strong>
-                </div>
-                {guidance.next_questions?.length ? (
-                  <ul className="summary-list">
-                    {guidance.next_questions.map((question) => (
-                      <li key={question}>{question}</li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            ) : null}
-
-            {snapshotOpen ? (
-              <>
-                <div className="plan-sidebar-section">
-                  <div className="panel-header">
-                    <h4>{isPublished ? "Published Brief Snapshot" : "Draft Brief Snapshot"}</h4>
-                    <div className="button-row">
-                      <button type="button" className="secondary-button" onClick={() => setMode("Form")}>Open Form</button>
-                      <button type="button" className="secondary-button" onClick={() => setSnapshotOpen(false)}>Hide</button>
-                    </div>
-                  </div>
-                  <div className="plan-progress-grid">
-                    {progressItems.map((item) => (
-                      <div key={item.label} className={`plan-progress-card ${item.ready ? "ready" : "open"}`}>
-                        <span>{item.label}</span>
-                        <strong>{item.ready ? "Captured" : "Open"}</strong>
-                        <p>{item.summary}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="plan-sidebar-section">
-                  <h4>What To Cover Next</h4>
-                  <ul className="summary-list">
-                    {progressItems.filter((item) => !item.ready).length ? (
-                      progressItems.filter((item) => !item.ready).map((item) => (
-                        <li key={item.label}>{item.label}</li>
-                      ))
-                    ) : (
-                      <li>The main brief fields are populated. Use AI Chat to pressure test the direction before publishing.</li>
-                    )}
-                  </ul>
-                </div>
-              </>
-            ) : (
-              <div className="plan-sidebar-collapsed-spacer" aria-hidden="true" />
-            )}
-          </aside> : null}
-        </div>
-      ) : null}
-
-      {mode === "Form" ? (
-        <div className="brief-grid layer0-brief-form">
-          <label>
-            Product Idea
-            <textarea disabled={readOnly} value={payload.product_idea} onChange={(event) => updateField("product_idea", event.target.value)} rows={4} />
-          </label>
-          <label>
-            Known Competitors
-            <textarea disabled={readOnly} value={listToText(payload.known_competitors)} onChange={(event) => updateField("known_competitors", textToList(event.target.value))} rows={4} />
-          </label>
-          <label>
-            Target Users
-            <textarea disabled={readOnly} value={payload.target_users} onChange={(event) => updateField("target_users", event.target.value)} rows={3} />
-          </label>
-          <label>
-            Constraints
-            <textarea disabled={readOnly} value={payload.constraints} onChange={(event) => updateField("constraints", event.target.value)} rows={3} />
-          </label>
-          <label>
-            Goals
-            <textarea disabled={readOnly} value={listToText(payload.goals)} onChange={(event) => updateField("goals", textToList(event.target.value))} rows={4} />
-          </label>
-          <label>
-            Preferred Directions
-            <textarea disabled={readOnly} value={listToText(payload.preferred_directions)} onChange={(event) => updateField("preferred_directions", textToList(event.target.value))} rows={4} />
-          </label>
-          <label>
-            Rejected Directions
-            <textarea disabled={readOnly} value={listToText(payload.rejected_directions)} onChange={(event) => updateField("rejected_directions", textToList(event.target.value))} rows={4} />
-          </label>
-          <label>
-            Notes
-            <textarea disabled={readOnly} value={payload.notes} onChange={(event) => updateField("notes", event.target.value)} rows={4} />
-          </label>
-          <div className="layer0-brief-actions">
-            {readOnly ? <button type="button" className="secondary-button" onClick={onUnlock}>Unlock Layer 0</button> : <button type="button" className="secondary-button" onClick={() => onSave(payload)}>Save Brief</button>}
-          </div>
-        </div>
-      ) : null}
+      <div className={`brief-editor-notice ${isDirty ? "warning" : "success"}`}>
+        <strong>{isDirty ? "Unsaved edits are local to the editor." : "Brief Preview matches the saved brief."}</strong>
+        <span>{isDirty ? "Use Save brief to update the canonical brief. The preview panel still shows the last saved version." : "The right-side preview is showing the current saved source-of-truth brief."}</span>
+      </div>
 
       {isPublished ? (
-        <div className="publish-row published-state">
-          <span className="status-pill published">{readOnly ? "Locked downstream snapshot" : "Unlocked for editing"}</span>
-          <p className="muted">{readOnly ? "Downstream generation uses this published version until you explicitly unlock Layer 0." : "Changes may require downstream review after saving."}</p>
+        <div className="brief-editor-notice warning">
+          <strong>This Layer 0 brief is published.</strong>
+          <span>Saving new edits will move it back to draft, and downstream layers may need review after you republish.</span>
         </div>
       ) : null}
+
+      {guidance ? (
+        <section className="brief-editor-section brief-guidance-panel">
+          <div className="brief-section-head">
+            <div>
+              <span className="workspace-card-label">Current AI focus</span>
+              <strong>{guidance.focus_area.replaceAll("_", " ")}</strong>
+            </div>
+            <span className="status-pill">{guidance.confidence}</span>
+          </div>
+          <p className="muted">{guidance.recap}</p>
+          {guidance.next_questions?.length ? (
+            <div className="brief-guidance-questions">
+              {guidance.next_questions.map((question) => (
+                <button key={question} type="button" className="preset-chip" onClick={() => queuePrompt(question)}>
+                  {compact ? compactPreview(question, 80) : question}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {mode === "AI Chat" ? (
+        <section className="brief-editor-section brief-chat-section">
+          <div className="brief-section-head">
+            <div>
+              <span className="workspace-card-label">AI refinement</span>
+              <p className="muted">Use chat to refine, challenge, or tighten the brief. Structured updates still flow into the same canonical Layer 0 brief after save.</p>
+            </div>
+          </div>
+
+          <div ref={chatLogRef} className="chat-log plan-chat-log brief-chat-log">
+            {!visibleConversation.length ? (
+              <div className="chat-turn assistant starter">
+                <div className="chat-turn-bubble">
+                  <strong>Strata</strong>
+                  <p>Start with the product idea, the user problem, or the part of the brief that still feels weak. I&apos;ll help refine the brief without replacing the structured form.</p>
+                </div>
+              </div>
+            ) : null}
+            {visibleConversation.map((turn) => {
+              const updates = extractedUpdateBadges(turn);
+              return (
+                <div key={turn.id} className={`chat-turn ${turn.role}`}>
+                  <div className="chat-turn-bubble">
+                    <div className="chat-turn-head">
+                      <strong>{turn.role === "assistant" ? "Strata" : "You"}</strong>
+                      {updates.length ? <span className="chat-turn-meta">Updated: {updates.join(", ")}</span> : null}
+                    </div>
+                    <p title={compact ? turn.content : undefined}>{compact ? compactPreview(turn.content) : turn.content}</p>
+                  </div>
+                </div>
+              );
+            })}
+            {planState === "sending" ? (
+              <div className="chat-turn assistant loading">
+                <div className="chat-turn-bubble">
+                  <strong>Strata</strong>
+                  <p>Updating the brief and preparing the next refinement step.</p>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <form
+            className="plan-composer brief-chat-composer"
+            onSubmit={(event) => {
+              event.preventDefault();
+              sendPlanMessage(message);
+            }}
+          >
+            <label>
+              Message
+              <textarea
+                value={message}
+                onChange={(event) => setMessage(event.target.value)}
+                rows={5}
+                placeholder="Refine the brief, answer a follow-up, or ask Strata to tighten the product definition."
+              />
+            </label>
+            <div className="brief-chat-composer-actions">
+              <p className="muted">Chat helps refine the brief, but the saved Layer 0 brief remains the canonical source for downstream work.</p>
+              <button type="submit" disabled={planState === "sending" || !message.trim()}>
+                {planState === "sending" ? "Thinking..." : "Send"}
+              </button>
+            </div>
+          </form>
+        </section>
+      ) : (
+        <section className="brief-editor-section">
+          <div className="brief-section-head">
+            <div>
+              <span className="workspace-card-label">Structured brief</span>
+              <p className="muted">Edit the core Layer 0 fields directly. Use one line per item for list fields.</p>
+            </div>
+          </div>
+
+          <div className="brief-grid layer0-brief-form canonical-brief-form">
+            {FORM_FIELDS.map((field) => (
+              <label key={field.key} className={field.key === "product_idea" || field.key === "problem" ? "brief-field-span" : ""}>
+                {field.label}
+                <textarea
+                  value={field.list ? listToText(payload[field.key]) : payload[field.key]}
+                  onChange={(event) => updateField(field.key, field.list ? textToList(event.target.value) : event.target.value)}
+                  rows={field.rows}
+                />
+              </label>
+            ))}
+            <label className="brief-field-span">
+              Internal notes (optional)
+              <textarea value={payload.notes} onChange={(event) => updateField("notes", event.target.value)} rows={3} />
+            </label>
+          </div>
+        </section>
+      )}
+
+      <section className="brief-editor-section brief-progress-panel">
+        <div className="brief-section-head">
+          <div>
+            <span className="workspace-card-label">Brief coverage</span>
+            <p className="muted">A quick read on what the saved brief already covers well.</p>
+          </div>
+        </div>
+        <div className="plan-progress-grid">
+          {progressItems.map((item) => (
+            <div key={item.label} className={`plan-progress-card ${item.ready ? "ready" : "open"}`}>
+              <span>{item.label}</span>
+              <strong>{item.ready ? "Captured" : "Open"}</strong>
+              <p>{item.summary}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="brief-editor-footer">
+        <div className="brief-editor-primary-actions">
+          <button type="button" onClick={() => onSave(payload)} disabled={!isDirty}>
+            Save brief
+          </button>
+        </div>
+        <div className="brief-editor-secondary-actions">
+          <button type="button" className="secondary-button" onClick={() => queuePrompt(prompts.regenerate)}>
+            Regenerate brief
+          </button>
+          <button type="button" className="secondary-button" onClick={onProceed} disabled={!canProceed} title={!canProceed ? proceedDisabledReason : undefined}>
+            Proceed to L1 Pillars
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
-
-
-export default BriefWorkspace;

@@ -8,6 +8,8 @@ from typing import Any
 from pydantic import ValidationError
 
 from strata.llm import LLMError
+from strata.layer3_revision import reconcile_generated_candidate
+from strata.dependency_db import feature_revision_token, pillar_revision_token
 from strata.models import FeatureExpansionResponse
 from strata.prompts import build_layer3_feature_expansion_prompt
 
@@ -48,10 +50,13 @@ class Layer3ServiceMixin:
         feature_ids: list[str],
         *,
         thinking_enabled: bool = False,
+        generation_reference: str | None = None,
+        actor: str = "system",
     ) -> list[Any]:
-        """Generate editable subfeature/configuration expansions for approved Layer 2 features."""
+        """Generate immutable candidates without mutating any current Layer 3 expansion."""
         runtime_profile = self._project_llm_runtime(project_id, "layer3_generation")
         self._ensure_profile_loaded(runtime_profile, thinking_enabled=thinking_enabled)
+        self.db.migrate_layer3_revisions()
         prompt_catalog = self._prompt_catalog(project_id)
         project = self.db.get_project(project_id)
         brief = self.db.get_project_brief(project_id)
@@ -105,36 +110,71 @@ class Layer3ServiceMixin:
                 schema_label="layer3_feature_expansion",
                 schema_instructions="Return {'expansion': {feature_intent, expansion_groups, overlap_review, open_questions}}.",
             )
-            payload = self._normalize_feature_expansion(expansion.expansion.model_dump(mode="json"))
-            self._validate_overlap_targets(payload, feature.id, all_features)
-            validate_product_level_content(payload)
-            saved = self.db.upsert_layer3_expansion(
+            generated = self._normalize_feature_expansion(expansion.expansion.model_dump(mode="json"))
+            self._validate_overlap_targets(generated, feature.id, all_features)
+            validate_product_level_content(generated)
+            active_revision = self.db.get_layer3_revision(existing.active_revision_id) if existing and existing.active_revision_id else None
+            active_payload = active_revision["payload"] if active_revision else None
+            candidate_content, structured_diff, ownership = reconcile_generated_candidate(
+                active_payload,
+                generated,
+                active_revision["field_ownership"] if active_revision else {},
+            )
+            reference = generation_reference or str(uuid.uuid4())
+            provenance = {
+                "source_layer0_brief_id": brief.id if brief else None,
+                "source_layer1_pillar_id": pillar.id,
+                "source_layer2_feature_id": feature.id,
+                "source_layer2_candidate_ids": feature.candidate_source_ids,
+                "source_model": getattr(response, "model_name", None) or self._runtime_model_name(runtime_profile),
+                "thinking_enabled": thinking_enabled,
+                "generation_reference": reference,
+                "source_layer2_feature_revision": feature_revision_token(feature),
+                "source_brief_revision": str(brief.current_published_revision_id or "") if brief else "",
+                "source_pillar_revision": pillar_revision_token(pillar),
+            }
+            artifact_payload = {
+                "project_id": project_id,
+                "feature_id": feature.id,
+                "parent_pillar_id": pillar.id,
+                "parent_pillar_title": pillar.title,
+                "feature_name": feature.canonical_name,
+                "feature_description": feature.description,
+                **candidate_content,
+                "provenance": provenance,
+            }
+            saved = self.db.create_layer3_candidate(
                 project_id=project_id,
                 feature_id=feature.id,
-                parent_pillar_id=pillar.id,
-                parent_pillar_title=pillar.title,
-                feature_name=feature.canonical_name,
-                feature_description=feature.description,
-                feature_intent=payload["feature_intent"],
-                expansion_groups=payload["expansion_groups"],
-                overlap_review=payload["overlap_review"],
-                open_questions=payload["open_questions"],
-                review_state="draft",
-                provenance={
-                    "source_layer0_brief_id": brief.id if brief else None,
-                    "source_layer1_pillar_id": pillar.id,
-                    "source_layer2_feature_id": feature.id,
-                    "source_layer2_candidate_ids": feature.candidate_source_ids,
-                    "source_model": getattr(response, "model_name", None) or self._runtime_model_name(runtime_profile),
-                    "thinking_enabled": thinking_enabled,
-                },
+                artifact_payload=artifact_payload,
+                structured_diff=structured_diff,
+                field_ownership=ownership,
+                source_layer2_feature_revision=feature_revision_token(feature),
+                source_brief_revision=str(brief.current_published_revision_id or "") if brief else "",
+                source_pillar_revision=pillar_revision_token(pillar),
+                generation_reference=reference,
+                origin="regeneration" if existing else "generation",
+                actor=actor,
             )
-            self.db.record_layer3_expansion_action(
-                project_id=project_id,
-                expansion_id=saved.id,
-                action_type="generate",
-                payload={"feature_id": feature.id},
-            )
+            if "artifact_dependencies" in self.db._table_names():
+                revision_id = str(saved["id"])
+                logical_id = str(saved["logical_expansion_id"])
+                self.db.set_artifact_freshness(
+                    project_id=project_id, artifact_type="layer3_revision", artifact_id=logical_id,
+                    artifact_revision_id=revision_id, freshness_state="current", lineage_quality="exact",
+                )
+                for source_type, source_id, source_revision in (
+                    ("brief", brief.id if brief else "", str(brief.current_published_revision_id or "") if brief else ""),
+                    ("layer1_pillar", pillar.id, pillar_revision_token(pillar)),
+                    ("layer2_feature", feature.id, feature_revision_token(feature)),
+                ):
+                    if source_id and source_revision:
+                        self.db.add_artifact_dependency(
+                            project_id=project_id, dependent_artifact_type="layer3_revision",
+                            dependent_artifact_id=logical_id, dependent_revision_id=revision_id,
+                            source_artifact_type=source_type, source_artifact_id=source_id,
+                            source_revision_id=source_revision, lineage_quality="exact",
+                        )
             created.append(saved)
         return created
 

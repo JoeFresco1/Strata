@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import ColumnHeader from "./ColumnHeader";
 import { approvedLayer2Features } from "./workspaceSelectors";
-import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceActionGroup, WorkspaceStatusBadge } from "./WorkspacePage";
+import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceFilterField, WorkspaceStatusBadge } from "./WorkspacePage";
 import WorkspaceJobNotice from "./WorkspaceJobNotice";
 
 const CONFIGURATION_KINDS = ["boolean", "single_select", "multi_select", "numeric", "text", "rule", "workflow", "content", "integration", "other"];
@@ -109,6 +109,9 @@ export default function Layer3View({
   onGenerate,
   onUpdateExpansion,
   onReviewExpansion,
+  onApplyCandidate,
+  onRejectCandidate,
+  onRestoreRevision,
   onExportLayer3,
   onResearch,
   generationJobState,
@@ -117,7 +120,14 @@ export default function Layer3View({
 }) {
   const approvedFeatures = approvedLayer2Features(snapshot);
   const expansions = snapshot?.layer3?.expansions || [];
+  const candidates = snapshot?.layer3?.candidates || [];
+  const revisionHistory = snapshot?.layer3?.revision_history || [];
   const expansionByFeatureId = useMemo(() => Object.fromEntries(expansions.map((expansion) => [expansion.feature_id, expansion])), [expansions]);
+  const candidateByFeatureId = useMemo(() => candidates.reduce((result, candidate) => {
+    const featureId = candidate.payload?.feature_id;
+    if (featureId && !result[featureId]) result[featureId] = candidate;
+    return result;
+  }, {}), [candidates]);
   const pillars = (snapshot?.nodes || []).filter((node) => node.layer === 1 && node.node_type === "pillar");
   const pillarById = useMemo(() => Object.fromEntries(pillars.map((pillar) => [pillar.id, pillar])), [pillars]);
   const [expandedFeatureId, setExpandedFeatureId] = useState("");
@@ -129,10 +139,16 @@ export default function Layer3View({
   const [draft, setDraft] = useState(null);
   const [dirty, setDirty] = useState(false);
   const [overlapDraft, setOverlapDraft] = useState("");
+  const [partialSections, setPartialSections] = useState([]);
   const lastWorkspaceSelection = useRef("");
 
   const expandedFeature = approvedFeatures.find((feature) => feature.id === expandedFeatureId) || approvedFeatures[0] || null;
   const expandedExpansion = expandedFeature ? expansionByFeatureId[expandedFeature.id] : null;
+  const expandedCandidate = expandedFeature ? candidateByFeatureId[expandedFeature.id] : null;
+  const logicalExpansionId = expandedExpansion?.id || expandedCandidate?.logical_expansion_id || "";
+  const acceptedHistory = revisionHistory.filter((revision) => (
+    revision.logical_expansion_id === logicalExpansionId && revision.workflow_state === "superseded"
+  ));
   const generationRunning = generationJobState?.state === "running";
   const researchRunning = researchJobState?.state === "running";
   const missingExpansionFeatureIds = approvedFeatures.filter((feature) => !expansionByFeatureId[feature.id]).map((feature) => feature.id);
@@ -142,14 +158,14 @@ export default function Layer3View({
     const filtered = approvedFeatures.filter((feature) => {
       const expansion = expansionByFeatureId[feature.id];
       const pillar = pillarById[feature.owner_pillar_id];
-      const text = [feature.canonical_name, feature.description, pillar?.title, expansion?.review_state]
+      const text = [feature.canonical_name, feature.description, pillar?.title, expansion?.review_state, candidateByFeatureId[feature.id]?.workflow_state]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
       return (
         (!normalizedQuery || text.includes(normalizedQuery)) &&
         (filters.pillar === "all" || feature.owner_pillar_id === filters.pillar) &&
-        (filters.status === "all" || (expansion?.review_state || "not_generated") === filters.status)
+        (filters.status === "all" || (expansion?.review_state || (candidateByFeatureId[feature.id] ? "candidate" : "not_generated")) === filters.status)
       );
     });
     return [...filtered].sort((left, right) => {
@@ -158,7 +174,7 @@ export default function Layer3View({
       const selectors = {
         name: (feature) => feature.canonical_name,
         pillar: (feature) => pillarById[feature.owner_pillar_id]?.title || "Unassigned",
-        status: (feature) => expansionByFeatureId[feature.id]?.review_state || "not_generated",
+        status: (feature) => expansionByFeatureId[feature.id]?.review_state || (candidateByFeatureId[feature.id] ? "candidate" : "not_generated"),
         subfeatures: (feature) => optionCounts(expansionByFeatureId[feature.id]).total,
         include: (feature) => optionCounts(expansionByFeatureId[feature.id]).include,
         exclude: (feature) => optionCounts(expansionByFeatureId[feature.id]).exclude,
@@ -167,7 +183,15 @@ export default function Layer3View({
       const select = selectors[sortConfig.key] || selectors.pillar;
       return compareValues(select(left), select(right), sortConfig.direction) || left.canonical_name.localeCompare(right.canonical_name);
     });
-  }, [approvedFeatures, expansionByFeatureId, filters, pillarById, query, sortConfig]);
+  }, [approvedFeatures, candidateByFeatureId, expansionByFeatureId, filters, pillarById, query, sortConfig]);
+
+  useEffect(() => {
+    setPartialSections([]);
+  }, [expandedCandidate?.id]);
+
+  function togglePartialSection(section) {
+    setPartialSections((current) => current.includes(section) ? current.filter((item) => item !== section) : [...current, section]);
+  }
 
   useEffect(() => {
     if (workspaceState?.selected_entity_type === "expansion" && workspaceState.selected_entity_id) {
@@ -309,27 +333,30 @@ export default function Layer3View({
       title="Sub-features"
       description="Expand approved features into editable sub-features, choices, validation rules, and open questions."
       status={!approvedFeatures.length ? "draft" : approvedExpansionCount ? "approved" : "needs_review"}
-      primaryAction={(
-        <WorkspaceActionButton
-          primary
-          onClick={selectedFeatureIds.length ? () => onGenerate(selectedFeatureIds) : generateMissing}
-          disabled={generationRunning || !approvedFeatures.length}
-          disabledReason={generationRunning ? "Layer 3 generation is already running." : !approvedFeatures.length ? "Approve Layer 2 features first." : ""}
-        >
-          {selectedFeatureIds.length ? "Generate selected" : "Generate all"}
-        </WorkspaceActionButton>
-      )}
+      primaryAction={null}
       actions={(
-        <>
-          <WorkspaceActionGroup label="Generate">
+        <div className="layer3-actions-stack">
+          <section className="workspace-action-group segmented-action-group layer3-actions-row" aria-label="Layer 3 actions">
+            <div className="segmented-action-row layer3-inline-actions">
             <WorkspaceActionButton
-              secondary
+              primary
               onClick={generateMissing}
               disabled={generationRunning || !approvedFeatures.length}
               disabledReason={generationRunning ? "Layer 3 generation is already running." : !approvedFeatures.length ? "Approve Layer 2 features first." : ""}
             >
               Generate all
             </WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton secondary onClick={onExportLayer3} disabled={!approvedExpansionCount} disabledReason={!approvedExpansionCount ? "Approve at least one expansion before export." : ""}>
+                Export Layer 3
+              </WorkspaceActionButton>
+            </div>
+          </section>
+          <section className="workspace-action-group segmented-action-group layer3-selection-group" aria-label="Selection actions">
+            <strong>Selection actions</strong>
+            <div className="segmented-action-row layer3-selection-row">
+              <WorkspaceActionButton secondary onClick={toggleVisibleFeatures} disabled={!visibleFeatures.length} disabledReason={!visibleFeatures.length ? "No visible rows to select." : ""}>Select all</WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
             <WorkspaceActionButton
               secondary
               onClick={() => onGenerate(selectedFeatureIds)}
@@ -338,8 +365,7 @@ export default function Layer3View({
             >
               Generate selected
             </WorkspaceActionButton>
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Research">
+              <span className="workspace-action-divider" aria-hidden="true" />
             <WorkspaceActionButton
               secondary
               onClick={researchSelected}
@@ -348,35 +374,36 @@ export default function Layer3View({
             >
               Research selected
             </WorkspaceActionButton>
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Review / Critique">
-            <WorkspaceActionButton secondary onClick={onExportLayer3} disabled={!approvedExpansionCount} disabledReason={!approvedExpansionCount ? "Approve at least one expansion before export." : ""}>
-              Export
-            </WorkspaceActionButton>
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Selection actions">
-            <WorkspaceActionButton secondary onClick={toggleVisibleFeatures} disabled={!visibleFeatures.length} disabledReason={!visibleFeatures.length ? "No visible rows to select." : ""}>Select all</WorkspaceActionButton>
-            <span className="workspace-selection-count" aria-live="polite">{selectedFeatureIds.length ? `${selectedFeatureIds.length} selected` : `${visibleFeatures.length} of ${approvedFeatures.length} rows`}</span>
-          </WorkspaceActionGroup>
-        </>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <span className="workspace-selection-count workspace-selection-summary" aria-live="polite">{selectedFeatureIds.length} selected</span>
+            </div>
+          </section>
+        </div>
       )}
       filters={approvedFeatures.length ? (
         <>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search sub-features" aria-label="Search Layer 3 rows" />
-          <select value={filters.pillar} onChange={(event) => setFilters({ ...filters, pillar: event.target.value })} aria-label="Filter Layer 3 rows by pillar">
-            <option value="all">All pillars</option>
-            {pillars.map((pillar) => <option key={pillar.id} value={pillar.id}>{pillar.title}</option>)}
-          </select>
-          <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })} aria-label="Filter Layer 3 rows by status">
-            <option value="all">All statuses</option>
-            <option value="not_generated">Draft</option>
-            <option value="draft">Draft</option>
-            <option value="needs_review">Needs review</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
-          </select>
-          <label>
-            Sort by
+          <WorkspaceFilterField label="Search sub-features" className="workspace-filter-search">
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a feature, sub-feature, pillar, or review state" aria-label="Search Layer 3 rows" />
+          </WorkspaceFilterField>
+          <WorkspaceFilterField label="Pillar">
+            <select value={filters.pillar} onChange={(event) => setFilters({ ...filters, pillar: event.target.value })} aria-label="Filter Layer 3 rows by pillar">
+              <option value="all">All pillars</option>
+              {pillars.map((pillar) => <option key={pillar.id} value={pillar.id}>{pillar.title}</option>)}
+            </select>
+          </WorkspaceFilterField>
+          <WorkspaceFilterField label="Status">
+            <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })} aria-label="Filter Layer 3 rows by status">
+              <option value="all">All statuses</option>
+              <option value="candidate">Candidate ready</option>
+              <option value="not_generated">Draft</option>
+              <option value="draft">Draft</option>
+              <option value="needs_review">Needs review</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </WorkspaceFilterField>
+          <WorkspaceFilterField label="Sort by" className="workspace-filter-sort">
+            <div className="workspace-sort-control">
             <select value={sortConfig.key} onChange={(event) => setSortConfig({ ...sortConfig, key: event.target.value })} aria-label="Sort sub-features">
               <option value="pillar">Pillar</option>
               <option value="name">Feature</option>
@@ -386,10 +413,11 @@ export default function Layer3View({
               <option value="exclude">Rejected</option>
               <option value="undecided">Needs review</option>
             </select>
-          </label>
-          <WorkspaceActionButton secondary onClick={() => setSortConfig((current) => ({ ...current, direction: current.direction === "asc" ? "desc" : "asc" }))}>
-            {sortConfig.direction === "asc" ? "Ascending" : "Descending"}
-          </WorkspaceActionButton>
+              <WorkspaceActionButton secondary onClick={() => setSortConfig((current) => ({ ...current, direction: current.direction === "asc" ? "desc" : "asc" }))}>
+                {sortConfig.direction === "asc" ? "Ascending" : "Descending"}
+              </WorkspaceActionButton>
+            </div>
+          </WorkspaceFilterField>
         </>
       ) : null}
     >
@@ -419,6 +447,7 @@ export default function Layer3View({
             <tbody>
               {visibleFeatures.map((feature) => {
                 const expansion = expansionByFeatureId[feature.id];
+                const candidate = candidateByFeatureId[feature.id];
                 const counts = optionCounts(expansion);
                 const expanded = expandedFeatureId === feature.id;
                 const pillar = pillarById[feature.owner_pillar_id];
@@ -436,7 +465,10 @@ export default function Layer3View({
                         <p className="muted">{feature.description || "No Layer 2 description yet."}</p>
                       </td>
                       <td>{pillar?.title || "Unassigned"}</td>
-                      <td><WorkspaceStatusBadge status={expansion?.review_state || "not_generated"} /></td>
+                      <td>
+                        <WorkspaceStatusBadge status={expansion?.review_state || (candidate ? "candidate" : "not_generated")} />
+                        {expansion?.freshness_state && expansion.freshness_state !== "current" ? <WorkspaceStatusBadge status={expansion.freshness_state} /> : null}
+                      </td>
                       <td>{counts.total || "-"}</td>
                       <td>{counts.include || "-"}</td>
                       <td>{counts.exclude || "-"}</td>
@@ -444,7 +476,7 @@ export default function Layer3View({
                       <td>
                         <div className="button-row">
                           <button type="button" className="secondary-button" onClick={() => onGenerate([feature.id])} disabled={generationRunning}>
-                            Generate row
+                            {expansion || candidate ? "Regenerate row" : "Generate row"}
                           </button>
                           <button type="button" className="secondary-button" onClick={() => onResearch?.([feature.id])} disabled={researchRunning} title={researchRunning ? "Feature research is already running." : "Research this row"}>Research row</button>
                         </div>
@@ -453,6 +485,50 @@ export default function Layer3View({
                     {expanded ? (
                       <tr key={`${feature.id}-detail`} className="layer3-expanded-row">
                         <td colSpan={10}>
+                          {expandedCandidate ? (
+                            <section className="layer3-subtable-section" aria-label="Layer 3 candidate revision review">
+                              <div className="workspace-section-heading">
+                                <div>
+                                  <strong>Candidate revision {expandedCandidate.revision_number}</strong>
+                                  <p className="muted">Active revision {expandedExpansion?.revision_number || "none"} remains unchanged until an apply command succeeds. Source freshness: {expandedCandidate.freshness_state}.</p>
+                                </div>
+                                <div className="button-row">
+                                  <button type="button" className="secondary-button" onClick={() => onApplyCandidate(logicalExpansionId, expandedCandidate.id, expandedExpansion?.active_revision_id || null, [])} disabled={dirty}>Accept full candidate</button>
+                                  <button type="button" className="secondary-button" onClick={() => onApplyCandidate(logicalExpansionId, expandedCandidate.id, expandedExpansion?.active_revision_id || null, partialSections)} disabled={dirty || !partialSections.length}>Apply selected sections</button>
+                                  <button type="button" className="secondary-button danger-button" onClick={() => onRejectCandidate(logicalExpansionId, expandedCandidate.id)} disabled={dirty}>Reject candidate</button>
+                                </div>
+                              </div>
+                              <div className="workspace-chip-row">
+                                {["added", "removed", "modified", "unchanged", "id_matches", "unresolved_matches"].map((kind) => (
+                                  <span key={kind} className="workspace-chip">{kind.replaceAll("_", " ")}: {(expandedCandidate.structured_diff?.[kind] || []).length}</span>
+                                ))}
+                              </div>
+                              <fieldset>
+                                <legend>Partial apply sections</legend>
+                                <div className="workspace-chip-row">
+                                  {["feature_intent", "expansion_groups", "overlap_review", "open_questions"].map((section) => (
+                                    <label key={section} className="workspace-chip">
+                                      <input type="checkbox" checked={partialSections.includes(section)} onChange={() => togglePartialSection(section)} /> {section.replaceAll("_", " ")}
+                                    </label>
+                                  ))}
+                                </div>
+                              </fieldset>
+                              <div className="layer3-split">
+                                <div>
+                                  <strong>Current intent</strong>
+                                  <p>{expandedExpansion?.feature_intent || "No active expansion yet."}</p>
+                                </div>
+                                <div>
+                                  <strong>Candidate intent</strong>
+                                  <p>{expandedCandidate.payload?.feature_intent || "No candidate intent."}</p>
+                                </div>
+                              </div>
+                              <details>
+                                <summary>Review structured diff</summary>
+                                <pre>{JSON.stringify(expandedCandidate.structured_diff, null, 2)}</pre>
+                              </details>
+                            </section>
+                          ) : null}
                           {expansion && draft ? (
                             <div className="layer3-expanded-panel">
                               <div className="workspace-section-heading">
@@ -468,6 +544,16 @@ export default function Layer3View({
                                 </div>
                               </div>
                               {dirty ? <p className="warning">Save edits before approving or exporting this expansion.</p> : null}
+                              {expandedExpansion.freshness_state === "stale" ? (
+                                <div className="warning">
+                                  <p>This approved revision is stale because an upstream source changed. Its content and approval remain preserved; regenerate to create a reviewable reconciliation candidate.</p>
+                                  {(expandedExpansion.freshness?.stale_reasons || []).map((reason) => (
+                                    <p key={`${reason.source_artifact_type}-${reason.source_artifact_id}-${reason.previous_source_revision_id}`}>
+                                      {reason.source_artifact_type} {reason.source_artifact_id}: expected {reason.previous_source_revision_id}, current {reason.replacement_source_revision_id}.
+                                    </p>
+                                  ))}
+                                </div>
+                              ) : null}
 
                               <div className="button-row">
                                 <button type="button" className="secondary-button" onClick={() => updateDraft({ ...draft, expansion_groups: [...draft.expansion_groups, emptyGroup()] })}>Add subfeature group</button>
@@ -556,11 +642,23 @@ export default function Layer3View({
                             </div>
                           ) : (
                             <div className="guided-empty-state">
-                              <strong>No Layer 3 subfeatures generated yet.</strong>
-                              <p className="muted">Generate this row to expand the approved Layer 2 feature into editable subfeatures and choices.</p>
+                              <strong>{expandedCandidate ? "No candidate has been accepted yet." : "No Layer 3 subfeatures generated yet."}</strong>
+                              <p className="muted">{expandedCandidate ? "Review and apply the candidate above to create the first active expansion." : "Generate this row to expand the approved Layer 2 feature into editable subfeatures and choices."}</p>
                               <button type="button" className="secondary-button" onClick={() => onGenerate([feature.id])} disabled={generationRunning}>Generate row</button>
                             </div>
                           )}
+                          {acceptedHistory.length && expandedExpansion ? (
+                            <details>
+                              <summary>Earlier accepted revisions</summary>
+                              <div className="button-row">
+                                {acceptedHistory.map((revision) => (
+                                  <button type="button" className="secondary-button" key={revision.id} onClick={() => onRestoreRevision(logicalExpansionId, revision.id, expandedExpansion.active_revision_id)} disabled={dirty}>
+                                    Restore revision {revision.revision_number}
+                                  </button>
+                                ))}
+                              </div>
+                            </details>
+                          ) : null}
                         </td>
                       </tr>
                     ) : null}

@@ -37,6 +37,7 @@ class PostgresSchemaMixin:
                         id TEXT PRIMARY KEY,
                         project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
                         product_idea TEXT NOT NULL,
+                        problem TEXT NOT NULL DEFAULT '',
                         known_competitors JSONB NOT NULL,
                         constraints TEXT NOT NULL,
                         target_users TEXT NOT NULL DEFAULT '',
@@ -75,6 +76,7 @@ class PostgresSchemaMixin:
                     )
                     """
                 )
+                cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS problem TEXT NOT NULL DEFAULT ''")
                 cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS target_users TEXT NOT NULL DEFAULT ''")
                 cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS goals JSONB NOT NULL DEFAULT '[]'::jsonb")
                 cursor.execute("ALTER TABLE project_briefs ADD COLUMN IF NOT EXISTS preferred_directions JSONB NOT NULL DEFAULT '[]'::jsonb")
@@ -431,6 +433,8 @@ class PostgresSchemaMixin:
                         open_questions JSONB NOT NULL,
                         review_state TEXT NOT NULL,
                         provenance JSONB NOT NULL,
+                        active_revision_id TEXT NOT NULL DEFAULT '',
+                        revision_number INTEGER NOT NULL DEFAULT 0,
                         created_at TIMESTAMPTZ NOT NULL,
                         updated_at TIMESTAMPTZ NOT NULL,
                         UNIQUE(project_id, feature_id)
@@ -519,6 +523,104 @@ class PostgresSchemaMixin:
                         created_at TIMESTAMPTZ NOT NULL,
                         updated_at TIMESTAMPTZ NOT NULL,
                         UNIQUE(feature_id, embedding_model)
+                    )
+                    """
+                )
+                cursor.execute("ALTER TABLE layer3_feature_expansions ADD COLUMN IF NOT EXISTS active_revision_id TEXT NOT NULL DEFAULT ''")
+                cursor.execute("ALTER TABLE layer3_feature_expansions ADD COLUMN IF NOT EXISTS revision_number INTEGER NOT NULL DEFAULT 0")
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS layer3_expansion_heads (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        feature_id TEXT NOT NULL REFERENCES layer2_features(id) ON DELETE CASCADE,
+                        active_revision_id TEXT,
+                        next_revision_number INTEGER NOT NULL DEFAULT 1 CHECK (next_revision_number >= 1),
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        UNIQUE(project_id, feature_id),
+                        CONSTRAINT layer3_heads_id_project_unique UNIQUE(id, project_id)
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS layer3_expansion_revisions (
+                        id TEXT PRIMARY KEY,
+                        logical_expansion_id TEXT NOT NULL,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        revision_number INTEGER NOT NULL,
+                        source_layer2_feature_revision TEXT NOT NULL DEFAULT '',
+                        source_brief_revision TEXT NOT NULL DEFAULT '',
+                        source_pillar_revision TEXT NOT NULL DEFAULT '',
+                        generation_reference TEXT NOT NULL DEFAULT '',
+                        origin TEXT NOT NULL,
+                        actor TEXT NOT NULL,
+                        payload JSONB NOT NULL,
+                        structured_diff JSONB NOT NULL,
+                        field_ownership JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        UNIQUE(logical_expansion_id, revision_number),
+                        CONSTRAINT layer3_revisions_logical_id_unique UNIQUE(logical_expansion_id, id),
+                        CONSTRAINT layer3_revisions_head_project_fk FOREIGN KEY (logical_expansion_id, project_id)
+                            REFERENCES layer3_expansion_heads(id, project_id) ON DELETE CASCADE,
+                        CHECK (revision_number >= 1)
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS layer3_expansion_revision_states (
+                        revision_id TEXT PRIMARY KEY REFERENCES layer3_expansion_revisions(id) ON DELETE CASCADE,
+                        logical_expansion_id TEXT NOT NULL REFERENCES layer3_expansion_heads(id) ON DELETE CASCADE,
+                        workflow_state TEXT NOT NULL,
+                        review_state TEXT NOT NULL,
+                        freshness_state TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        active_slot INTEGER GENERATED ALWAYS AS (
+                            CASE WHEN workflow_state = 'active' THEN 1 ELSE NULL END
+                        ) STORED,
+                        CONSTRAINT layer3_revision_states_revision_owner_fk FOREIGN KEY (logical_expansion_id, revision_id)
+                            REFERENCES layer3_expansion_revisions(logical_expansion_id, id) ON DELETE CASCADE,
+                        CONSTRAINT layer3_revision_states_workflow_check
+                            CHECK (workflow_state IN ('candidate', 'active', 'superseded', 'rejected', 'applied_partial')),
+                        CONSTRAINT layer3_revision_states_review_check
+                            CHECK (review_state IN ('draft', 'approved', 'rejected', 'needs_review')),
+                        CONSTRAINT layer3_revision_states_freshness_check
+                            CHECK (freshness_state IN ('fresh', 'stale', 'unknown')),
+                        CONSTRAINT layer3_revision_states_consistency_check CHECK (
+                            (workflow_state <> 'candidate' OR review_state = 'needs_review')
+                            AND (workflow_state <> 'rejected' OR review_state = 'rejected')
+                            AND (workflow_state <> 'applied_partial' OR review_state = 'approved')
+                        ),
+                        CONSTRAINT layer3_revision_states_one_active
+                            UNIQUE (logical_expansion_id, active_slot) DEFERRABLE INITIALLY DEFERRED
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS layer3_revision_actions (
+                        id TEXT PRIMARY KEY,
+                        request_id TEXT NOT NULL UNIQUE,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        logical_expansion_id TEXT NOT NULL,
+                        revision_id TEXT,
+                        action_type TEXT NOT NULL,
+                        expected_active_revision_id TEXT,
+                        previous_active_revision_id TEXT,
+                        new_active_revision_id TEXT,
+                        selected_sections JSONB NOT NULL,
+                        before_snapshot JSONB NOT NULL,
+                        after_snapshot JSONB NOT NULL,
+                        actor TEXT NOT NULL,
+                        origin TEXT NOT NULL,
+                        payload JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        CONSTRAINT layer3_revision_actions_head_project_fk FOREIGN KEY (logical_expansion_id, project_id)
+                            REFERENCES layer3_expansion_heads(id, project_id) ON DELETE CASCADE,
+                        CONSTRAINT layer3_revision_actions_revision_owner_fk FOREIGN KEY (logical_expansion_id, revision_id)
+                            REFERENCES layer3_expansion_revisions(logical_expansion_id, id) ON DELETE CASCADE
                     )
                     """
                 )
@@ -672,6 +774,75 @@ class PostgresSchemaMixin:
                         action_type TEXT NOT NULL,
                         payload JSONB NOT NULL,
                         created_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS artifact_authority_actions (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        artifact_type TEXT NOT NULL CHECK (artifact_type IN ('layer1_pillar', 'layer2_feature', 'layer3_expansion')),
+                        artifact_id TEXT NOT NULL,
+                        revision_id TEXT NOT NULL DEFAULT '',
+                        action_type TEXT NOT NULL,
+                        actor TEXT NOT NULL,
+                        origin TEXT NOT NULL,
+                        payload JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS critic_findings (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        artifact_type TEXT NOT NULL CHECK (artifact_type IN ('layer1_pillar', 'layer2_feature', 'layer3_expansion')),
+                        artifact_id TEXT NOT NULL,
+                        artifact_revision_id TEXT NOT NULL DEFAULT '',
+                        critic_type TEXT NOT NULL,
+                        policy_version TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        severity TEXT NOT NULL,
+                        explanation TEXT NOT NULL,
+                        evidence JSONB NOT NULL,
+                        recommended_action TEXT NOT NULL,
+                        source_fingerprint TEXT NOT NULL,
+                        model_reference TEXT NOT NULL DEFAULT '',
+                        job_reference TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL CHECK (status IN ('open', 'accepted', 'dismissed', 'superseded')),
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        resolution_action TEXT NOT NULL DEFAULT '',
+                        resolution_note TEXT NOT NULL DEFAULT '',
+                        resolved_by TEXT NOT NULL DEFAULT '',
+                        resolved_at TIMESTAMPTZ,
+                        CHECK ((status = 'open' AND resolved_at IS NULL) OR (status <> 'open' AND resolved_at IS NOT NULL)),
+                        UNIQUE(project_id, artifact_type, artifact_id, artifact_revision_id, critic_type, policy_version, category, source_fingerprint)
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS command_executions (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        command_type TEXT NOT NULL,
+                        target_type TEXT NOT NULL,
+                        target_id TEXT NOT NULL,
+                        actor_id TEXT NOT NULL,
+                        actor_type TEXT NOT NULL CHECK (actor_type IN ('human', 'system', 'import', 'migration', 'model')),
+                        origin TEXT NOT NULL,
+                        idempotency_key TEXT NOT NULL,
+                        request_fingerprint TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN ('running', 'completed')),
+                        input_payload JSONB NOT NULL,
+                        result_payload JSONB NOT NULL,
+                        stale_effects JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        completed_at TIMESTAMPTZ,
+                        UNIQUE(project_id, idempotency_key)
                     )
                     """
                 )
@@ -947,6 +1118,47 @@ class PostgresSchemaMixin:
                 )
                 cursor.execute(
                     """
+                    CREATE INDEX IF NOT EXISTS idx_artifact_authority_lookup
+                    ON artifact_authority_actions(project_id, artifact_type, artifact_id, created_at)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_critic_findings_project
+                    ON critic_findings(project_id, artifact_type, artifact_id, status, created_at)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_command_executions_target
+                    ON command_executions(project_id, target_type, target_id, created_at)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE OR REPLACE FUNCTION strata_cleanup_critic_records() RETURNS trigger AS $$
+                    DECLARE target_type TEXT;
+                    BEGIN
+                        target_type := TG_ARGV[0];
+                        DELETE FROM critic_findings WHERE artifact_type = target_type AND artifact_id = OLD.id;
+                        DELETE FROM artifact_authority_actions WHERE artifact_type = target_type AND artifact_id = OLD.id;
+                        RETURN OLD;
+                    END;
+                    $$ LANGUAGE plpgsql
+                    """
+                )
+                for table, trigger, artifact_type in (
+                    ("nodes", "cleanup_node_critic_records", "layer1_pillar"),
+                    ("layer2_features", "cleanup_layer2_critic_records", "layer2_feature"),
+                    ("layer3_expansion_heads", "cleanup_layer3_critic_records", "layer3_expansion"),
+                ):
+                    cursor.execute("SELECT 1 FROM pg_trigger WHERE tgname = %s", (trigger,))
+                    if cursor.fetchone() is None:
+                        cursor.execute(
+                            f"CREATE TRIGGER {trigger} AFTER DELETE ON {table} FOR EACH ROW EXECUTE FUNCTION strata_cleanup_critic_records('{artifact_type}')"
+                        )
+                cursor.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_layer2_coverage_matrix_pillar
                     ON layer2_coverage_matrix(project_id, pillar_id, status)
                     """
@@ -973,6 +1185,18 @@ class PostgresSchemaMixin:
                     """
                     CREATE INDEX IF NOT EXISTS idx_layer3_expansion_actions_expansion
                     ON layer3_expansion_actions(expansion_id, action_type)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_layer3_revisions_logical_number
+                    ON layer3_expansion_revisions(logical_expansion_id, revision_number)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_layer3_revision_actions_logical
+                    ON layer3_revision_actions(logical_expansion_id, created_at)
                     """
                 )
                 cursor.execute(

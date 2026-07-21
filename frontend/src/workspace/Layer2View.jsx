@@ -1,9 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Layer2FeatureForm } from "../Layer2FeatureWorkbenchParts";
 import ColumnHeader from "./ColumnHeader";
 import { layer1Pillars, statusLabel } from "./workspaceSelectors";
-import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceActionGroup, WorkspaceStatusBadge } from "./WorkspacePage";
+import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceFilterField, WorkspaceStatusBadge } from "./WorkspacePage";
 import WorkspaceJobNotice from "./WorkspaceJobNotice";
+
+const UNASSIGNED_PILLAR_ID = "unassigned";
+const REVIEWABLE_STATUSES = ["candidate", "needs_review"];
+const ASSIGNABLE_STATUSES = ["candidate", "kept", "needs_review", "approved", "cut", "merged", "renamed"];
 
 function relationLabel(value) {
   return String(value || "").replaceAll("_", " ");
@@ -37,6 +41,19 @@ function score(value) {
   return Number(value || 0);
 }
 
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function featureName(feature) {
+  return feature?.canonical_name || feature?.title || feature?.name || "Untitled feature";
+}
+
+function formatScore(value, suffix = "") {
+  if (value === null || value === undefined || value === "") return "-";
+  return `${value}${suffix}`;
+}
+
 function compareValues(left, right, direction) {
   const leftMissing = left === null || left === undefined || left === "";
   const rightMissing = right === null || right === undefined || right === "";
@@ -49,11 +66,164 @@ function compareValues(left, right, direction) {
   return direction === "asc" ? result : -result;
 }
 
+function isApproved(feature) {
+  return feature?.status === "approved" || Boolean(feature?.layer3_ready);
+}
+
+function isNeedsReview(feature) {
+  return REVIEWABLE_STATUSES.includes(feature?.status);
+}
+
+function featurePillarId(feature, pillarById) {
+  return feature?.owner_pillar_id && pillarById[feature.owner_pillar_id] ? feature.owner_pillar_id : UNASSIGNED_PILLAR_ID;
+}
+
+function subfeatureCount(feature, expansionByFeatureId) {
+  const expansion = expansionByFeatureId[feature.id];
+  if (!expansion) return 0;
+  return safeArray(expansion.expansion_groups).reduce((total, group) => total + safeArray(group.options).length, 0);
+}
+
+function uniqueFeaturePillarIds(features, pillarById) {
+  return Array.from(new Set(features.map((feature) => featurePillarId(feature, pillarById)).filter((id) => id !== UNASSIGNED_PILLAR_ID)));
+}
+
+function FeatureWarning({ feature, warnings, unassigned }) {
+  if (!unassigned && !warnings.length) return null;
+  return (
+    <span className="layer2-warning-row">
+      {unassigned ? <span className="layer2-unassigned-badge">Unassigned</span> : null}
+      {warnings.length ? (
+        <span className="warning-icon" title={warnings[0].detail} aria-label={`Warning for ${featureName(feature)}`}>!</span>
+      ) : null}
+    </span>
+  );
+}
+
+function PillarSelector({ pillars, selectedPillarIds, onToggle }) {
+  return (
+    <div className="layer2-pillar-picker" aria-label="Select pillars">
+      {pillars.map((pillar) => (
+        <label key={pillar.id}>
+          <input
+            type="checkbox"
+            checked={selectedPillarIds.includes(pillar.id)}
+            onChange={() => onToggle(pillar.id)}
+          />
+          <span>{pillar.title}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function DetailDrawer({
+  feature,
+  pillars,
+  pillarById,
+  graph,
+  overlapVerdicts,
+  onClose,
+  onUpdateFeature,
+}) {
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const warnings = feature ? featureWarnings(feature, graph, overlapVerdicts) : [];
+  const unassigned = feature ? featurePillarId(feature, pillarById) === UNASSIGNED_PILLAR_ID : false;
+
+  useEffect(() => {
+    if (!feature) {
+      setDraft(null);
+      return;
+    }
+    setDraft({
+      canonical_name: feature.canonical_name || "",
+      description: feature.description || "",
+      owner_pillar_id: feature.owner_pillar_id && pillarById[feature.owner_pillar_id] ? feature.owner_pillar_id : "",
+      status: feature.status || "candidate",
+      priority: feature.priority || "",
+      notes: feature.notes || "",
+    });
+  }, [feature, pillarById]);
+
+  if (!feature || !draft) return null;
+
+  async function save() {
+    setSaving(true);
+    try {
+      await onUpdateFeature?.(feature.id, draft);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <aside className="layer2-detail-drawer panel" aria-label={`${featureName(feature)} details`}>
+      <div className="workspace-section-heading">
+        <div>
+          <span className="workspace-card-label">Feature details</span>
+          <h4>{featureName(feature)}</h4>
+          {unassigned ? <p className="warning">This feature is unassigned. Choose a pillar before approving or expanding it.</p> : null}
+        </div>
+        <button type="button" className="secondary-button" onClick={onClose}>Close</button>
+      </div>
+      <div className="layer2-detail-form">
+        <label>
+          Feature
+          <input value={draft.canonical_name} onChange={(event) => setDraft({ ...draft, canonical_name: event.target.value })} />
+        </label>
+        <label className="layer2-detail-span">
+          Description
+          <textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} rows={4} />
+        </label>
+        <label className={unassigned ? "layer2-assignment-warning" : ""}>
+          Pillar
+          <select value={draft.owner_pillar_id} onChange={(event) => setDraft({ ...draft, owner_pillar_id: event.target.value })}>
+            <option value="">Assign to pillar</option>
+            {pillars.map((pillar) => <option key={pillar.id} value={pillar.id}>{pillar.title}</option>)}
+          </select>
+        </label>
+        <label>
+          Status
+          <select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>
+            {ASSIGNABLE_STATUSES.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
+          </select>
+        </label>
+        <label>
+          Priority
+          <input value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value })} placeholder="high, medium, low" />
+        </label>
+        <label className="layer2-detail-span">
+          Notes
+          <textarea value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} rows={3} />
+        </label>
+      </div>
+      {warnings.length ? (
+        <div className="layer2-warning-list">
+          <strong>Critic warnings</strong>
+          {warnings.map((warning) => (
+            <p key={`${warning.source}-${warning.label}-${warning.detail}`} className="muted">
+              {warning.source}: {relationLabel(warning.label)} - {warning.detail}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      <div className="button-row">
+        <button type="button" onClick={save} disabled={saving || !draft.canonical_name.trim() || !draft.description.trim() || !draft.owner_pillar_id}>
+          {saving ? "Saving..." : "Save details"}
+        </button>
+      </div>
+    </aside>
+  );
+}
+
 export default function Layer2View({
   snapshot,
   onGenerate,
+  onGenerateLayer3,
   onReview,
   onCreateFeature,
+  onUpdateFeature,
   onOverlapCritic,
   onResolveOverlap,
   onResearch,
@@ -64,13 +234,19 @@ export default function Layer2View({
 }) {
   const pillars = layer1Pillars(snapshot).filter((pillar) => ["kept", "prioritized"].includes(pillar.status));
   const graph = snapshot?.layer2_graph || {};
-  const allFeatures = graph?.workbench?.rows || graph?.features || [];
+  const allFeatures = safeArray(graph?.workbench?.rows || graph?.features);
+  const expansions = safeArray(snapshot?.layer3?.expansions);
+  const expansionByFeatureId = useMemo(() => Object.fromEntries(expansions.map((expansion) => [expansion.feature_id, expansion])), [expansions]);
   const pillarById = useMemo(() => Object.fromEntries(pillars.map((pillar) => [pillar.id, pillar])), [pillars]);
   const conflictCount = (graph.relationships || []).filter((relationship) => ["overlaps_with", "duplicate_of", "conflicts_with"].includes(relationship.relationship_type)).length;
   const [selectedIds, setSelectedIds] = useState([]);
+  const [selectedPillarIds, setSelectedPillarIds] = useState([]);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState({ pillar: "all", status: "all" });
   const [sortConfig, setSortConfig] = useState({ key: "pillar", direction: "asc" });
+  const [viewMode, setViewMode] = useState("grouped");
+  const [collapsedGroups, setCollapsedGroups] = useState([]);
+  const [activeFeatureId, setActiveFeatureId] = useState("");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewFilter, setReviewFilter] = useState("unresolved");
   const generationRunning = generationJobState?.state === "running";
@@ -79,6 +255,13 @@ export default function Layer2View({
   const overlapVerdicts = snapshot?.overlap?.layer2?.verdicts || [];
   const overlapConflictCount = overlapVerdicts.filter((verdict) => verdict.relation !== "distinct").length;
   const featureById = useMemo(() => Object.fromEntries(allFeatures.map((feature) => [feature.id, feature])), [allFeatures]);
+  const activeFeature = featureById[activeFeatureId] || null;
+  const selectedFeatures = selectedIds.map((id) => featureById[id]).filter(Boolean);
+  const selectedRowPillarIds = uniqueFeaturePillarIds(selectedFeatures, pillarById);
+  const selectedPillarFeatureIds = allFeatures
+    .filter((feature) => selectedPillarIds.includes(featurePillarId(feature, pillarById)))
+    .map((feature) => feature.id);
+
   const reviewVerdicts = useMemo(() => (
     overlapVerdicts.filter((verdict) => {
       if (verdict.relation === "distinct") return false;
@@ -86,40 +269,70 @@ export default function Layer2View({
       return (verdict.resolution_state || "unresolved") === reviewFilter;
     })
   ), [overlapVerdicts, reviewFilter]);
+
   const visibleFeatures = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     const filtered = allFeatures.filter((feature) => {
-      const text = [feature.canonical_name, feature.description, feature.feature_type, feature.granularity_class, feature.status, pillarById[feature.owner_pillar_id]?.title]
+      const resolvedPillarId = featurePillarId(feature, pillarById);
+      const text = [featureName(feature), feature.description, feature.feature_type, feature.granularity_class, feature.status, feature.priority, pillarById[feature.owner_pillar_id]?.title, resolvedPillarId === UNASSIGNED_PILLAR_ID ? "unassigned" : ""]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
       return (
         (!normalizedQuery || text.includes(normalizedQuery)) &&
-        (filters.pillar === "all" || feature.owner_pillar_id === filters.pillar) &&
+        (filters.pillar === "all" || resolvedPillarId === filters.pillar) &&
         (filters.status === "all" || feature.status === filters.status)
       );
     });
     return [...filtered].sort((left, right) => {
       const selectors = {
-        name: (feature) => feature.canonical_name,
         pillar: (feature) => pillarById[feature.owner_pillar_id]?.title || "Unassigned",
-        status: (feature) => feature.status,
+        priority: (feature) => feature.priority || "",
         fit: (feature) => score(feature.pillar_fit_score),
         strategic: (feature) => score(feature.strategic_value_score),
         research: (feature) => score(feature.competitor_coverage_score),
       };
       const select = selectors[sortConfig.key] || selectors.pillar;
-      return compareValues(select(left), select(right), sortConfig.direction) || left.canonical_name.localeCompare(right.canonical_name);
+      return compareValues(select(left), select(right), sortConfig.direction) || featureName(left).localeCompare(featureName(right));
     });
   }, [allFeatures, filters, pillarById, query, sortConfig]);
+
+  const groupedFeatures = useMemo(() => {
+    const groups = new Map();
+    visibleFeatures.forEach((feature) => {
+      const id = featurePillarId(feature, pillarById);
+      if (!groups.has(id)) {
+        groups.set(id, {
+          id,
+          title: id === UNASSIGNED_PILLAR_ID ? "Unassigned" : pillarById[id]?.title || "Unassigned",
+          features: [],
+        });
+      }
+      groups.get(id).features.push(feature);
+    });
+    return Array.from(groups.values()).sort((left, right) => {
+      if (left.id === UNASSIGNED_PILLAR_ID) return 1;
+      if (right.id === UNASSIGNED_PILLAR_ID) return -1;
+      return left.title.localeCompare(right.title);
+    });
+  }, [pillarById, visibleFeatures]);
+
   function toggleFeature(id) {
     setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  }
+
+  function togglePillar(id) {
+    setSelectedPillarIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   }
 
   function toggleVisibleFeatures() {
     const visibleIds = visibleFeatures.map((feature) => feature.id);
     const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id));
     setSelectedIds((current) => allVisibleSelected ? current.filter((id) => !visibleIds.includes(id)) : Array.from(new Set([...current, ...visibleIds])));
+  }
+
+  function toggleGroup(groupId) {
+    setCollapsedGroups((current) => current.includes(groupId) ? current.filter((id) => id !== groupId) : [...current, groupId]);
   }
 
   function toggleSort(key) {
@@ -139,95 +352,146 @@ export default function Layer2View({
     await onResolveOverlap?.(verdict.id, { action });
   }
 
+  function researchPillar(pillarId) {
+    const featureIds = allFeatures.filter((feature) => featurePillarId(feature, pillarById) === pillarId).map((feature) => feature.id);
+    return onResearch?.(featureIds);
+  }
+
+  function renderFeatureRow(feature) {
+    const warnings = featureWarnings(feature, graph, overlapVerdicts);
+    const resolvedPillarId = featurePillarId(feature, pillarById);
+    const unassigned = resolvedPillarId === UNASSIGNED_PILLAR_ID;
+    const approved = isApproved(feature);
+    return (
+      <tr key={feature.id}>
+        <td><input type="checkbox" checked={selectedIds.includes(feature.id)} onChange={() => toggleFeature(feature.id)} aria-label={`Select ${featureName(feature)}`} /></td>
+        <td>
+          <strong>{featureName(feature)}</strong>
+          <FeatureWarning feature={feature} warnings={warnings} unassigned={unassigned} />
+          {warnings.length ? <p className="muted critic-source-line">{warnings.map((item) => `${item.source}: ${relationLabel(item.label)}`).join(" | ")}</p> : null}
+        </td>
+        <td><p className="muted layer2-description-cell">{feature.description || "No description yet."}</p></td>
+        <td>{unassigned ? <span className="layer2-unassigned-badge">Unassigned</span> : pillarById[feature.owner_pillar_id]?.title}</td>
+        <td><WorkspaceStatusBadge status={feature.status} /></td>
+        <td>{formatScore(feature.pillar_fit_score)}</td>
+        <td>{formatScore(feature.strategic_value_score)}</td>
+        <td>{formatScore(feature.competitor_coverage_score, "%")}</td>
+        <td>{subfeatureCount(feature, expansionByFeatureId) || "-"}</td>
+        <td>
+          <div className="layer2-feature-actions">
+            <button type="button" className="secondary-button" onClick={() => setActiveFeatureId(feature.id)}>Open details</button>
+            <button type="button" className="secondary-button" onClick={() => onGenerate([feature.owner_pillar_id])} disabled={generationRunning || unassigned} title={unassigned ? "Assign a pillar before generating more features for this row." : "Generate more features for this row's pillar."}>Generate more</button>
+            <button type="button" className="secondary-button" onClick={() => onGenerateLayer3?.([feature.id])} disabled={!approved} title={!approved ? "Approve this feature before generating sub-features." : "Generate sub-features"}>Generate sub-features</button>
+            <button type="button" className="secondary-button" onClick={() => onResearch?.([feature.id])} disabled={researchRunning} title={researchRunning ? "Layer 2 research is already running." : "Research this row"}>Research</button>
+            <button type="button" className="secondary-button" onClick={() => onReview({ action_type: "approve_for_layer3", feature_id: feature.id })}>Approve</button>
+            <button type="button" className="secondary-button danger-button" onClick={() => onReview({ action_type: "cut", feature_id: feature.id })}>Reject</button>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
+  function renderFeatureTable(features, label = "Layer 2 features") {
+    return (
+      <div className="workspace-table-wrap workspace-table-panel layer2-table-wrap">
+        <table className="workspace-review-table layer2-review-table" aria-label={label}>
+          <thead>
+            <tr>
+              <th scope="col"><ColumnHeader label="Checkbox" description="Choose one or more features for bulk review, generation, or research actions." /></th>
+              <th scope="col"><ColumnHeader label="Feature" description="The Layer 2 capability candidate." /></th>
+              <th scope="col"><ColumnHeader label="Description" description="The feature description or job story." /></th>
+              <th scope="col"><ColumnHeader label="Pillar" description="The Layer 1 pillar that currently owns this feature." sortKey="pillar" activeSortKey={sortConfig.key} sortDirection={sortConfig.direction} onSort={toggleSort} /></th>
+              <th scope="col"><ColumnHeader label="Status" description="Current review state, such as generated, kept, approved, or rejected." /></th>
+              <th scope="col"><ColumnHeader label="Fit score" description="How strongly this feature belongs under its assigned pillar." sortKey="fit" activeSortKey={sortConfig.key} sortDirection={sortConfig.direction} onSort={toggleSort} /></th>
+              <th scope="col"><ColumnHeader label="Strategic score" description="Estimated product value or planning importance for this feature." sortKey="strategic" activeSortKey={sortConfig.key} sortDirection={sortConfig.direction} onSort={toggleSort} /></th>
+              <th scope="col"><ColumnHeader label="Research score" description="Competitor coverage score from feature-level competitive research." sortKey="research" activeSortKey={sortConfig.key} sortDirection={sortConfig.direction} onSort={toggleSort} /></th>
+              <th scope="col"><ColumnHeader label="Sub-feature count" description="Generated Layer 3 sub-feature/options count." /></th>
+              <th scope="col"><ColumnHeader label="Actions" description="Row-level controls to open details, generate sub-features, research, approve, or reject." /></th>
+            </tr>
+          </thead>
+          <tbody>{features.map(renderFeatureRow)}</tbody>
+        </table>
+      </div>
+    );
+  }
+
   return (
     <WorkspacePageLayout
       id="workspace-panel-layer2"
+      className="layer2-workspace-page"
       ariaLabel="Layer 2 features"
-      title="Features"
-      description="Generate, research, and approve concrete features under the kept product pillars."
-      status={!allFeatures.length ? "draft" : allFeatures.every((feature) => !["candidate", "needs_review"].includes(feature.status)) ? "approved" : "needs_review"}
-      primaryAction={(
-        <WorkspaceActionButton
-          primary
-          onClick={() => onGenerate(pillars.map((pillar) => pillar.id))}
-          disabled={generationRunning || !pillars.length}
-          disabledReason={generationRunning ? "Layer 2 generation is already running." : !pillars.length ? "Keep at least one pillar first." : ""}
-        >
-          Generate all
-        </WorkspaceActionButton>
-      )}
+      title="L2 Features"
+      description="Create and approve features under each product pillar before expanding them into sub-features."
+      status={!allFeatures.length ? "draft" : allFeatures.every((feature) => !REVIEWABLE_STATUSES.includes(feature.status)) ? "approved" : "needs_review"}
+      actionLabel="Actions"
+      primaryAction={null}
       actions={(
-        <>
-          <WorkspaceActionGroup label="Generate">
-            <Layer2FeatureForm pillars={pillars} onCreate={onCreateFeature} />
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Research">
-            <WorkspaceActionButton
-              secondary
-              onClick={() => onResearch([])}
-              disabled={researchRunning || !allFeatures.length}
-              disabledReason={researchRunning ? "Layer 2 research is already running." : !allFeatures.length ? "Generate or add features before research." : ""}
-            >
-              Research all
-            </WorkspaceActionButton>
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Review / Critique">
-            <WorkspaceActionButton
-              secondary
-              onClick={onOverlapCritic}
-              disabled={overlapRunning || allFeatures.length < 2}
-              disabledReason={overlapRunning ? "Overlap critique is already running." : allFeatures.length < 2 ? "At least two features are required." : ""}
-            >
-              Run overlap critic
-            </WorkspaceActionButton>
-            <WorkspaceActionButton
-              secondary
-              onClick={() => setReviewOpen((open) => !open)}
-              disabled={!overlapVerdicts.length}
-              disabledReason={!overlapVerdicts.length ? "Run the overlap critic before reviewing verdicts." : ""}
-            >
-              Review selected ({overlapVerdicts.filter((verdict) => verdict.relation !== "distinct" && (verdict.resolution_state || "unresolved") !== "resolved").length})
-            </WorkspaceActionButton>
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Selection actions">
-            <WorkspaceActionButton secondary onClick={toggleVisibleFeatures} disabled={!visibleFeatures.length} disabledReason={!visibleFeatures.length ? "No visible features to select." : ""}>Select all</WorkspaceActionButton>
-            <WorkspaceActionButton secondary onClick={() => reviewSelected("keep")} disabled={!selectedIds.length} disabledReason={!selectedIds.length ? "Select features first." : ""}>Keep selected</WorkspaceActionButton>
-            <WorkspaceActionButton secondary onClick={() => reviewSelected("approve_for_layer3")} disabled={!selectedIds.length} disabledReason={!selectedIds.length ? "Select features first." : ""}>Approve selected</WorkspaceActionButton>
-            <WorkspaceActionButton secondary destructive={Boolean(selectedIds.length)} onClick={() => reviewSelected("cut")} disabled={!selectedIds.length} disabledReason={!selectedIds.length ? "Select features first." : ""}>Reject selected</WorkspaceActionButton>
-            <span className="workspace-selection-count" aria-live="polite">{selectedIds.length ? `${selectedIds.length} selected` : `${visibleFeatures.length} of ${allFeatures.length} features`}</span>
-          </WorkspaceActionGroup>
-        </>
+        <div className="layer2-actions-stack">
+          <section className="workspace-action-group segmented-action-group layer2-actions-row" aria-label="Layer 2 actions">
+            <div className="segmented-action-row layer2-inline-actions">
+              <WorkspaceActionButton primary onClick={() => onGenerate(pillars.map((pillar) => pillar.id))} disabled={generationRunning || !pillars.length} disabledReason={generationRunning ? "Layer 2 generation is already running." : !pillars.length ? "Keep at least one pillar first." : ""}>Generate all</WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <span className="workspace-action-wrapper layer2-add-feature-action"><Layer2FeatureForm pillars={pillars} onCreate={onCreateFeature} /></span>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton secondary onClick={() => onResearch([])} disabled={researchRunning || !allFeatures.length} disabledReason={researchRunning ? "Layer 2 research is already running." : !allFeatures.length ? "Generate or add features before research." : ""}>Research all</WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton secondary onClick={onOverlapCritic} disabled={overlapRunning || allFeatures.length < 2} disabledReason={overlapRunning ? "Overlap critique is already running." : allFeatures.length < 2 ? "At least two features are required." : ""}>Run overlap critic</WorkspaceActionButton>
+            </div>
+          </section>
+          <section className="workspace-action-group segmented-action-group layer2-selection-group" aria-label="Selection actions">
+            <strong>Selection actions</strong>
+            <div className="segmented-action-row layer2-selection-row">
+              <WorkspaceActionButton secondary onClick={toggleVisibleFeatures} disabled={!visibleFeatures.length} disabledReason={!visibleFeatures.length ? "No visible features to select." : ""}>Select all</WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton secondary onClick={() => reviewSelected("keep")} disabled={!selectedIds.length} disabledReason={!selectedIds.length ? "Select features first." : ""}>Keep selected</WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton secondary destructive={Boolean(selectedIds.length)} onClick={() => reviewSelected("cut")} disabled={!selectedIds.length} disabledReason={!selectedIds.length ? "Select features first." : ""}>Reject selected</WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton className="layer2-merge-toggle" secondary onClick={() => setReviewOpen((open) => !open)} disabled={!overlapVerdicts.length} disabledReason={!overlapVerdicts.length ? "Run the overlap critic before reviewing conflicts." : ""}>Merge selected</WorkspaceActionButton>
+              <span className="workspace-selection-count workspace-selection-summary" aria-live="polite">{selectedIds.length} selected</span>
+            </div>
+          </section>
+        </div>
       )}
       filters={(
         <>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search features" aria-label="Search Layer 2 features" />
-        <select value={filters.pillar} onChange={(event) => setFilters({ ...filters, pillar: event.target.value })} aria-label="Filter Layer 2 features by pillar">
-          <option value="all">All pillars</option>
-          {pillars.map((pillar) => <option key={pillar.id} value={pillar.id}>{pillar.title}</option>)}
-        </select>
-        <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })} aria-label="Filter Layer 2 features by status">
-          <option value="all">All statuses</option>
-          {Array.from(new Set(allFeatures.map((feature) => feature.status).filter(Boolean))).sort().map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
-        </select>
-        <label>
-          Sort by
-          <select value={sortConfig.key} onChange={(event) => setSortConfig({ ...sortConfig, key: event.target.value })} aria-label="Sort features">
-            <option value="pillar">Pillar</option>
-            <option value="name">Feature</option>
-            <option value="status">Status</option>
-            <option value="fit">Fit</option>
-            <option value="strategic">Strategic</option>
-            <option value="research">Research</option>
-          </select>
-        </label>
-        <WorkspaceActionButton secondary onClick={() => setSortConfig((current) => ({ ...current, direction: current.direction === "asc" ? "desc" : "asc" }))}>
-          {sortConfig.direction === "asc" ? "Ascending" : "Descending"}
-        </WorkspaceActionButton>
+          <WorkspaceFilterField label="Search features" className="workspace-filter-search">
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a feature, description, pillar, or status" aria-label="Search Layer 2 features" />
+          </WorkspaceFilterField>
+          <WorkspaceFilterField label="Pillar">
+            <select value={filters.pillar} onChange={(event) => setFilters({ ...filters, pillar: event.target.value })} aria-label="Filter Layer 2 features by pillar">
+              <option value="all">All pillars</option>
+              {pillars.map((pillar) => <option key={pillar.id} value={pillar.id}>{pillar.title}</option>)}
+              <option value={UNASSIGNED_PILLAR_ID}>Unassigned</option>
+            </select>
+          </WorkspaceFilterField>
+          <WorkspaceFilterField label="Status">
+            <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })} aria-label="Filter Layer 2 features by status">
+              <option value="all">All statuses</option>
+              {Array.from(new Set(allFeatures.map((feature) => feature.status).filter(Boolean))).sort().map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
+            </select>
+          </WorkspaceFilterField>
+          <WorkspaceFilterField label="View" className="workspace-filter-view">
+            <div className="layer2-view-toggle" role="group" aria-label="Layer 2 view mode">
+              <button type="button" className={viewMode === "grouped" ? "active" : ""} onClick={() => setViewMode("grouped")}>Grouped</button>
+              <button type="button" className={viewMode === "flat" ? "active" : ""} onClick={() => setViewMode("flat")}>Flat</button>
+            </div>
+          </WorkspaceFilterField>
         </>
       )}
+      details={activeFeature ? (
+        <DetailDrawer
+          feature={activeFeature}
+          pillars={pillars}
+          pillarById={pillarById}
+          graph={graph}
+          overlapVerdicts={overlapVerdicts}
+          onClose={() => setActiveFeatureId("")}
+          onUpdateFeature={onUpdateFeature}
+        />
+      ) : null}
     >
-
-      <div className={conflictCount ? "status-banner" : "status-banner success"}>
+      <div className={conflictCount || overlapConflictCount ? "status-banner" : "status-banner success"}>
         {conflictCount || overlapConflictCount ? `Critics flagged ${conflictCount + overlapConflictCount} relationship/overlap signal${conflictCount + overlapConflictCount === 1 ? "" : "s"}.` : "No conflicts found."}
       </div>
       <WorkspaceJobNotice jobState={generationJobState} label="Layer 2 generation" onCancel={onCancelJob} />
@@ -260,10 +524,10 @@ export default function Layer2View({
                 return (
                   <article className="overlap-review-item" key={verdict.id}>
                     <div>
-                      <strong>{target?.canonical_name || verdict.target_id}</strong>
+                      <strong>{target ? featureName(target) : verdict.target_id}</strong>
                       <span className="muted"> overlaps with </span>
-                      <strong>{neighbor?.canonical_name || verdict.neighbor_id}</strong>
-                      <p className="muted">{relationLabel(verdict.relation)} · confidence {Math.round(Number(verdict.confidence || 0) * 100)}%</p>
+                      <strong>{neighbor ? featureName(neighbor) : verdict.neighbor_id}</strong>
+                      <p className="muted">{relationLabel(verdict.relation)} - confidence {Math.round(Number(verdict.confidence || 0) * 100)}%</p>
                       <p>{verdict.rationale || "No rationale returned."}</p>
                       {verdict.active_resolution ? <p className="muted">Resolved as {relationLabel(verdict.active_resolution.action)}.</p> : null}
                       {verdict.resolution_state === "stale_resolution" ? <p className="warning">Prior decision is stale because one item changed. Rerun or resolve again.</p> : null}
@@ -287,54 +551,35 @@ export default function Layer2View({
 
       {pillars.length ? (
         visibleFeatures.length ? (
-          <div className="workspace-table-wrap">
-            <table className="workspace-review-table">
-              <thead>
-                <tr>
-                  <th scope="col"><ColumnHeader label="Select" description="Choose one or more features for bulk review actions." /></th>
-                  <th scope="col"><ColumnHeader label="Feature" description="The Layer 2 capability candidate and its product description." sortKey="name" activeSortKey={sortConfig.key} sortDirection={sortConfig.direction} onSort={toggleSort} /></th>
-                  <th scope="col"><ColumnHeader label="Pillar" description="The Layer 1 pillar that currently owns this feature." sortKey="pillar" activeSortKey={sortConfig.key} sortDirection={sortConfig.direction} onSort={toggleSort} /></th>
-                  <th scope="col"><ColumnHeader label="Status" description="Current review state, such as generated, kept, approved, or rejected." sortKey="status" activeSortKey={sortConfig.key} sortDirection={sortConfig.direction} onSort={toggleSort} /></th>
-                  <th scope="col"><ColumnHeader label="Fit" description="How strongly this feature belongs under its assigned pillar." sortKey="fit" activeSortKey={sortConfig.key} sortDirection={sortConfig.direction} onSort={toggleSort} /></th>
-                  <th scope="col"><ColumnHeader label="Strategic" description="Estimated product value or planning importance for this feature." sortKey="strategic" activeSortKey={sortConfig.key} sortDirection={sortConfig.direction} onSort={toggleSort} /></th>
-                  <th scope="col"><ColumnHeader label="Research" description="Competitor coverage score from feature-level competitive research." sortKey="research" activeSortKey={sortConfig.key} sortDirection={sortConfig.direction} onSort={toggleSort} /></th>
-                  <th scope="col"><ColumnHeader label="Actions" description="Row-level controls to keep, approve for Layer 3, reject, or research this feature." /></th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleFeatures.map((feature) => {
-                  const warnings = featureWarnings(feature, graph, overlapVerdicts);
-                  const warning = warnings[0];
-                  return (
-                    <tr key={feature.id}>
-                      <td><input type="checkbox" checked={selectedIds.includes(feature.id)} onChange={() => toggleFeature(feature.id)} aria-label={`Select ${feature.canonical_name}`} /></td>
-                      <td>
-                        <strong>
-                          {feature.canonical_name}
-                          {warning ? <span className="warning-icon" title={`${warning.source}: ${warning.detail}`} aria-label={`Warning for ${feature.canonical_name}`}>!</span> : null}
-                        </strong>
-                        <p className="muted">{feature.description || "No description yet."}</p>
-                        {warning ? <p className="muted critic-source-line">{warnings.map((item) => `${item.source}: ${item.label.replaceAll("_", " ")}`).join(" | ")}</p> : null}
-                      </td>
-                      <td>{pillarById[feature.owner_pillar_id]?.title || "Unassigned"}</td>
-                      <td><WorkspaceStatusBadge status={feature.status} /></td>
-                      <td>{feature.pillar_fit_score ?? "-"}</td>
-                      <td>{feature.strategic_value_score ?? "-"}</td>
-                      <td>{feature.competitor_coverage_score ?? 0}%</td>
-                      <td>
-                        <div className="button-row">
-                          <button type="button" className="secondary-button" onClick={() => onReview({ action_type: "keep", feature_id: feature.id })}>Keep</button>
-                          <button type="button" className="secondary-button" onClick={() => onReview({ action_type: "approve_for_layer3", feature_id: feature.id })}>Approve</button>
-                          <button type="button" className="secondary-button danger-button" onClick={() => onReview({ action_type: "cut", feature_id: feature.id })}>Reject</button>
-                          <button type="button" className="secondary-button" onClick={() => onResearch([feature.id])} disabled={researchRunning} title={researchRunning ? "Layer 2 research is already running." : "Research this row"}>Research row</button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          viewMode === "grouped" ? (
+            <div className="layer2-grouped-workbench">
+              {groupedFeatures.map((group) => {
+                const collapsed = collapsedGroups.includes(group.id);
+                const approvedCount = group.features.filter(isApproved).length;
+                const needsReviewCount = group.features.filter(isNeedsReview).length;
+                return (
+                  <section className={group.id === UNASSIGNED_PILLAR_ID ? "layer2-pillar-group unassigned" : "layer2-pillar-group"} key={group.id}>
+                    <header className="layer2-pillar-header">
+                      <button type="button" className="layer2-group-toggle" onClick={() => toggleGroup(group.id)} aria-expanded={!collapsed}>
+                        <span>{collapsed ? "+" : "-"}</span>
+                        <strong>{group.title}</strong>
+                      </button>
+                      <div className="layer2-pillar-metrics">
+                        <span>{group.features.length} features</span>
+                        <span>{approvedCount} approved</span>
+                        <span>{needsReviewCount} needs review</span>
+                      </div>
+                      <div className="button-row">
+                        <button type="button" className="secondary-button" onClick={() => onGenerate([group.id])} disabled={generationRunning || group.id === UNASSIGNED_PILLAR_ID}>Generate features for this pillar</button>
+                        <button type="button" className="secondary-button" onClick={() => researchPillar(group.id)} disabled={researchRunning || !group.features.length}>Research this pillar's features</button>
+                      </div>
+                    </header>
+                    {!collapsed ? renderFeatureTable(group.features, `${group.title} features`) : null}
+                  </section>
+                );
+              })}
+            </div>
+          ) : renderFeatureTable(visibleFeatures)
         ) : (
           <div className="panel guided-empty-state">
             <strong>No features match the current filters.</strong>

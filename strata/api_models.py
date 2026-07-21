@@ -20,6 +20,8 @@ class ProjectCreateRequest(BaseModel):
 class ProjectUpdateRequest(BaseModel):
     name: str
     idea: str
+    expected_state_token: str | None = None
+    request_id: str | None = None
 
     @field_validator("name", "idea")
     @classmethod
@@ -41,6 +43,7 @@ class ProjectArchiveExportResponse(BaseModel):
 
 class ProjectArchiveImportRequest(BaseModel):
     archive_path: str
+    request_id: str | None = None
 
 
 class ProjectArchiveImportResponse(BaseModel):
@@ -50,6 +53,7 @@ class ProjectArchiveImportResponse(BaseModel):
 
 class ProjectBriefUpdateRequest(BaseModel):
     product_idea: str
+    problem: str = ""
     known_competitors: list[str] = Field(default_factory=list)
     constraints: str = ""
     target_users: str = ""
@@ -57,11 +61,14 @@ class ProjectBriefUpdateRequest(BaseModel):
     preferred_directions: list[str] = Field(default_factory=list)
     rejected_directions: list[str] = Field(default_factory=list)
     notes: str = ""
+    expected_state_token: str | None = None
+    request_id: str | None = None
 
 
 class Layer0ChatRequest(BaseModel):
     message: str
     request_id: str | None = None
+    expected_state_token: str | None = None
 
 
 class Layer0PlanGuidanceResponse(BaseModel):
@@ -90,6 +97,8 @@ class NodeUpdateRequest(BaseModel):
     description: str | None = None
     status: str | None = None
     priority: int | None = None
+    expected_state_token: str | None = None
+    request_id: str | None = None
 
 
 class Layer1GenerateRequest(BaseModel):
@@ -100,6 +109,7 @@ class Layer1GenerateRequest(BaseModel):
     total_cap: int | None = Field(default=None, ge=1)
     min_new_items_per_round: int = 2
     stale_rounds_to_stop: int = 2
+    request_id: str | None = None
 
 
 class Layer1PillarCreateRequest(BaseModel):
@@ -107,6 +117,7 @@ class Layer1PillarCreateRequest(BaseModel):
     description: str = ""
     status: Literal["generated", "kept", "cut", "merged", "prioritized"] = "kept"
     priority: int = Field(default=0, ge=0, le=10)
+    request_id: str | None = None
 
     @field_validator("title")
     @classmethod
@@ -117,6 +128,13 @@ class Layer1PillarCreateRequest(BaseModel):
         return cleaned
 
 
+class Layer1BulkActionRequest(BaseModel):
+    pillar_ids: list[str] = Field(default_factory=list)
+    status: Literal["kept", "cut", "prioritized"]
+    expected_state_tokens: dict[str, str] = Field(default_factory=dict)
+    request_id: str | None = None
+
+
 class Layer2GenerateRequest(BaseModel):
     pillar_ids: list[str] = Field(default_factory=list)
     thinking_enabled: bool = False
@@ -125,11 +143,13 @@ class Layer2GenerateRequest(BaseModel):
     total_cap: int | None = Field(default=None, ge=1)
     min_new_items_per_round: int = 2
     stale_rounds_to_stop: int = 2
+    request_id: str | None = None
 
 
 class Layer3GenerateRequest(BaseModel):
     feature_ids: list[str] = Field(default_factory=list)
     thinking_enabled: bool = False
+    request_id: str | None = None
 
 
 class Layer3ExpansionOptionRequest(BaseModel):
@@ -183,6 +203,8 @@ class Layer3ExpansionUpdateRequest(BaseModel):
     expansion_groups: list[Layer3ExpansionGroupRequest] | None = None
     overlap_review: list[dict[str, Any] | str] | None = None
     open_questions: list[str] | None = None
+    expected_state_token: str | None = None
+    request_id: str | None = None
 
     @field_validator("feature_intent")
     @classmethod
@@ -198,6 +220,28 @@ class Layer3ExpansionUpdateRequest(BaseModel):
 class Layer3ReviewRequest(BaseModel):
     action: Literal["approve", "reject", "needs_review"]
     note: str = ""
+    expected_state_token: str | None = None
+    request_id: str | None = None
+
+
+class Layer3CandidateApplyRequest(BaseModel):
+    expected_active_revision_id: str | None = None
+    request_id: str = Field(min_length=1)
+    selected_sections: list[Literal["feature_intent", "expansion_groups", "overlap_review", "open_questions"]] = Field(default_factory=list)
+    actor: str = "user"
+
+
+class Layer3CandidateRejectRequest(BaseModel):
+    request_id: str = Field(min_length=1)
+    note: str = ""
+    actor: str = "user"
+    expected_active_revision_id: str | None = None
+
+
+class Layer3RevisionRestoreRequest(BaseModel):
+    expected_active_revision_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    actor: str = "user"
 
 
 class Layer2ReviewActionRequest(BaseModel):
@@ -227,6 +271,9 @@ class Layer2ReviewActionRequest(BaseModel):
         "conflicts_with",
     ] | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+    expected_state_token: str | None = None
+    expected_target_state_token: str | None = None
+    request_id: str | None = None
 
 
 class Layer2FeatureCreateRequest(BaseModel):
@@ -240,6 +287,7 @@ class Layer2FeatureCreateRequest(BaseModel):
     status: str = "candidate"
     priority: str = ""
     notes: str = ""
+    request_id: str | None = None
 
     @field_validator("canonical_name", "description", "owner_pillar_id")
     @classmethod
@@ -267,6 +315,8 @@ class Layer2FeatureUpdateRequest(BaseModel):
     coverage_family: str | None = None
     priority: str | None = None
     notes: str | None = None
+    expected_state_token: str | None = None
+    request_id: str | None = None
 
     @field_validator("canonical_name", "description", "feature_type", "granularity_class", "owner_pillar_id", "status")
     @classmethod
@@ -284,6 +334,8 @@ class Layer2BulkActionRequest(BaseModel):
     feature_ids: list[str] = Field(default_factory=list)
     action_type: Literal["approve_for_layer3", "cut", "keep", "needs_review"] = "keep"
     payload: dict[str, Any] = Field(default_factory=dict)
+    expected_state_tokens: dict[str, str] = Field(default_factory=dict)
+    request_id: str | None = None
 
 
 class Layer2FeatureEvidenceRequest(BaseModel):
@@ -318,10 +370,12 @@ class ExportResponse(BaseModel):
 
 class ResearchStartRequest(BaseModel):
     pillar_ids: list[str] = Field(default_factory=list)
+    request_id: str | None = None
 
 
 class Layer2ResearchStartRequest(BaseModel):
     feature_ids: list[str] = Field(default_factory=list)
+    request_id: str | None = None
 
 
 class EmbeddingSettingsUpdateRequest(BaseModel):
@@ -454,6 +508,16 @@ class OverlapVerdictResolutionRequest(BaseModel):
     action: Literal["accept_merge", "link", "dismiss", "keep_separate", "needs_followup"]
     note: str = ""
     resolved_by: str = "user"
+    expected_state_token: str | None = None
+    request_id: str | None = None
+
+
+class CriticFindingResolutionRequest(BaseModel):
+    action: Literal["accepted", "dismissed", "superseded"]
+    note: str = ""
+    resolved_by: str = "user"
+    expected_state_token: str | None = None
+    request_id: str | None = None
 
 
 class AppSnapshotResponse(BaseModel):
@@ -468,6 +532,7 @@ class AppSnapshotResponse(BaseModel):
     research_jobs: list[dict[str, Any]] = Field(default_factory=list)
     platform_jobs: list[dict[str, Any]] = Field(default_factory=list)
     research_findings: list[dict[str, Any]] = Field(default_factory=list)
+    critic_findings: list[dict[str, Any]] = Field(default_factory=list)
     layer2_graph: dict[str, Any] = Field(default_factory=dict)
     overlap: dict[str, Any] = Field(default_factory=dict)
     layer3: dict[str, Any] = Field(default_factory=dict)

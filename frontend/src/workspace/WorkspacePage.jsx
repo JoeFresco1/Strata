@@ -42,6 +42,7 @@ export function WorkspaceStatusBadge({ status, children }) {
 export function WorkspaceActionButton({
   children,
   className = "",
+  wrapperClassName = "",
   disabled = false,
   disabledReason = "",
   destructive = false,
@@ -58,7 +59,7 @@ export function WorkspaceActionButton({
   ].filter(Boolean).join(" ");
   const resolvedTitle = disabled && disabledReason ? disabledReason : title;
   return (
-    <span className="workspace-action-wrapper">
+    <span className={`workspace-action-wrapper ${wrapperClassName}`.trim()}>
       <button
         type="button"
         className={classes || undefined}
@@ -68,7 +69,8 @@ export function WorkspaceActionButton({
       >
         {children}
       </button>
-      {disabled && disabledReason ? <small className="workspace-disabled-reason">{disabledReason}</small> : null}
+      {/* Disabled context remains available as the button title. Keeping it off the
+          toolbar prevents every unavailable action from adding a second line. */}
     </span>
   );
 }
@@ -81,7 +83,7 @@ export function WorkspacePageHeader({ title, description, status, primaryAction 
         <p className="muted">{description}</p>
       </div>
       <div className="workspace-page-header-side">
-        <WorkspaceStatusBadge status={status} />
+        {status ? <WorkspaceStatusBadge status={status} /> : null}
         {primaryAction}
       </div>
     </header>
@@ -101,10 +103,20 @@ export function WorkspaceActionGroup({ label, children }) {
 export function WorkspaceActionBar({ children, label = "Actions" }) {
   if (!children) return null;
   return (
-    <section className="workspace-action-card panel" aria-label={label}>
+    <section className="workspace-action-card" aria-label={label}>
       <span className="workspace-card-label">{label}</span>
       <div className="workspace-action-grid">{children}</div>
     </section>
+  );
+}
+
+// Gives search, select, and segmented controls one consistent label structure across Workspace tabs.
+export function WorkspaceFilterField({ label, className = "", children }) {
+  return (
+    <label className={`workspace-filter-field ${className}`.trim()}>
+      <span>{label}</span>
+      {children}
+    </label>
   );
 }
 
@@ -112,7 +124,8 @@ export function WorkspaceFilterBar({ children }) {
   if (!children) return null;
   return (
     <section className="workspace-filter-card panel" aria-label="Filter and search">
-      {children}
+      <span className="workspace-card-label">Search &amp; filters</span>
+      <div className="workspace-filter-grid">{children}</div>
     </section>
   );
 }
@@ -129,15 +142,17 @@ export default function WorkspacePageLayout({
   description,
   status,
   primaryAction,
+  actionLabel = "Actions",
   actions,
   filters,
   children,
   details,
 }) {
+  const showHeader = Boolean(title || description || status || primaryAction);
   return (
     <section className={`workspace-layer-panel workspace-page ${className}`.trim()} id={id} role="tabpanel" aria-label={ariaLabel}>
-      <WorkspacePageHeader title={title} description={description} status={status} primaryAction={primaryAction} />
-      <WorkspaceActionBar>{actions}</WorkspaceActionBar>
+      {showHeader ? <WorkspacePageHeader title={title} description={description} status={status} primaryAction={primaryAction} /> : null}
+      <WorkspaceActionBar label={actionLabel}>{actions}</WorkspaceActionBar>
       <WorkspaceFilterBar>{filters}</WorkspaceFilterBar>
       <WorkspaceMain>{children}</WorkspaceMain>
       {details ? <section className="workspace-detail-card">{details}</section> : null}

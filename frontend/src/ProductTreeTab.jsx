@@ -35,7 +35,11 @@ export default function ProductTreeTab({
   handleLayer2Export,
   handleLayer2Research,
   handleLayer2Review,
+  handleLayer2FeatureUpdate,
   handleLayer3ExpansionUpdate,
+  handleLayer3CandidateApply,
+  handleLayer3CandidateReject,
+  handleLayer3RevisionRestore,
   handleLayer3Export,
   handleLayer3Review,
   handleNodeSave,
@@ -108,7 +112,6 @@ export default function ProductTreeTab({
   const layer2ResearchJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer2_feature_competitors"], null));
   const layer2OverlapJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer2_overlap_critic"], null));
   const layer3GenerationJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer3_generation", "generate_layer3"], "layer3"));
-
   function renderActiveTab() {
     if (activeWorkspaceTab === "layer0") {
       return (
@@ -119,6 +122,7 @@ export default function ProductTreeTab({
           onChat={handlePlanChat}
           onPublish={handlePublishBrief}
           onResearch={handleRerunLayer0Research}
+          onProceed={() => setTab("layer1")}
           researchJobState={layer0ResearchJob}
           onCancelJob={handleCancelJob}
         />
@@ -149,6 +153,8 @@ export default function ProductTreeTab({
           onGenerate={handleGenerateLayer2}
           onReview={handleLayer2Review}
           onCreateFeature={handleLayer2FeatureCreate}
+          onUpdateFeature={handleLayer2FeatureUpdate}
+          onGenerateLayer3={handleGenerateLayer3}
           onOverlapCritic={handleLayer2OverlapCritic}
           onResolveOverlap={(verdictId, payload) => handleOverlapResolution("layer2", verdictId, payload)}
           onResearch={handleLayer2Research}
@@ -166,6 +172,9 @@ export default function ProductTreeTab({
           workspaceState={workspaceState}
           onGenerate={handleGenerateLayer3}
           onUpdateExpansion={handleLayer3ExpansionUpdate}
+          onApplyCandidate={handleLayer3CandidateApply}
+          onRejectCandidate={handleLayer3CandidateReject}
+          onRestoreRevision={handleLayer3RevisionRestore}
           onReviewExpansion={handleLayer3Review}
           onExportLayer3={handleLayer3Export}
           onResearch={handleLayer2Research}

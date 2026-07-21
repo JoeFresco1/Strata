@@ -341,7 +341,10 @@ class ResearchDatabaseMixin:
                 now,
             ),
         )
-        return self.get_research_finding(finding_id)
+        finding = self.get_research_finding(finding_id)
+        if "artifact_dependencies" in self._table_names():
+            self.register_research_lineage(finding)
+        return finding
 
     def get_research_finding(self, finding_id: str) -> ResearchFinding:
         """Return one persisted research finding."""

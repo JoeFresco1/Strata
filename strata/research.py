@@ -27,6 +27,7 @@ from strata.prompts import (
 )
 from strata.provider_onboarding import assert_provider_ready
 from strata.telemetry import model_call_context
+from strata.critic_policy import CriticAuthorityPolicy, CriticDisposition
 
 
 SEARCH_URL = "https://duckduckgo.com/html/?q={query}"
@@ -349,6 +350,21 @@ class ResearchService(Layer2ResearchMixin):
             },
         )
         payload = dict(pillar.json_payload or {})
+        authority = CriticAuthorityPolicy(self.db).evaluate(
+            project_id=project_id, artifact_type="layer1_pillar", artifact_id=pillar.id,
+            current_review_state=pillar.status, current_actor="model", current_origin="model_critic",
+            proposed_action="replace_research_profile", source_freshness="fresh",
+            is_new_unreviewed_candidate=pillar.status == "generated",
+        )
+        if authority.disposition != CriticDisposition.AUTOMATIC_ROUTING:
+            self.db.create_critic_finding(
+                project_id=project_id, artifact_type="layer1_pillar", artifact_id=pillar.id,
+                critic_type="layer1_research_assessment", category="research_profile", severity="info",
+                explanation=analysis.summary, evidence={"matrix": matrix, "assessment": analysis.model_dump(mode="json")},
+                recommended_action="Review the updated research assessment before applying it to the pillar.",
+                source_payload=analysis.model_dump(mode="json"),
+            )
+            return
         payload["research_profile"] = analysis.model_dump(mode="json")
         payload.pop("research_stale", None)
         self.db.update_node(pillar.id, json_payload=payload)

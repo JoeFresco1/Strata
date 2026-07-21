@@ -155,7 +155,7 @@ pre {
 }
 
 .app-shell.nav-open {
-  grid-template-columns: 252px 1fr;
+  grid-template-columns: 236px 1fr;
 }
 
 .nav-rail {
@@ -222,11 +222,13 @@ pre {
   gap: 0.2rem;
   align-items: start;
   justify-items: start;
-  min-height: 74px;
-  padding: 0.9rem 0.95rem;
-  border-radius: 16px;
-  background: linear-gradient(180deg, #2f6176 0%, #245f73 100%);
-  box-shadow: 0 12px 22px rgba(36, 95, 115, 0.18);
+  min-height: 46px;
+  padding: 0.72rem 0.8rem;
+  border-radius: 10px;
+  border-color: rgba(36, 95, 115, 0.16);
+  background: rgba(239, 246, 249, 0.92);
+  color: #245f73;
+  box-shadow: none;
   text-align: left;
 }
 
@@ -246,26 +248,38 @@ pre {
 
 .rail-runtime-card {
   display: grid;
-  gap: 0.45rem;
-  padding: 0.9rem 0.95rem;
+  gap: 0.35rem;
+  padding: 0.78rem 0.8rem;
   border: 1px solid rgba(36, 95, 115, 0.14);
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(239, 246, 249, 0.96) 0%, rgba(255, 255, 255, 0.98) 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: none;
 }
 
 .rail-runtime-kicker {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
   color: var(--accent);
   font-size: 0.74rem;
   font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.rail-runtime-kicker::before {
+  content: "";
+  width: 0.48rem;
+  height: 0.48rem;
+  border-radius: 999px;
+  background: #9aa8af;
 }
 
 .rail-runtime-meta {
   display: grid;
   gap: 0.18rem;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
 }
 
 .main-content {
@@ -825,6 +839,16 @@ pre {
   color: #145a36;
 }
 
+.status-pill.draft {
+  background: #e8edf1;
+  color: #31434b;
+}
+
+.status-pill.archived {
+  background: #f3e9d9;
+  color: #71501a;
+}
+
 .chat-layout,
 .brief-grid {
   display: grid;
@@ -1222,10 +1246,20 @@ pre {
     border-bottom: 1px solid rgba(30, 42, 47, 0.08);
   }
 
-  .page-header,
-  .project-header-actions {
+  .page-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .project-header-actions {
+    align-items: center;
+    justify-content: flex-start;
+    flex-direction: row;
+    flex-wrap: nowrap;
+  }
+
+  .project-content-button {
+    flex: 1 1 auto;
   }
 
   .tree-workspace {

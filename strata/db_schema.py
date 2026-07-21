@@ -30,6 +30,7 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL UNIQUE,
                     product_idea TEXT NOT NULL,
+                    problem TEXT NOT NULL DEFAULT '',
                     known_competitors TEXT NOT NULL,
                     constraints TEXT NOT NULL,
                     target_users TEXT NOT NULL DEFAULT '',
@@ -603,9 +604,43 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     feature_intent TEXT NOT NULL, expansion_groups TEXT NOT NULL,
                     overlap_review TEXT NOT NULL, open_questions TEXT NOT NULL,
                     review_state TEXT NOT NULL, provenance TEXT NOT NULL,
+                    active_revision_id TEXT NOT NULL DEFAULT '', revision_number INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                     FOREIGN KEY(project_id) REFERENCES projects(id),
                     UNIQUE(project_id, feature_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS artifact_authority_actions (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, artifact_type TEXT NOT NULL CHECK (artifact_type IN ('layer1_pillar', 'layer2_feature', 'layer3_expansion')),
+                    artifact_id TEXT NOT NULL, revision_id TEXT NOT NULL DEFAULT '', action_type TEXT NOT NULL,
+                    actor TEXT NOT NULL, origin TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS critic_findings (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, artifact_type TEXT NOT NULL CHECK (artifact_type IN ('layer1_pillar', 'layer2_feature', 'layer3_expansion')),
+                    artifact_id TEXT NOT NULL, artifact_revision_id TEXT NOT NULL DEFAULT '', critic_type TEXT NOT NULL,
+                    policy_version TEXT NOT NULL, category TEXT NOT NULL, severity TEXT NOT NULL,
+                    explanation TEXT NOT NULL, evidence TEXT NOT NULL, recommended_action TEXT NOT NULL,
+                    source_fingerprint TEXT NOT NULL, model_reference TEXT NOT NULL DEFAULT '',
+                    job_reference TEXT NOT NULL DEFAULT '', status TEXT NOT NULL CHECK (status IN ('open', 'accepted', 'dismissed', 'superseded')), created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL, resolution_action TEXT NOT NULL DEFAULT '',
+                    resolution_note TEXT NOT NULL DEFAULT '', resolved_by TEXT NOT NULL DEFAULT '', resolved_at TEXT,
+                    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                    CHECK ((status = 'open' AND resolved_at IS NULL) OR (status <> 'open' AND resolved_at IS NOT NULL)),
+                    UNIQUE(project_id, artifact_type, artifact_id, artifact_revision_id, critic_type, policy_version, category, source_fingerprint)
+                );
+
+                CREATE TABLE IF NOT EXISTS command_executions (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, command_type TEXT NOT NULL,
+                    target_type TEXT NOT NULL, target_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+                    actor_type TEXT NOT NULL CHECK (actor_type IN ('human', 'system', 'import', 'migration', 'model')),
+                    origin TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_fingerprint TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('running', 'completed')),
+                    input_payload TEXT NOT NULL, result_payload TEXT NOT NULL, stale_effects TEXT NOT NULL,
+                    created_at TEXT NOT NULL, completed_at TEXT,
+                    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                    UNIQUE(project_id, idempotency_key)
                 );
 
                 CREATE TABLE IF NOT EXISTS layer3_expansion_actions (
@@ -613,6 +648,60 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     action_type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,
                     FOREIGN KEY(project_id) REFERENCES projects(id),
                     FOREIGN KEY(expansion_id) REFERENCES layer3_feature_expansions(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS layer3_expansion_heads (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, feature_id TEXT NOT NULL,
+                    active_revision_id TEXT, next_revision_number INTEGER NOT NULL DEFAULT 1 CHECK (next_revision_number >= 1),
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                    FOREIGN KEY(feature_id) REFERENCES layer2_features(id) ON DELETE CASCADE,
+                    FOREIGN KEY(id, active_revision_id) REFERENCES layer3_expansion_revisions(logical_expansion_id, id) DEFERRABLE INITIALLY DEFERRED,
+                    UNIQUE(project_id, feature_id),
+                    UNIQUE(id, project_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS layer3_expansion_revisions (
+                    id TEXT PRIMARY KEY, logical_expansion_id TEXT NOT NULL, project_id TEXT NOT NULL,
+                    revision_number INTEGER NOT NULL, source_layer2_feature_revision TEXT NOT NULL DEFAULT '',
+                    source_brief_revision TEXT NOT NULL DEFAULT '', source_pillar_revision TEXT NOT NULL DEFAULT '',
+                    generation_reference TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL, actor TEXT NOT NULL,
+                    payload TEXT NOT NULL, structured_diff TEXT NOT NULL, field_ownership TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                    FOREIGN KEY(logical_expansion_id, project_id) REFERENCES layer3_expansion_heads(id, project_id) ON DELETE CASCADE,
+                    UNIQUE(logical_expansion_id, revision_number),
+                    UNIQUE(logical_expansion_id, id),
+                    CHECK(revision_number >= 1)
+                );
+
+                CREATE TABLE IF NOT EXISTS layer3_expansion_revision_states (
+                    revision_id TEXT PRIMARY KEY, logical_expansion_id TEXT NOT NULL,
+                    workflow_state TEXT NOT NULL, review_state TEXT NOT NULL,
+                    freshness_state TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    FOREIGN KEY(revision_id) REFERENCES layer3_expansion_revisions(id) ON DELETE CASCADE,
+                    FOREIGN KEY(logical_expansion_id) REFERENCES layer3_expansion_heads(id) ON DELETE CASCADE,
+                    FOREIGN KEY(logical_expansion_id, revision_id) REFERENCES layer3_expansion_revisions(logical_expansion_id, id) ON DELETE CASCADE,
+                    CHECK(workflow_state IN ('candidate', 'active', 'superseded', 'rejected', 'applied_partial')),
+                    CHECK(review_state IN ('draft', 'approved', 'rejected', 'needs_review')),
+                    CHECK(freshness_state IN ('fresh', 'stale', 'unknown')),
+                    CHECK(
+                        (workflow_state <> 'candidate' OR review_state = 'needs_review')
+                        AND (workflow_state <> 'rejected' OR review_state = 'rejected')
+                        AND (workflow_state <> 'applied_partial' OR review_state = 'approved')
+                    )
+                );
+
+                CREATE TABLE IF NOT EXISTS layer3_revision_actions (
+                    id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL,
+                    logical_expansion_id TEXT NOT NULL, revision_id TEXT,
+                    action_type TEXT NOT NULL, expected_active_revision_id TEXT,
+                    previous_active_revision_id TEXT, new_active_revision_id TEXT,
+                    selected_sections TEXT NOT NULL, before_snapshot TEXT NOT NULL, after_snapshot TEXT NOT NULL,
+                    actor TEXT NOT NULL, origin TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                    FOREIGN KEY(logical_expansion_id, project_id) REFERENCES layer3_expansion_heads(id, project_id) ON DELETE CASCADE,
+                    FOREIGN KEY(logical_expansion_id, revision_id) REFERENCES layer3_expansion_revisions(logical_expansion_id, id) ON DELETE CASCADE
                 );
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_project_memory_scope
@@ -681,6 +770,33 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                 CREATE INDEX IF NOT EXISTS idx_layer2_review_project
                 ON layer2_review_actions(project_id, created_at);
 
+                CREATE INDEX IF NOT EXISTS idx_artifact_authority_lookup
+                ON artifact_authority_actions(project_id, artifact_type, artifact_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_critic_findings_project
+                ON critic_findings(project_id, artifact_type, artifact_id, status, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_command_executions_target
+                ON command_executions(project_id, target_type, target_id, created_at);
+
+                CREATE TRIGGER IF NOT EXISTS cleanup_node_critic_records
+                AFTER DELETE ON nodes BEGIN
+                    DELETE FROM critic_findings WHERE artifact_type = 'layer1_pillar' AND artifact_id = OLD.id;
+                    DELETE FROM artifact_authority_actions WHERE artifact_type = 'layer1_pillar' AND artifact_id = OLD.id;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS cleanup_layer2_critic_records
+                AFTER DELETE ON layer2_features BEGIN
+                    DELETE FROM critic_findings WHERE artifact_type = 'layer2_feature' AND artifact_id = OLD.id;
+                    DELETE FROM artifact_authority_actions WHERE artifact_type = 'layer2_feature' AND artifact_id = OLD.id;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS cleanup_layer3_critic_records
+                AFTER DELETE ON layer3_expansion_heads BEGIN
+                    DELETE FROM critic_findings WHERE artifact_type = 'layer3_expansion' AND artifact_id = OLD.id;
+                    DELETE FROM artifact_authority_actions WHERE artifact_type = 'layer3_expansion' AND artifact_id = OLD.id;
+                END;
+
                 CREATE INDEX IF NOT EXISTS idx_layer2_coverage_matrix_pillar
                 ON layer2_coverage_matrix(project_id, pillar_id, status);
 
@@ -709,6 +825,12 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                 CREATE INDEX IF NOT EXISTS idx_layer3_expansion_actions_expansion
                 ON layer3_expansion_actions(expansion_id, action_type);
 
+                CREATE INDEX IF NOT EXISTS idx_layer3_revisions_logical_number
+                ON layer3_expansion_revisions(logical_expansion_id, revision_number);
+
+                CREATE INDEX IF NOT EXISTS idx_layer3_revision_actions_logical
+                ON layer3_revision_actions(logical_expansion_id, created_at);
+
                 CREATE INDEX IF NOT EXISTS idx_model_call_events_project_started
                 ON model_call_events(project_id, started_at);
 
@@ -716,6 +838,20 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                 ON model_call_events(project_id, layer, workflow);
                 """
             )
+            brief_columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(project_briefs)").fetchall()
+            }
+            if "problem" not in brief_columns:
+                conn.execute("ALTER TABLE project_briefs ADD COLUMN problem TEXT NOT NULL DEFAULT ''")
+            expansion_columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(layer3_feature_expansions)").fetchall()
+            }
+            if "active_revision_id" not in expansion_columns:
+                conn.execute("ALTER TABLE layer3_feature_expansions ADD COLUMN active_revision_id TEXT NOT NULL DEFAULT ''")
+            if "revision_number" not in expansion_columns:
+                conn.execute("ALTER TABLE layer3_feature_expansions ADD COLUMN revision_number INTEGER NOT NULL DEFAULT 0")
         try:
             self._execute(
                 "ALTER TABLE project_model_settings ADD COLUMN prompt_catalog TEXT NOT NULL DEFAULT '{}'"
@@ -773,6 +909,7 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                 feature_intent TEXT NOT NULL, expansion_groups TEXT NOT NULL,
                 overlap_review TEXT NOT NULL, open_questions TEXT NOT NULL,
                 review_state TEXT NOT NULL, provenance TEXT NOT NULL,
+                active_revision_id TEXT NOT NULL DEFAULT '', revision_number INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 FOREIGN KEY(project_id) REFERENCES projects(id),
                 UNIQUE(project_id, feature_id)

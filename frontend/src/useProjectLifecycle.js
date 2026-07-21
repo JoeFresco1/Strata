@@ -32,7 +32,7 @@ export function useProjectLifecycle({
     try {
       const payload = await apiFetch(`/projects/${editingProject.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ name: editProjectName, idea: editProjectIdea }),
+        body: JSON.stringify({ name: editProjectName, idea: editProjectIdea, expected_state_token: editingProject.state_token, request_id: crypto.randomUUID() }),
       });
       setEditingProject(null);
       if (payload.id === activeProjectId && snapshot) {
@@ -65,7 +65,8 @@ export function useProjectLifecycle({
   async function handleArchiveProject(projectToArchive) {
     setError("");
     try {
-      const payload = await apiFetch(`/projects/${projectToArchive.id}/archive`, { method: "POST" });
+      const query = new URLSearchParams({ expected_state_token: projectToArchive.state_token || "", request_id: crypto.randomUUID() });
+      const payload = await apiFetch(`/projects/${projectToArchive.id}/archive?${query}`, { method: "POST" });
       if (activeProjectId === projectToArchive.id && snapshot) {
         applySnapshot({ ...snapshot, project: { ...snapshot.project, ...payload } });
       }
@@ -80,7 +81,8 @@ export function useProjectLifecycle({
     if (!projectToUnarchive) return;
     setError("");
     try {
-      const payload = await apiFetch(`/projects/${projectToUnarchive.id}/unarchive`, { method: "POST" });
+      const query = new URLSearchParams({ expected_state_token: projectToUnarchive.state_token || "", request_id: crypto.randomUUID() });
+      const payload = await apiFetch(`/projects/${projectToUnarchive.id}/unarchive?${query}`, { method: "POST" });
       if (activeProjectId === projectToUnarchive.id && snapshot) {
         applySnapshot({ ...snapshot, project: { ...snapshot.project, ...payload } });
       }
@@ -97,7 +99,7 @@ export function useProjectLifecycle({
     try {
       const result = await apiFetch("/projects/import", {
         method: "POST",
-        body: JSON.stringify({ archive_path: importArchivePath }),
+        body: JSON.stringify({ archive_path: importArchivePath, request_id: crypto.randomUUID() }),
       });
       setShowImportProject(false);
       setImportArchivePath("");

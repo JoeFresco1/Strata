@@ -20,6 +20,7 @@ Layer2RelationshipType = Literal[
     "conflicts_with",
 ]
 Layer2ReviewActionType = Literal[
+    "edit",
     "keep",
     "cut",
     "rename",
@@ -219,6 +220,7 @@ class ProjectBrief(BaseModel):
     id: str
     project_id: str
     product_idea: str
+    problem: str = ""
     known_competitors: list[str] = Field(default_factory=list)
     constraints: str = ""
     target_users: str = ""
@@ -227,6 +229,10 @@ class ProjectBrief(BaseModel):
     rejected_directions: list[str] = Field(default_factory=list)
     notes: str = ""
     status: Literal["draft", "published"] = "draft"
+    current_draft_revision_id: str | None = None
+    current_published_revision_id: str | None = None
+    revision_number: int = 0
+    content_hash: str = ""
     created_at: datetime
     updated_at: datetime
 
@@ -467,6 +473,8 @@ class FeatureExpansion(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
     review_state: Layer3ReviewState = "draft"
     provenance: dict[str, Any] = Field(default_factory=dict)
+    active_revision_id: str = ""
+    revision_number: int = 0
     created_at: datetime
     updated_at: datetime
 

@@ -230,11 +230,11 @@ export function buildTreeFromSnapshot(snapshot) {
     parentName: "",
     parentTab: "",
     breadcrumb: [project.name || brief.product_idea || "Project"],
-    description: firstText(brief.product_idea, brief.goals, brief.target_users, project.description),
+    description: firstText(brief.product_idea, brief.problem, brief.goals, brief.target_users, project.description),
     reviewInfo: firstText(brief.research_summary, brief.competitive_summary),
     updatedAt: firstValue(brief.updated_at, project.updated_at, project.created_at),
     scores: {},
-    searchParts: [brief.product_idea, brief.target_users, brief.goals],
+    searchParts: [brief.product_idea, brief.problem, brief.target_users, brief.goals],
     children: pillars.map((pillar) => treeNode({
       id: pillar.id,
       name: pillar.title,

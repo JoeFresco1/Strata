@@ -179,6 +179,7 @@ class GenerationService(Layer1EngineMixin, Layer2EngineMixin, Layer3ServiceMixin
         """Format the published Layer 0 brief as the bounded Layer 1 source context."""
         lines = [
             f"Product idea: {brief.product_idea or 'Unspecified'}",
+            f"Problem: {brief.problem or 'Unspecified'}",
             f"Target users: {brief.target_users or 'Unspecified'}",
             f"Constraints: {brief.constraints or 'Unspecified'}",
             f"Goals: {', '.join(brief.goals) if brief.goals else 'Unspecified'}",

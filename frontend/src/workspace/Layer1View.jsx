@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import ColumnHeader from "./ColumnHeader";
 import { layer1Pillars } from "./workspaceSelectors";
-import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceActionGroup, WorkspaceStatusBadge } from "./WorkspacePage";
+import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceFilterField, WorkspaceStatusBadge } from "./WorkspacePage";
 import WorkspaceJobNotice from "./WorkspaceJobNotice";
 
 function searchableText(values) {
@@ -127,6 +127,11 @@ export default function Layer1View({
     if (action === "accept_merge") mergeFallback();
   }
 
+  async function handleOverlapCritic() {
+    setReviewOpen(true);
+    await onOverlapCritic?.();
+  }
+
   function activeResearchForPillar(pillarId) {
     return (researchJobState?.jobs || []).find((job) => (
       job.scope_id === pillarId && ["queued", "running"].includes(job.status)
@@ -140,74 +145,68 @@ export default function Layer1View({
       title="Pillars"
       description="Review, research, and curate the major product areas that organize downstream feature work."
       status={!pillars.length ? "draft" : allReviewed ? "approved" : "needs_review"}
-      primaryAction={(
-        <WorkspaceActionButton
-          primary
-          onClick={onGenerate}
-          disabled={generationRunning}
-          disabledReason={generationRunning ? "Layer 1 generation is already running." : ""}
-        >
-          Generate all
-        </WorkspaceActionButton>
-      )}
+      primaryAction={null}
       actions={(
-        <>
-          <WorkspaceActionGroup label="Generate">
-            <WorkspaceActionButton secondary onClick={() => setNewPillarOpen((open) => !open)}>Add pillar</WorkspaceActionButton>
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Research">
-            <WorkspaceActionButton
-              secondary
-              onClick={onResearch}
-              disabled={researchRunning || !pillars.length}
-              disabledReason={researchRunning ? "Layer 1 research is already running." : !pillars.length ? "Generate or add pillars before research." : ""}
-            >
-              Research all
-            </WorkspaceActionButton>
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Review / Critique">
-            <WorkspaceActionButton
-              secondary
-              onClick={onOverlapCritic}
-              disabled={overlapRunning || pillars.length < 2}
-              disabledReason={overlapRunning ? "Overlap critique is already running." : pillars.length < 2 ? "At least two pillars are required." : ""}
-            >
-              Run overlap critic
-            </WorkspaceActionButton>
-            <WorkspaceActionButton
-              secondary
-              onClick={() => setReviewOpen((open) => !open)}
-              disabled={!overlapVerdicts.length}
-              disabledReason={!overlapVerdicts.length ? "Run the overlap critic before reviewing verdicts." : ""}
-            >
-              Review selected ({overlapVerdicts.filter((verdict) => verdict.relation !== "distinct" && (verdict.resolution_state || "unresolved") !== "resolved").length})
-            </WorkspaceActionButton>
-          </WorkspaceActionGroup>
-          <WorkspaceActionGroup label="Selection actions">
-            <WorkspaceActionButton secondary onClick={toggleAllVisible} disabled={!visiblePillars.length} disabledReason={!visiblePillars.length ? "No visible pillars to select." : ""}>Select all</WorkspaceActionButton>
-            <WorkspaceActionButton secondary onClick={() => applySelected("kept")} disabled={!selectedIds.length} disabledReason={!selectedIds.length ? "Select pillars first." : ""}>Keep selected</WorkspaceActionButton>
-            <WorkspaceActionButton secondary destructive={Boolean(selectedIds.length)} onClick={() => applySelected("cut")} disabled={!selectedIds.length} disabledReason={!selectedIds.length ? "Select pillars first." : ""}>Reject selected</WorkspaceActionButton>
-            <WorkspaceActionButton secondary onClick={mergeFallback} disabled={selectedIds.length < 2} disabledReason={selectedIds.length < 2 ? "Select at least two pillars to merge." : ""}>Merge selected</WorkspaceActionButton>
-            <span className="workspace-selection-count" aria-live="polite">{selectedIds.length ? `${selectedIds.length} selected` : `${visiblePillars.length} of ${pillars.length} pillars`}</span>
-          </WorkspaceActionGroup>
-        </>
+        <div className="layer1-actions-stack">
+          <section className="workspace-action-group segmented-action-group layer1-actions-row" aria-label="Layer 1 actions">
+            <div className="segmented-action-row layer1-inline-actions">
+              <WorkspaceActionButton
+                primary
+                onClick={onGenerate}
+                disabled={generationRunning}
+                disabledReason={generationRunning ? "Layer 1 generation is already running." : ""}
+              >
+                Generate all
+              </WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton secondary onClick={() => setNewPillarOpen((open) => !open)}>Add pillar</WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton
+                secondary
+                onClick={onResearch}
+                disabled={researchRunning || !pillars.length}
+                disabledReason={researchRunning ? "Layer 1 research is already running." : !pillars.length ? "Generate or add pillars before research." : ""}
+              >
+                Research all
+              </WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton
+                secondary
+                onClick={handleOverlapCritic}
+                disabled={overlapRunning || pillars.length < 2}
+                disabledReason={overlapRunning ? "Overlap critique is already running." : pillars.length < 2 ? "At least two pillars are required." : ""}
+              >
+                Run overlap critic
+              </WorkspaceActionButton>
+            </div>
+          </section>
+          <section className="workspace-action-group segmented-action-group layer1-selection-group" aria-label="Selection actions">
+            <strong>Selection actions</strong>
+            <div className="segmented-action-row layer1-selection-row">
+              <WorkspaceActionButton secondary onClick={toggleAllVisible} disabled={!visiblePillars.length} disabledReason={!visiblePillars.length ? "No visible pillars to select." : ""}>Select all</WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton secondary onClick={() => applySelected("kept")} disabled={!selectedIds.length} disabledReason={!selectedIds.length ? "Select pillars first." : ""}>Keep selected</WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton secondary destructive={Boolean(selectedIds.length)} onClick={() => applySelected("cut")} disabled={!selectedIds.length} disabledReason={!selectedIds.length ? "Select pillars first." : ""}>Reject selected</WorkspaceActionButton>
+              <span className="workspace-action-divider" aria-hidden="true" />
+              <WorkspaceActionButton
+                secondary
+                onClick={mergeFallback}
+                disabled={selectedIds.length < 2}
+                disabledReason={selectedIds.length < 2 ? "Select at least two pillars to merge." : ""}
+                wrapperClassName="layer1-merge-action"
+              >
+                Merge selected
+              </WorkspaceActionButton>
+              <span className="workspace-selection-count workspace-selection-summary" aria-live="polite">{selectedIds.length} selected</span>
+            </div>
+          </section>
+        </div>
       )}
       filters={(
-        <>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search pillars" aria-label="Search Layer 1 pillars" />
-        <label>
-          Sort by
-          <select value={sortConfig.key} onChange={(event) => setSortConfig({ ...sortConfig, key: event.target.value })} aria-label="Sort pillars">
-            <option value="priority">Priority</option>
-            <option value="title">Pillar</option>
-            <option value="status">Status</option>
-            <option value="source">Source</option>
-          </select>
-        </label>
-        <WorkspaceActionButton secondary onClick={() => setSortConfig((current) => ({ ...current, direction: current.direction === "asc" ? "desc" : "asc" }))}>
-          {sortConfig.direction === "asc" ? "Ascending" : "Descending"}
-        </WorkspaceActionButton>
-        </>
+        <WorkspaceFilterField label="Search pillars" className="workspace-filter-search">
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a pillar by name, description, status, or source" aria-label="Search Layer 1 pillars" />
+        </WorkspaceFilterField>
       )}
     >
 
@@ -285,7 +284,7 @@ export default function Layer1View({
       ) : null}
 
       {visiblePillars.length ? (
-        <div className="workspace-table-wrap">
+        <section className="panel layer1-table-panel" aria-label="Layer 1 pillars table">
           <table className="workspace-review-table">
             <thead>
               <tr>
@@ -338,7 +337,7 @@ export default function Layer1View({
               ))}
             </tbody>
           </table>
-        </div>
+        </section>
       ) : (
         <div className="panel guided-empty-state">
           <strong>{pillars.length ? "No pillars match the current search." : "No pillars yet."}</strong>

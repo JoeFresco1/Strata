@@ -1,4 +1,3 @@
-import { useState } from "react";
 import BriefWorkspace from "../BriefWorkspace";
 import { useIsCompactWorkspace } from "./workspaceSelectors";
 import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceActionGroup } from "./WorkspacePage";
@@ -8,6 +7,51 @@ function listItems(value) {
   return Array.isArray(value) && value.length ? value : ["Not captured yet"];
 }
 
+function hasBriefContent(brief) {
+  return Boolean(
+    brief?.product_idea?.trim()
+    || brief?.problem?.trim()
+    || brief?.target_users?.trim()
+    || brief?.constraints?.trim()
+    || brief?.notes?.trim()
+    || brief?.goals?.length
+    || brief?.known_competitors?.length
+    || brief?.preferred_directions?.length
+    || brief?.rejected_directions?.length
+  );
+}
+
+function formatLastUpdated(value) {
+  if (!value) return "Not saved yet";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Not saved yet";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
+function PreviewSection({ label, value, list = false }) {
+  const content = list ? listItems(value) : value?.trim() || "Not captured yet";
+  return (
+    <section className="brief-preview-card">
+      <div className="brief-preview-card-head">
+        <span className="workspace-card-label">{label}</span>
+      </div>
+      {list ? (
+        <ul className="brief-preview-bullets">
+          {content.map((item) => <li key={item}>{item}</li>)}
+        </ul>
+      ) : (
+        <p>{content}</p>
+      )}
+    </section>
+  );
+}
+
 export default function Layer0View({
   brief,
   conversation,
@@ -15,124 +59,106 @@ export default function Layer0View({
   onChat,
   onPublish,
   onResearch,
+  onProceed,
   researchJobState,
   onCancelJob,
 }) {
   const compact = useIsCompactWorkspace();
-  const [previewOpen, setPreviewOpen] = useState(true);
   const liveBrief = brief || {};
   const researchRunning = researchJobState?.state === "running";
   const published = liveBrief.status === "published";
-  const hasLiveBriefContent = Boolean(
-    liveBrief.product_idea?.trim()
-    || liveBrief.target_users?.trim()
-    || liveBrief.constraints?.trim()
-    || liveBrief.notes?.trim()
-    || liveBrief.goals?.length
-    || liveBrief.known_competitors?.length
-    || liveBrief.preferred_directions?.length
-    || liveBrief.rejected_directions?.length
-  );
+  const canProceed = published;
+  const proceedDisabledReason = published ? "" : "Publish Layer 0 before moving to L1 Pillars.";
+
   return (
     <WorkspacePageLayout
       id="workspace-panel-layer0"
       ariaLabel="Layer 0 workspace"
       className="layer0-view"
-      title="Product Idea"
-      description="Shape the product brief, audience, constraints, goals, and known directions before downstream generation."
+      title="L0 Product Idea"
+      description="Define the product concept, target users, constraints, goals, competitors, and rejected directions before generating pillars."
       status={liveBrief.status || "draft"}
       actions={(
-        <WorkspaceActionGroup label="Controls">
-          <div className="layer0-action-row">
-            <div className="layer0-primary-actions">
-              <WorkspaceActionButton
-                secondary
-                onClick={onPublish}
-                disabled={published || !hasLiveBriefContent}
-                disabledReason={
-                  published
-                    ? "This brief is already published."
-                    : !hasLiveBriefContent
-                      ? "Add some Layer 0 brief content before publishing."
-                      : ""
-                }
-              >
-                Publish
-              </WorkspaceActionButton>
-              <WorkspaceActionButton
-                secondary
-                onClick={onResearch}
-                disabled={researchRunning}
-                disabledReason={researchRunning ? "Market research is already running." : ""}
-              >
-                {researchJobState?.state === "failed" ? "Research all" : "Research all"}
-              </WorkspaceActionButton>
-            </div>
-            {!previewOpen ? (
-              <WorkspaceActionButton
-                className="layer0-preview-toggle"
-                secondary
-                onClick={() => setPreviewOpen(true)}
-                disabled={!hasLiveBriefContent}
-                disabledReason={!hasLiveBriefContent ? "Add some brief content before opening the live preview." : ""}
-              >
-                Preview live brief
-              </WorkspaceActionButton>
-            ) : null}
+        <WorkspaceActionGroup label="Brief actions">
+          <div className="segmented-action-row layer0-primary-actions">
+            <WorkspaceActionButton
+              secondary
+              onClick={onPublish}
+              disabled={!hasBriefContent(liveBrief)}
+              disabledReason={!hasBriefContent(liveBrief) ? "Add some Layer 0 brief content before publishing." : ""}
+            >
+              {published ? "Republish brief" : "Publish brief"}
+            </WorkspaceActionButton>
+            <span className="workspace-action-divider" aria-hidden="true" />
+            <WorkspaceActionButton
+              secondary
+              onClick={onResearch}
+              disabled={researchRunning}
+              disabledReason={researchRunning ? "Market research is already running." : ""}
+            >
+              Research all
+            </WorkspaceActionButton>
+            <span className="workspace-action-divider" aria-hidden="true" />
+            <WorkspaceActionButton
+              secondary
+              onClick={onProceed}
+              disabled={!canProceed}
+              disabledReason={proceedDisabledReason}
+            >
+              Proceed to L1 Pillars
+            </WorkspaceActionButton>
           </div>
           {researchJobState?.state === "failed" ? <span className="warning">Latest research failed. Retry when the runtime is ready.</span> : null}
         </WorkspaceActionGroup>
       )}
     >
-      <div className={`${compact ? "layer0-split compact" : "layer0-split"} ${previewOpen ? "" : "preview-closed"}`}>
-        <div className="layer0-input-pane">
+      <div className={compact ? "layer0-canonical-layout compact" : "layer0-canonical-layout"}>
+        <div className="layer0-editor-column">
           <BriefWorkspace
             brief={liveBrief}
             conversation={conversation}
             onSave={onSave}
             onChat={onChat}
-            compact
+            onProceed={onProceed}
+            canProceed={canProceed}
+            proceedDisabledReason={proceedDisabledReason}
+            compact={compact}
           />
           <WorkspaceJobNotice jobState={researchJobState} label="Market research" onCancel={onCancelJob} />
         </div>
-        {previewOpen ? (
-          <aside className="layer0-preview-pane panel" aria-label="Live Layer 0 brief preview">
-            <div className="layer0-preview-head">
-              <span className="workspace-eyebrow">Live brief</span>
-              <button type="button" className="icon-button layer0-preview-close" onClick={() => setPreviewOpen(false)} aria-label="Close live brief preview" title="Close live brief preview">
-                x
-              </button>
+
+        <aside className="layer0-preview-pane panel" aria-label="Canonical Layer 0 brief preview">
+          <div className="layer0-preview-head canonical-preview-head">
+            <div>
+              <span className="workspace-eyebrow">Brief Preview</span>
+              <h3>{liveBrief.product_idea || "Saved Layer 0 brief"}</h3>
+              <p className="muted">This panel shows the canonical saved brief used by downstream layers.</p>
             </div>
-            <h3>{liveBrief.product_idea || "Product idea"}</h3>
-            <dl className="brief-preview-list">
-              <div>
-                <dt>Target users</dt>
-                <dd>{liveBrief.target_users || "Not captured yet"}</dd>
-              </div>
-              <div>
-                <dt>Constraints</dt>
-                <dd>{liveBrief.constraints || "Not captured yet"}</dd>
-              </div>
-              <div>
-                <dt>Goals</dt>
-                <dd>{listItems(liveBrief.goals).join(", ")}</dd>
-              </div>
-              <div>
-                <dt>Competitors</dt>
-                <dd>{listItems(liveBrief.known_competitors).join(", ")}</dd>
-              </div>
-              <div>
-                <dt>Preferred directions</dt>
-                <dd>{listItems(liveBrief.preferred_directions).join(", ")}</dd>
-              </div>
-              <div>
-                <dt>Rejected directions</dt>
-                <dd>{listItems(liveBrief.rejected_directions).join(", ")}</dd>
-              </div>
-            </dl>
-            {liveBrief.notes ? <p className="muted">{liveBrief.notes}</p> : null}
-          </aside>
-        ) : null}
+            <div className="brief-preview-meta">
+              <span className={`status-pill ${liveBrief.status || "draft"}`}>{liveBrief.status || "draft"}</span>
+              <span className="brief-preview-updated">Last updated: {formatLastUpdated(liveBrief.updated_at)}</span>
+            </div>
+          </div>
+
+          {published ? (
+            <div className="brief-editor-notice warning">
+              <strong>Downstream dependency</strong>
+              <span>Changes to Layer 0 may require downstream review after you save and republish this brief.</span>
+            </div>
+          ) : null}
+
+          <div className="brief-preview-stack">
+            <PreviewSection label="Summary" value={liveBrief.product_idea} />
+            <PreviewSection label="Problem" value={liveBrief.problem} />
+            <PreviewSection label="Target users" value={liveBrief.target_users} />
+            <PreviewSection label="Constraints" value={liveBrief.constraints} />
+            <PreviewSection label="Goals" value={liveBrief.goals} list />
+            <PreviewSection label="Competitors" value={liveBrief.known_competitors} list />
+            <PreviewSection label="Preferred directions" value={liveBrief.preferred_directions} list />
+            <PreviewSection label="Rejected directions" value={liveBrief.rejected_directions} list />
+            {liveBrief.notes?.trim() ? <PreviewSection label="Internal notes" value={liveBrief.notes} /> : null}
+          </div>
+        </aside>
       </div>
     </WorkspacePageLayout>
   );

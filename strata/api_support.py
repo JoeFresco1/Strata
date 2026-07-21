@@ -42,6 +42,21 @@ from strata.api_models import (
 from strata.assistant_index import AssistantIndexService
 from strata.assistant_service import AssistantService
 from strata.brief import BriefService
+from strata.command_service import CommandService
+from strata.command_types import (
+    CommandActor,
+    CommandError,
+    EditFeature,
+    EditPillar,
+    RequestLayer1Generation,
+    RequestLayer2Generation,
+    RequestLayer3Generation,
+    RequestResearch,
+    ResolveFeatureReview,
+    UpdateBriefDraft,
+    state_token,
+)
+from strata.dependency_db import feature_revision_token, pillar_revision_token
 from strata.config import (
     AppConfig,
     EMBEDDING_MODEL_PRESETS,
@@ -93,6 +108,7 @@ class AppServices:
     assistant_service: AssistantService
     overlap_service: OverlapCriticRunner | None = None
     job_service: PlatformJobService | None = None
+    command_service: CommandService | None = None
 
 
 def _normalize_runtime_model_defaults(config: AppConfig) -> None:
@@ -171,7 +187,22 @@ def _build_services(config: AppConfig | None = None) -> AppServices:
     )
     services.overlap_service = OverlapCriticRunner(services)
     services.job_service = PlatformJobService(services)
+    services.command_service = CommandService(services)
     return services
+
+
+def _command_http_error(exc: CommandError) -> HTTPException:
+    """Translate transport-independent command errors at the HTTP boundary."""
+    status = {
+        "not_found": 404,
+        "conflict": 409,
+        "idempotency_conflict": 409,
+        "stale_source": 409,
+        "invalid_transition": 422,
+        "human_authority_required": 403,
+        "validation_error": 422,
+    }.get(exc.code, 400)
+    return HTTPException(status_code=status, detail={"code": exc.code, "message": exc.message, **exc.details})
 
 
 def _project_snapshot(services: AppServices, project_id: str) -> AppSnapshotResponse:
@@ -185,9 +216,23 @@ def _project_snapshot(services: AppServices, project_id: str) -> AppSnapshotResp
     jobs = services.db.list_research_jobs(project_id)
     platform_jobs = services.db.list_platform_jobs(project_id, limit=25)
     findings = services.db.list_research_findings(project_id)
+    critic_findings = services.db.list_critic_findings(project_id)
     layer2_graph = services.db.layer2_graph_snapshot(project_id)
     layer3 = services.db.layer3_snapshot(project_id)
+    overlap = services.db.overlap_snapshot(project_id)
     workspace_state = services.db.get_project_workspace_state(project_id)
+    for feature_payload in layer2_graph.get("features", []):
+        feature = services.db.get_layer2_feature(str(feature_payload["id"]))
+        feature_payload["state_token"] = services.command_service.feature_state_token(feature)
+        feature_payload["freshness"] = services.db.freshness_for_artifact(
+            project_id, "layer2_feature", feature.id, feature_revision_token(feature),
+        )
+    for finding_payload in critic_findings:
+        finding_payload["state_token"] = services.command_service.finding_state_token(finding_payload)
+    for layer in ("layer1", "layer2"):
+        hashes = services.db.current_overlap_item_hashes(project_id, layer)
+        for verdict in overlap.get(layer, {}).get("verdicts", []):
+            verdict["state_token"] = state_token({"target": hashes.get(verdict["target_id"]), "neighbor": hashes.get(verdict["neighbor_id"]), "verdict": verdict["id"]})
     valid_pillar_ids = {node.id for node in nodes if node.layer == 1 and node.node_type == "pillar"}
     valid_feature_ids = {str(item.get("id")) for item in layer2_graph.get("features", [])}
     if workspace_state is None:
@@ -217,19 +262,30 @@ def _project_snapshot(services: AppServices, project_id: str) -> AppSnapshotResp
             table_state=workspace_state.table_state,
         )
     return AppSnapshotResponse(
-        project=project.model_dump(mode="json"),
-        brief=brief.model_dump(mode="json"),
+        project={**project.model_dump(mode="json"), "state_token": services.command_service.project_state_token(project)},
+        brief={
+            **brief.model_dump(mode="json"),
+            "state_token": services.command_service.brief_state_token(brief),
+            "revision_history": services.db.list_brief_revisions(project_id),
+        },
         project_model_settings=model_settings.model_dump(mode="json"),
         workspace_state=workspace_state.model_dump(mode="json"),
         brief_conversation=[turn.model_dump(mode="json") for turn in conversation],
-        nodes=[node.model_dump(mode="json") for node in nodes],
+        nodes=[{
+            **node.model_dump(mode="json"),
+            "state_token": services.command_service.pillar_state_token(node),
+            "freshness": services.db.freshness_for_artifact(
+                project_id, "layer1_pillar", node.id, pillar_revision_token(node),
+            ) if node.layer == 1 and node.node_type == "pillar" else None,
+        } for node in nodes],
         tree=build_tree(nodes),
         memory=[item.model_dump(mode="json") for item in memory],
         research_jobs=[job.model_dump(mode="json") for job in jobs],
         platform_jobs=[job.model_dump(mode="json") for job in platform_jobs],
         research_findings=[finding.model_dump(mode="json") for finding in findings],
+        critic_findings=critic_findings,
         layer2_graph=layer2_graph,
-        overlap=services.db.overlap_snapshot(project_id),
+        overlap=overlap,
         layer3=layer3,
     )
 
@@ -425,133 +481,6 @@ def _valid_layer2_status(status: str) -> str:
     return cleaned
 
 
-def _apply_layer2_review_action(
-    services: AppServices,
-    project_id: str,
-    request: Layer2ReviewActionRequest,
-) -> None:
-    """Apply one Layer 2 review action and persist the audit record."""
-    services.db.get_project(project_id)
-    feature = _get_project_layer2_feature(services, project_id, request.feature_id) if request.feature_id else None
-    payload = request.payload or {}
-    if request.action_type == "keep" and feature is not None:
-        services.db.update_layer2_feature(feature.id, status="kept")
-    elif request.action_type == "cut" and feature is not None:
-        feature = services.db.update_layer2_feature(feature.id, status="cut")
-        embedding_model = services.generation_service._embedding_model_name(project_id, "layer1_similarity_embeddings")
-        embedding = services.generation_service._layer2_embedding(
-            f"{feature.canonical_name} {feature.description} {' '.join(feature.aliases)}",
-            embedding_model,
-        )
-        services.db.create_layer2_negative_cache_entry(
-            project_id=project_id,
-            rejected_name=feature.canonical_name,
-            semantic_cluster=payload.get("semantic_cluster") or feature.canonical_name.lower(),
-            rejected_aliases=feature.aliases,
-            rejected_from_pillar_id=feature.owner_pillar_id,
-            embedding_model=embedding_model,
-            embedding=embedding,
-        )
-    elif request.action_type == "rename" and feature is not None:
-        if not request.title:
-            raise ValueError("Rename requires a title.")
-        services.db.update_layer2_feature(
-            feature.id,
-            canonical_name=request.title.strip(),
-            description=request.description.strip() if request.description else None,
-            status="renamed",
-        )
-    elif request.action_type == "reassign_owner" and feature is not None:
-        if not request.owner_pillar_id:
-            raise ValueError("Owner reassignment requires owner_pillar_id.")
-        _validate_layer2_owner_pillar(services, project_id, request.owner_pillar_id)
-        services.db.update_layer2_feature(feature.id, owner_pillar_id=request.owner_pillar_id, status="kept")
-    elif request.action_type == "merge" and feature is not None:
-        _record_layer2_merge(services, project_id, feature.id, request, payload)
-    elif request.action_type == "add_relationship":
-        _record_layer2_relationship(services, project_id, request, payload)
-    elif request.action_type == "remove_relationship":
-        _remove_layer2_relationship(services, project_id, request)
-    elif request.action_type == "prioritize" and feature is not None:
-        services.db.update_layer2_feature(feature.id, metadata={**feature.metadata, "priority": payload.get("priority", "high")})
-    elif request.action_type == "approve_for_layer3" and feature is not None:
-        services.db.update_layer2_feature(feature.id, status="approved")
-    else:
-        raise ValueError(f"Unsupported Layer 2 review action: {request.action_type}")
-    services.db.record_layer2_review_action(
-        project_id=project_id,
-        feature_id=request.feature_id,
-        action_type=request.action_type,
-        payload={
-            **payload,
-            "target_feature_id": request.target_feature_id,
-            "owner_pillar_id": request.owner_pillar_id,
-            "relationship_type": request.relationship_type,
-        },
-    )
-
-
-def _record_layer2_merge(
-    services: AppServices,
-    project_id: str,
-    feature_id: str,
-    request: Layer2ReviewActionRequest,
-    payload: dict[str, object],
-) -> None:
-    """Record a duplicate edge and mark the source feature merged."""
-    if not request.target_feature_id:
-        raise ValueError("Merge requires target_feature_id.")
-    _get_project_layer2_feature(services, project_id, request.target_feature_id)
-    services.db.insert_layer2_relationship(
-        project_id=project_id,
-        source_feature_id=feature_id,
-        target_feature_id=request.target_feature_id,
-        relationship_type="duplicate_of",
-        strength=float(payload.get("strength", 1.0)),
-        rationale=str(payload.get("rationale", "Reviewer merged duplicate Layer 2 features.")),
-    )
-    services.db.update_layer2_feature(feature_id, status="merged")
-
-
-def _record_layer2_relationship(
-    services: AppServices,
-    project_id: str,
-    request: Layer2ReviewActionRequest,
-    payload: dict[str, object],
-) -> None:
-    """Create a reviewer-approved Layer 2 relationship edge."""
-    if not request.feature_id or not request.target_feature_id:
-        raise ValueError("Relationship actions require feature_id and target_feature_id.")
-    _get_project_layer2_feature(services, project_id, request.feature_id)
-    _get_project_layer2_feature(services, project_id, request.target_feature_id)
-    services.db.insert_layer2_relationship(
-        project_id=project_id,
-        source_feature_id=request.feature_id,
-        target_feature_id=request.target_feature_id,
-        relationship_type=request.relationship_type or "related_to",
-        strength=float(payload.get("strength", 0.75)),
-        rationale=str(payload.get("rationale", "Reviewer added relationship.")),
-    )
-
-
-def _remove_layer2_relationship(
-    services: AppServices,
-    project_id: str,
-    request: Layer2ReviewActionRequest,
-) -> None:
-    """Remove a reviewer-selected Layer 2 relationship edge."""
-    if not request.feature_id or not request.target_feature_id:
-        raise ValueError("Relationship actions require feature_id and target_feature_id.")
-    removed = services.db.delete_layer2_relationship(
-        project_id=project_id,
-        source_feature_id=request.feature_id,
-        target_feature_id=request.target_feature_id,
-        relationship_type=request.relationship_type,
-    )
-    if removed == 0:
-        raise ValueError("No matching Layer 2 relationship was found to remove.")
-
-
 def _validate_layer3_layer2_gate(services: AppServices, project_id: str, target_ids: list[str]) -> None:
     """Reject Layer 3 generation when graph-native Layer 2 features are not approved."""
     unapproved: list[str] = []
@@ -586,27 +515,33 @@ def _execute_assistant_action(
     """Execute one confirmed allowlisted proposal through canonical application services."""
     payload = proposal.payload
     project_id = proposal.project_id
+    actor = CommandActor.human_assistant("user")
+    request_id = proposal.id
+    expected = str(proposal.expected_state.get("state_token") or "")
     if proposal.action_type == "update_brief":
         brief = services.db.get_project_brief(project_id)
         if brief is None:
             raise ValueError("Project brief is missing.")
         allowed = {
-            "product_idea", "known_competitors", "constraints", "target_users", "goals",
+            "product_idea", "problem", "known_competitors", "constraints", "target_users", "goals",
             "preferred_directions", "rejected_directions", "notes",
         }
-        updates = {**brief.model_dump(mode="json"), **{key: value for key, value in payload.items() if key in allowed}}
-        return {"brief": services.brief_service.update_brief(project_id, updates).model_dump(mode="json")}
+        updates = {key: value for key, value in payload.items() if key in allowed}
+        return services.command_service.handle(UpdateBriefDraft(project_id=project_id, actor=actor, idempotency_key=request_id, expected_state_token=expected, updates=updates)).data
     if proposal.action_type == "update_node":
         node = services.db.get_node(str(payload.get("node_id", "")))
         if node.project_id != project_id:
             raise ValueError("Node belongs to another project.")
         allowed = {"title", "description", "status", "priority"}
         updates = {key: value for key, value in payload.items() if key in allowed}
-        return {"node": services.db.update_node(node.id, **updates).model_dump(mode="json")}
+        return services.command_service.handle(EditPillar(project_id=project_id, actor=actor, idempotency_key=request_id, expected_state_token=expected, pillar_id=node.id, **updates)).data
     if proposal.action_type == "layer2_review":
         review = Layer2ReviewActionRequest(**payload)
-        _apply_layer2_review_action(services, project_id, review)
-        return {"feature_id": review.feature_id, "action_type": review.action_type}
+        if not review.feature_id:
+            raise ValueError("A Layer 2 review action requires a feature.")
+        review_payload = {**review.payload, "expected_target_state_token": proposal.expected_state.get("target_state_token", "")}
+        result = services.command_service.handle(ResolveFeatureReview(project_id=project_id, actor=actor, idempotency_key=request_id, expected_state_token=expected, feature_id=review.feature_id, action=review.action_type, payload=review_payload, target_feature_id=review.target_feature_id, owner_pillar_id=review.owner_pillar_id, relationship_type=review.relationship_type, title=review.title, description=review.description))
+        return result.data
     if proposal.action_type == "update_layer2_feature":
         feature_id = str(payload.get("feature_id", ""))
         feature = _get_project_layer2_feature(services, project_id, feature_id)
@@ -615,85 +550,36 @@ def _execute_assistant_action(
             "owner_pillar_id", "status", "coverage_family",
         }
         updates = {key: value for key, value in payload.items() if key in allowed}
-        if "owner_pillar_id" in updates:
-            _validate_layer2_owner_pillar(services, project_id, str(updates["owner_pillar_id"]))
-        if "status" in updates:
-            updates["status"] = _valid_layer2_status(str(updates["status"]))
-        updated = services.db.update_layer2_feature(feature.id, **updates)
-        return {"feature": updated.model_dump(mode="json")}
+        return services.command_service.handle(EditFeature(project_id=project_id, actor=actor, idempotency_key=request_id, expected_state_token=expected, feature_id=feature.id, updates=updates)).data
     if proposal.action_type == "run_layer1_research":
         pillar_ids = payload.get("pillar_ids") or [
             node.id for node in services.db.list_nodes(project_id, parent_id=None, layer=1, node_type="pillar")
         ]
-        jobs = [services.research_service.enqueue_layer1(project_id, str(item), reason="assistant") for item in pillar_ids]
-        platform_jobs = []
-        for job in jobs:
-            platform_job = services.job_service.enqueue(
-                project_id=project_id,
-                kind="research",
-                workflow="research",
-                scope="layer1",
-                scope_id=job.scope_id,
-                request_payload={"research_job_id": job.id, "research_job_type": job.job_type},
-                dedupe_key=f"research:{job.id}",
-            )
-            platform_jobs.append(platform_job)
-            background_tasks.add_task(services.job_service.run_job, platform_job.id)
-        return {"job_ids": [job.id for job in jobs], "platform_job_ids": [job.id for job in platform_jobs]}
+        result = services.command_service.handle(RequestResearch(project_id=project_id, actor=actor, idempotency_key=request_id, layer="layer1", artifact_ids=tuple(str(item) for item in pillar_ids), reason="assistant"))
+        for job_id in result.data["job_ids"]:
+            background_tasks.add_task(services.job_service.run_job, job_id)
+        return result.data
     if proposal.action_type == "run_layer2_research":
-        job = services.research_service.enqueue_layer2(
-            project_id,
-            feature_ids=[str(item) for item in payload.get("feature_ids", [])] or None,
-            reason="assistant",
-        )
-        platform_job = services.job_service.enqueue(
-            project_id=project_id,
-            kind="research",
-            workflow="research",
-            scope="layer2",
-            request_payload={"research_job_id": job.id, "research_job_type": job.job_type},
-            dedupe_key=f"research:{job.id}",
-        )
-        background_tasks.add_task(services.job_service.run_job, platform_job.id)
-        return {"job_id": job.id, "platform_job_id": platform_job.id}
+        result = services.command_service.handle(RequestResearch(project_id=project_id, actor=actor, idempotency_key=request_id, layer="layer2", artifact_ids=tuple(str(item) for item in payload.get("feature_ids", [])), reason="assistant"))
+        for job_id in result.data["job_ids"]:
+            background_tasks.add_task(services.job_service.run_job, job_id)
+        return result.data
     if proposal.action_type == "generate_layer1":
-        job = services.job_service.enqueue(
-            project_id=project_id,
-            kind="generation",
-            workflow="layer1_generation",
-            scope="layer1",
-            request_payload={},
-            dedupe_key=f"generation:layer1:{project_id}:assistant",
-        )
-        background_tasks.add_task(services.job_service.run_job, job.id)
-        return {"queued": True, "layer": 1, "platform_job_id": job.id}
+        result = services.command_service.handle(RequestLayer1Generation(project_id=project_id, actor=actor, idempotency_key=request_id, payload={}))
+        background_tasks.add_task(services.job_service.run_job, result.data["job"]["id"])
+        return result.data
     if proposal.action_type == "generate_layer2":
         pillar_ids = [str(item) for item in payload.get("pillar_ids", [])]
         if not pillar_ids:
             raise ValueError("Layer 2 generation requires pillar_ids.")
-        job = services.job_service.enqueue(
-            project_id=project_id,
-            kind="generation",
-            workflow="layer2_generation",
-            scope="layer2",
-            request_payload={"pillar_ids": pillar_ids},
-            dedupe_key=f"generation:layer2:{project_id}:assistant:{','.join(pillar_ids)}",
-        )
-        background_tasks.add_task(services.job_service.run_job, job.id)
-        return {"queued": True, "layer": 2, "pillar_ids": pillar_ids, "platform_job_id": job.id}
+        result = services.command_service.handle(RequestLayer2Generation(project_id=project_id, actor=actor, idempotency_key=request_id, payload={"pillar_ids": pillar_ids}))
+        background_tasks.add_task(services.job_service.run_job, result.data["job"]["id"])
+        return result.data
     if proposal.action_type == "generate_layer3":
         feature_ids = [str(item) for item in payload.get("feature_ids", [])]
-        _validate_layer3_layer2_gate(services, project_id, feature_ids)
-        job = services.job_service.enqueue(
-            project_id=project_id,
-            kind="generation",
-            workflow="layer3_generation",
-            scope="layer3",
-            request_payload={"feature_ids": feature_ids},
-            dedupe_key=f"generation:layer3:{project_id}:assistant:{','.join(feature_ids)}",
-        )
-        background_tasks.add_task(services.job_service.run_job, job.id)
-        return {"queued": True, "layer": 3, "feature_ids": feature_ids, "platform_job_id": job.id}
+        result = services.command_service.handle(RequestLayer3Generation(project_id=project_id, actor=actor, idempotency_key=request_id, feature_ids=tuple(feature_ids)))
+        background_tasks.add_task(services.job_service.run_job, result.data["job"]["id"])
+        return result.data
     raise ValueError(f"Unsupported assistant action: {proposal.action_type}")
 
 

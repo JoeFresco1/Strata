@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from strata.config import build_model_profiles
+from strata.command_types import CommandActor, GenerateLayer3Candidate
+from strata.dependency_db import feature_revision_token, pillar_revision_token
 from strata.diagnostics import DiagnosticsOptions, build_diagnostics_bundle
 from strata.execution_policy import resolved_runtime_request
 from strata.llm import LLMError
@@ -171,6 +173,20 @@ class PlatformJobService:
             min_new_items_per_round=int(payload.get("min_new_items_per_round") or 2),
             stale_rounds_to_stop=int(payload.get("stale_rounds_to_stop") or 2),
         )
+        brief = self.services.brief_service.ensure_brief(job.project_id)
+        for node in summary.created_nodes:
+            revision_id = pillar_revision_token(node)
+            self.services.db.set_artifact_freshness(
+                project_id=job.project_id, artifact_type="layer1_pillar", artifact_id=node.id,
+                artifact_revision_id=revision_id, freshness_state="current", lineage_quality="exact",
+            )
+            if brief.current_published_revision_id:
+                self.services.db.add_artifact_dependency(
+                    project_id=job.project_id, dependent_artifact_type="layer1_pillar",
+                    dependent_artifact_id=node.id, dependent_revision_id=revision_id,
+                    source_artifact_type="brief", source_artifact_id=brief.id,
+                    source_revision_id=str(brief.current_published_revision_id), lineage_quality="exact",
+                )
         self._checkpoint(job.id, "Queueing Layer 1 research", 85)
         research_jobs = []
         if self.services.research_service.competitive_intelligence_enabled(job.project_id):
@@ -192,6 +208,26 @@ class PlatformJobService:
             target_per_lens=max(1, min(int(payload.get("target_per_round") or 10), 8)),
             total_cap=payload.get("total_cap"),
         )
+        brief = self.services.brief_service.ensure_brief(job.project_id)
+        for feature_id in summary.get("created_feature_ids", []):
+            feature = self.services.db.get_layer2_feature(str(feature_id))
+            pillar = self.services.db.get_node(feature.owner_pillar_id)
+            revision_id = feature_revision_token(feature)
+            self.services.db.set_artifact_freshness(
+                project_id=job.project_id, artifact_type="layer2_feature", artifact_id=feature.id,
+                artifact_revision_id=revision_id, freshness_state="current", lineage_quality="exact",
+            )
+            for source_type, source_id, source_revision in (
+                ("brief", brief.id, str(brief.current_published_revision_id or "")),
+                ("layer1_pillar", pillar.id, pillar_revision_token(pillar)),
+            ):
+                if source_revision:
+                    self.services.db.add_artifact_dependency(
+                        project_id=job.project_id, dependent_artifact_type="layer2_feature",
+                        dependent_artifact_id=feature.id, dependent_revision_id=revision_id,
+                        source_artifact_type=source_type, source_artifact_id=source_id,
+                        source_revision_id=source_revision, lineage_quality="exact",
+                    )
         research_job = None
         if self.services.research_service.competitive_intelligence_enabled(job.project_id):
             self._checkpoint(job.id, "Queueing Layer 2 competitive research", 85)
@@ -205,12 +241,11 @@ class PlatformJobService:
         if not feature_ids:
             raise ValueError("Select at least one approved Layer 2 feature.")
         self._checkpoint(job.id, "Generating Layer 3 feature expansions", 10)
-        created = self.services.generation_service.generate_feature_expansions(
-            job.project_id,
-            feature_ids,
-            thinking_enabled=bool(payload.get("thinking_enabled")),
-        )
-        return {"created": [expansion.model_dump(mode="json") for expansion in created]}
+        result = self.services.command_service.handle(GenerateLayer3Candidate(
+            project_id=job.project_id, actor=CommandActor.system("platform_job"), idempotency_key=job.id,
+            feature_ids=tuple(feature_ids), thinking_enabled=bool(payload.get("thinking_enabled")), generation_reference=job.id,
+        ))
+        return {"created": result.data["candidates"], "command_id": result.command_id}
 
     def _run_overlap_critic(self, job: PlatformJob) -> dict[str, Any]:
         if self.services.overlap_service is None:

@@ -20,6 +20,7 @@ from strata.telemetry import model_call_context
 
 BRIEF_FIELDS = {
     "product_idea",
+    "problem",
     "known_competitors",
     "constraints",
     "target_users",
@@ -32,6 +33,7 @@ BRIEF_FIELDS = {
 LIST_FIELDS = {"known_competitors", "goals", "preferred_directions", "rejected_directions"}
 BRIEF_FIELD_ORDER = [
     "product_idea",
+    "problem",
     "target_users",
     "constraints",
     "goals",
@@ -61,9 +63,10 @@ class BriefService:
         if existing is not None:
             return existing
         project = self.db.get_project(project_id)
-        return self.db.upsert_project_brief(
+        brief = self.db.upsert_project_brief(
             project_id=project_id,
             product_idea=project.idea,
+            problem="",
             known_competitors=[],
             constraints="",
             target_users="",
@@ -73,19 +76,34 @@ class BriefService:
             notes="",
             status="draft",
         )
+        if "brief_heads" in self.db._table_names():
+            self.db.ensure_brief_revision_head(project_id, origin="system_workflow", actor="strata")
+            brief = self.db.get_project_brief(project_id)
+        return brief
 
-    def update_brief(self, project_id: str, updates: dict[str, Any]) -> ProjectBrief:
+    def update_brief(
+        self, project_id: str, updates: dict[str, Any], *, origin: str = "system_workflow",
+        actor: str = "strata", creation_command_id: str = "",
+    ) -> ProjectBrief:
         """Apply direct Form-mode edits to the canonical Layer 0 brief."""
         current = self.ensure_brief(project_id)
         merged = self._merged_brief_payload(current.model_dump(mode="json"), updates)
         status = current.status if current.status == "draft" else "draft"
-        return self.db.upsert_project_brief(project_id=project_id, status=status, **merged)
+        self.db.upsert_project_brief(project_id=project_id, status=status, **merged)
+        if "brief_heads" in self.db._table_names():
+            self.db.create_brief_draft_revision(
+                project_id, origin=origin, actor=actor, creation_command_id=creation_command_id,
+            )
+        return self.db.get_project_brief(project_id)
 
     def append_plan_turn(
         self,
         project_id: str,
         message: str,
         request_id: str | None = None,
+        *,
+        origin: str = "system_workflow",
+        actor: str = "strata",
     ) -> tuple[str, ProjectBrief, dict[str, Any]]:
         """Extract structured values from a Plan-mode message and store both the turn and reply."""
         clean_message = message.strip()
@@ -108,7 +126,9 @@ class BriefService:
         )
 
         updates = self._extract_updates(current, tail, clean_message)
-        brief = self.update_brief(project_id, updates) if updates else current
+        brief = self.update_brief(
+            project_id, updates, origin=origin, actor=actor, creation_command_id=request_id or "",
+        ) if updates else current
         guidance = self._plan_guidance(brief, tail, clean_message, updates)
         reply = str(guidance.get("assistant_message", "")).strip() or self._fallback_plan_guidance(brief, updates)["assistant_message"]
         self.db.append_brief_conversation_turn(
@@ -123,12 +143,20 @@ class BriefService:
         )
         return reply, brief, guidance
 
-    def publish(self, project_id: str) -> ProjectBrief:
+    def publish(
+        self, project_id: str, *, origin: str = "system_workflow", actor: str = "strata",
+        creation_command_id: str = "",
+    ) -> ProjectBrief:
         """Freeze the current draft as the active Layer 0 source of truth."""
         current = self.ensure_brief(project_id)
         payload = current.model_dump(mode="json")
         merged = self._merged_brief_payload(payload, {})
-        return self.db.upsert_project_brief(project_id=project_id, status="published", **merged)
+        if "brief_heads" in self.db._table_names():
+            self.db.publish_brief_revision(
+                project_id, origin=origin, actor=actor, creation_command_id=creation_command_id,
+            )
+        self.db.upsert_project_brief(project_id=project_id, status="published", **merged)
+        return self.db.get_project_brief(project_id)
 
     def _extract_updates(self, current: ProjectBrief, tail: list[dict[str, str]], message: str) -> dict[str, Any]:
         """Run the local structured extraction pass and normalize unsafe model output."""
@@ -241,6 +269,8 @@ class BriefService:
         recap_bits: list[str] = []
         if "product_idea" in updates:
             recap_bits.append("the product direction is clearer")
+        if "problem" in updates:
+            recap_bits.append("the core problem is sharper")
         if "target_users" in updates:
             recap_bits.append("the likely target users are clearer")
         if "constraints" in updates:
@@ -252,6 +282,10 @@ class BriefService:
             "product_idea": [
                 "What is the single most important problem this product should solve first?",
                 "What would make this approach meaningfully different from a generic survey tool?",
+            ],
+            "problem": [
+                "What user pain or workflow breakdown should this product solve first?",
+                "What goes wrong today if this product does not exist?",
             ],
             "target_users": [
                 "Who is the primary user that should feel this product was built for them?",
@@ -305,6 +339,7 @@ class BriefService:
         normalized = self._normalized_updates(updates)
         payload = {
             "product_idea": str(current.get("product_idea") or ""),
+            "problem": str(current.get("problem") or ""),
             "known_competitors": self._list_value(current.get("known_competitors")),
             "constraints": str(current.get("constraints") or ""),
             "target_users": str(current.get("target_users") or ""),

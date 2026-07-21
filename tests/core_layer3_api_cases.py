@@ -22,6 +22,7 @@ from strata.generation import LAYER2_EXHAUSTION_FAMILIES, LAYER2_LENSES, LAYER2_
 from strata.llm import LLMError, LlamaCppClient
 from strata.layer2_research import Layer2CompetitorSeed, Layer2ResearchMixin
 from strata.layer3_service import validate_product_level_content
+from strata.layer3_revision import build_structured_diff
 from strata.models import (
     FeatureExpansionGroup,
     FeatureExpansionOption,
@@ -133,7 +134,7 @@ class Layer3ApiTests(unittest.TestCase):
 
             response = client.patch(
                 f"/api/projects/{project.id}/layer3/expansions/{expansion.id}",
-                json={"feature_intent": "Collect detailed qualitative responses."},
+                json={"feature_intent": "Collect detailed qualitative responses.", "expected_state_token": expansion.active_revision_id},
             )
 
             self.assertEqual(response.status_code, 200)
@@ -162,7 +163,7 @@ class Layer3ApiTests(unittest.TestCase):
 
             response = client.patch(
                 f"/api/projects/{project.id}/layer3/expansions/{expansion.id}",
-                json={"expansion_groups": groups, "open_questions": []},
+                json={"expansion_groups": groups, "open_questions": [], "expected_state_token": expansion.active_revision_id},
             )
 
             self.assertEqual(response.status_code, 200)
@@ -203,11 +204,11 @@ class Layer3ApiTests(unittest.TestCase):
 
             approval = client.post(
                 f"/api/projects/{project.id}/layer3/expansions/{expansion.id}/review",
-                json={"action": "approve"},
+                json={"action": "approve", "expected_state_token": expansion.active_revision_id},
             )
             exported = client.post(f"/api/projects/{project.id}/export/layer3")
 
-            self.assertEqual(approval.status_code, 400)
+            self.assertEqual(approval.status_code, 409)
             self.assertEqual(exported.status_code, 400)
 
     def test_old_layer3_card_endpoints_are_removed(self) -> None:
@@ -247,6 +248,33 @@ class Layer3ApiTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 400)
             self.assertEqual(db.get_layer3_expansion(expansion.id).feature_intent, "Collect qualitative responses.")
+
+    def test_candidate_apply_returns_409_for_stale_expected_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db, project, feature, expansion = self._fixture(tmpdir)
+            active = db.get_layer3_revision(expansion.active_revision_id)
+            candidate = db.create_layer3_candidate(
+                project_id=project.id,
+                feature_id=feature.id,
+                artifact_payload={**active["payload"], "feature_intent": "Generated candidate intent."},
+                structured_diff=build_structured_diff(active["payload"], {**active["payload"], "feature_intent": "Generated candidate intent."}),
+                field_ownership=active["field_ownership"],
+                source_layer2_feature_revision=feature.updated_at.isoformat(),
+                source_brief_revision="brief-r1",
+                source_pillar_revision="pillar-r1",
+                generation_reference="api-conflict-test",
+                origin="regeneration",
+                actor="system",
+            )
+            db.revise_active_expansion(expansion.id, {"feature_intent": "Concurrent edit."}, actor="user", origin="test")
+            client = self._client(Path(tmpdir) / "layer3-api.db", Path(tmpdir) / "exports")
+
+            response = client.post(
+                f"/api/projects/{project.id}/layer3/expansions/{expansion.id}/candidates/{candidate['id']}/apply",
+                json={"expected_active_revision_id": expansion.active_revision_id, "request_id": "stale-api-command"},
+            )
+
+            self.assertEqual(response.status_code, 409)
 
     def test_pillar_quality_gate_rejects_narrow_low_quality_items(self) -> None:
         weak_assessment = PillarAssessment(
