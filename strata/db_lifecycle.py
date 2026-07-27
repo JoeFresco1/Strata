@@ -65,6 +65,9 @@ DIRECT_PROJECT_TABLES = [
     "product_discovery_heads",
     "product_discovery_revisions",
     "discovery_context_projections",
+    "layer1_expansion_runs",
+    "layer1_expansion_lenses",
+    "layer1_candidate_dispositions",
 ]
 
 DEPENDENT_TABLES = {

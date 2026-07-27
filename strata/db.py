@@ -33,6 +33,7 @@ from strata.db_telemetry import TelemetryDatabaseMixin
 from strata.db_schema import DatabaseSchemaMixin
 from strata.layer2_db import Layer2DatabaseMixin
 from strata.layer3_db import Layer3DatabaseMixin
+from strata.layer1_expansion_db import Layer1ExpansionDatabaseMixin
 from strata.models import (
     BriefConversationTurn,
     Layer1PillarRecord,
@@ -57,7 +58,7 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class Database(ProjectLifecycleDatabaseMixin, DiscoveryDatabaseMixin, DependencyDatabaseMixin, DataOwnershipDatabaseMixin, TelemetryDatabaseMixin, PlatformJobDatabaseMixin, OverlapDatabaseMixin, CriticDatabaseMixin, AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin, ResearchDatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
+class Database(ProjectLifecycleDatabaseMixin, Layer1ExpansionDatabaseMixin, DiscoveryDatabaseMixin, DependencyDatabaseMixin, DataOwnershipDatabaseMixin, TelemetryDatabaseMixin, PlatformJobDatabaseMixin, OverlapDatabaseMixin, CriticDatabaseMixin, AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin, ResearchDatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
     """Store SpecForge state in either PostgreSQL or SQLite through one stable API."""
 
     def __init__(self, target: str | Path, *, postgres_admin_url: str | None = None):

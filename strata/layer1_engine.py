@@ -126,6 +126,16 @@ class Layer1RoundOutcome:
     new_family_keys: set[str]
 
 
+@dataclass(slots=True)
+class Layer1ScheduledLens:
+    """One durable unit of breadth work derived from Product Discovery."""
+
+    record_id: str
+    title: str
+    instruction: str
+    required: bool
+
+
 
 
 class Layer1EngineMixin(Layer1OverlapMixin):
@@ -165,6 +175,27 @@ class Layer1EngineMixin(Layer1OverlapMixin):
         round_summaries: list[str] = []
         active_profiles = self._resolve_layer1_profiles(project_id, model_profiles)
         prompt_catalog = self._prompt_catalog(project_id)
+        discovery_revision_id, lens_specs = self._layer1_discovery_lens_specs(project_id)
+        expansion_run = self.db.create_layer1_expansion_run(
+            project_id=project_id,
+            source_discovery_revision_id=discovery_revision_id,
+            max_rounds=max_rounds,
+            target_per_round=target_per_round,
+        )
+        scheduled_lenses = [
+            Layer1ScheduledLens(
+                record_id=self.db.create_layer1_expansion_lens(
+                    run_id=expansion_run["id"],
+                    project_id=project_id,
+                    ordinal=index,
+                    **spec,
+                )["id"],
+                title=str(spec["title"]),
+                instruction=str(spec["instruction"]),
+                required=bool(spec["required"]),
+            )
+            for index, spec in enumerate(lens_specs)
+        ]
 
         round_index = 0
         stop_all_models = False
@@ -175,6 +206,11 @@ class Layer1EngineMixin(Layer1OverlapMixin):
             self._ensure_profile_loaded(profile, thinking_enabled=thinking_enabled)
             stale_rounds = 0
             for _ in range(max_rounds):
+                if round_index >= len(scheduled_lenses):
+                    stop_reason = "all_scheduled_lenses_exhausted"
+                    stop_all_models = True
+                    break
+                scheduled_lens = scheduled_lenses[round_index]
                 remaining_budget = None if total_cap is None else max(0, total_cap - len(created_nodes))
                 if remaining_budget == 0:
                     stop_reason = "total_cap_reached"
@@ -189,6 +225,7 @@ class Layer1EngineMixin(Layer1OverlapMixin):
                     created_nodes=created_nodes,
                     models_used=models_used,
                     round_index=round_index,
+                    lens_override=(scheduled_lens.title, scheduled_lens.instruction),
                 )
                 round_index += 1
                 lenses_used.append(f"{profile['label']}: {context.lens_name}")
@@ -218,6 +255,17 @@ class Layer1EngineMixin(Layer1OverlapMixin):
                     schema_label="pillar_response",
                     schema_instructions=PILLAR_RESPONSE_SCHEMA,
                 )
+                candidate_record_ids = [
+                    self.db.create_layer1_candidate_record(
+                        run_id=expansion_run["id"],
+                        lens_id=scheduled_lens.record_id,
+                        project_id=project_id,
+                        round_index=round_index - 1,
+                        ordinal=index,
+                        raw_payload=pillar.model_dump(mode="json"),
+                    )
+                    for index, pillar in enumerate(raw_parsed.pillars)
+                ]
                 normalized = self._normalize_pillars(
                     project_id=project_id,
                     product_idea=product_idea,
@@ -225,6 +273,15 @@ class Layer1EngineMixin(Layer1OverlapMixin):
                     existing_pillars=context.memory_channels.persisted_pillars,
                     raw_pillars=raw_parsed.pillars,
                     runtime_profile=profile,
+                )
+                normalized_record_ids = self._bind_layer1_candidate_records(
+                    project_id=project_id,
+                    expansion_run_id=expansion_run["id"],
+                    lens_id=scheduled_lens.record_id,
+                    round_index=round_index - 1,
+                    raw_pillars=raw_parsed.pillars,
+                    raw_record_ids=candidate_record_ids,
+                    normalized_pillars=normalized.pillars,
                 )
                 assessments = self._assess_pillars(
                     project_id=project_id,
@@ -242,6 +299,7 @@ class Layer1EngineMixin(Layer1OverlapMixin):
                     source_model=str(profile["label"]),
                     source_lens=context.lens_name,
                     max_new_items=remaining_budget,
+                    candidate_record_ids=normalized_record_ids,
                 )
 
                 created_nodes.extend(outcome.created_nodes)
@@ -301,9 +359,35 @@ class Layer1EngineMixin(Layer1OverlapMixin):
                     stale_family_rounds=stale_family_rounds,
                     stale_rounds_to_stop=stale_rounds_to_stop,
                 )
-                if stop_reason != "continue":
-                    break
+                lens_stale = 1 if len(outcome.created_nodes) < min_new_items_per_round else 0
+                self.db.update_layer1_expansion_lens(
+                    scheduled_lens.record_id,
+                    status="exhausted",
+                    attempts=1,
+                    stale_rounds=lens_stale,
+                    created_count=len(outcome.created_nodes),
+                    last_critic=critic.model_dump(mode="json"),
+                )
+                # A critic can exhaust this lens, but it cannot globally terminate other
+                # required discovery lenses. The next scheduled lens always gets its turn.
+                stop_all_models = False
+                stop_reason = "continue"
 
+        if round_index >= len(scheduled_lenses):
+            stop_reason = "all_scheduled_lenses_exhausted"
+        elif stop_reason == "continue":
+            stop_reason = "round_budget_exhausted"
+        for pending_lens in scheduled_lenses[round_index:]:
+            lens = self.db.get_layer1_expansion_lens(pending_lens.record_id)
+            self.db.update_layer1_expansion_lens(
+                pending_lens.record_id,
+                status="budget_exhausted",
+                attempts=int(lens["attempts"]),
+                stale_rounds=int(lens["stale_rounds"]),
+                created_count=int(lens["created_count"]),
+                last_critic=lens["last_critic"],
+            )
+        self.db.finish_layer1_expansion_run(expansion_run["id"], stop_reason)
         return IterativeGenerationSummary(
             created_nodes=created_nodes,
             total_rounds=len(per_round_new_counts),
@@ -329,6 +413,7 @@ class Layer1EngineMixin(Layer1OverlapMixin):
         created_nodes: list[Node],
         models_used: list[str],
         round_index: int,
+        lens_override: tuple[str, str] | None = None,
     ) -> Layer1RoundContext:
         """Assemble sibling state, overlap memory, role, and lens for one Layer 1 round."""
         siblings = self.db.list_nodes(project_id, parent_id=None, layer=1, node_type="pillar")
@@ -341,7 +426,10 @@ class Layer1EngineMixin(Layer1OverlapMixin):
             memory_type="coverage",
         )
         model_role, role_instruction = self._layer1_model_role(profile, models_used)
-        lens_name, lens_instruction = self._layer1_lens_for_round(round_index, model_role=model_role)
+        lens_name, lens_instruction = lens_override or self._layer1_lens_for_round(
+            round_index,
+            model_role=model_role,
+        )
         advisory_lens = self._critic_advisory_lens(coverage_memory)
         return Layer1RoundContext(
             siblings=siblings,
@@ -360,6 +448,134 @@ class Layer1EngineMixin(Layer1OverlapMixin):
             advisory_lens=advisory_lens,
         )
 
+    def _layer1_discovery_lens_specs(
+        self,
+        project_id: str,
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Compile a deterministic required-first lens queue from published discovery."""
+        snapshot = self.db.discovery_snapshot(project_id)
+        published = snapshot.get("published") if isinstance(snapshot, dict) else None
+        discovery = published.get("discovery", {}) if isinstance(published, dict) else {}
+        human_fields = published.get("human_owned_fields", {}) if isinstance(published, dict) else {}
+        item_states = human_fields.get("item_states", {}) if isinstance(human_fields, dict) else {}
+        actors = [str(item.get("name") or item.get("title") or "") for item in discovery.get("actors", [])]
+        domains = [str(item.get("title") or "") for item in discovery.get("domains", [])]
+        obligations = [
+            str(item.get("title") or "")
+            for item in discovery.get("enterprise_obligations", [])
+        ]
+        risks = [str(item.get("title") or "") for item in discovery.get("coverage_risks", [])]
+        shared_context = (
+            f"Relevant actors: {', '.join(filter(None, actors[:12])) or 'not specified'}. "
+            f"Product domains: {', '.join(filter(None, domains[:12])) or 'not specified'}. "
+            f"Enterprise obligations: {', '.join(filter(None, obligations[:12])) or 'not specified'}. "
+            f"Coverage risks: {', '.join(filter(None, risks[:8])) or 'not specified'}."
+        )
+        specs: list[dict[str, Any]] = []
+        for lens in discovery.get("lenses", []):
+            lens_id = str(lens.get("id") or "")
+            state = str(item_states.get(lens_id) or lens.get("downstream_state") or "")
+            if state in {"excluded", "rejected"}:
+                continue
+            title = str(lens.get("title") or "").strip()
+            if not title:
+                continue
+            required = (
+                str(lens.get("recommendation") or "") == "required"
+                or state == "required"
+            )
+            questions = lens.get("questions") if isinstance(lens.get("questions"), list) else []
+            instruction = " ".join(
+                part
+                for part in (
+                    str(lens.get("description") or ""),
+                    str(lens.get("why_it_matters") or ""),
+                    str(lens.get("expected_product_territory") or ""),
+                    f"Questions: {'; '.join(str(item) for item in questions[:6])}" if questions else "",
+                    shared_context,
+                )
+                if part
+            )
+            specs.append({
+                "source_type": "product_discovery_lens",
+                "source_item_id": lens_id,
+                "title": title,
+                "instruction": instruction,
+                "required": required,
+            })
+        specs.sort(key=lambda item: (not bool(item["required"]), str(item["title"]).lower()))
+        seen = {"".join(ch.lower() for ch in str(item["title"]) if ch.isalnum()) for item in specs}
+        for index, (title, instruction) in enumerate(LAYER1_LENSES):
+            key = "".join(ch.lower() for ch in title if ch.isalnum())
+            if key in seen:
+                continue
+            specs.append({
+                "source_type": "baseline_lens",
+                "source_item_id": f"baseline-{index}",
+                "title": title,
+                "instruction": f"{instruction} {shared_context}",
+                "required": False,
+            })
+        return (
+            str(published.get("id")) if isinstance(published, dict) and published.get("id") else None,
+            specs,
+        )
+
+    def _bind_layer1_candidate_records(
+        self,
+        *,
+        project_id: str,
+        expansion_run_id: str,
+        lens_id: str,
+        round_index: int,
+        raw_pillars: list[Any],
+        raw_record_ids: list[str],
+        normalized_pillars: list[Any],
+    ) -> list[str]:
+        """Link normalized candidates to raw records and disposition every dropped raw item."""
+        unused = set(range(len(raw_pillars)))
+        bound: list[str] = []
+        for normalized_index, normalized in enumerate(normalized_pillars):
+            best_index = None
+            best_score = -1.0
+            for raw_index in unused:
+                score = fuzz.ratio(normalized.title, raw_pillars[raw_index].title)
+                if score > best_score:
+                    best_score = score
+                    best_index = raw_index
+            if best_index is not None and best_score >= 40:
+                unused.remove(best_index)
+                bound.append(raw_record_ids[best_index])
+                continue
+            bound.append(self.db.create_layer1_candidate_record(
+                run_id=expansion_run_id,
+                lens_id=lens_id,
+                project_id=project_id,
+                round_index=round_index,
+                ordinal=len(raw_pillars) + normalized_index,
+                raw_payload={
+                    "normalizer_introduced_candidate": True,
+                    **normalized.model_dump(mode="json"),
+                },
+            ))
+        for raw_index in sorted(unused):
+            self.db.update_layer1_candidate_record(
+                raw_record_ids[raw_index],
+                disposition="normalization_dropped",
+                reason="raw_candidate_not_preserved_by_normalization",
+            )
+        return bound
+
+    def _layer1_family_node(self, family_key: str, nodes: list[Node]) -> Node | None:
+        """Return the persisted node representing an already-covered canonical family."""
+        for node in nodes:
+            if self._pillar_family_key(node.title, None) == family_key:
+                return node
+            canonical = str((node.json_payload or {}).get("canonical_title") or "")
+            if canonical and self._pillar_family_key(canonical, None) == family_key:
+                return node
+        return None
+
     def _persist_layer1_round(
         self,
         *,
@@ -371,6 +587,7 @@ class Layer1EngineMixin(Layer1OverlapMixin):
         source_model: str,
         source_lens: str,
         max_new_items: int | None = None,
+        candidate_record_ids: list[str | None] | None = None,
     ) -> Layer1RoundOutcome:
         """Filter, dedupe, score, and persist the normalized pillars from one round."""
         round_created: list[Node] = []
@@ -379,9 +596,18 @@ class Layer1EngineMixin(Layer1OverlapMixin):
         existing_family_keys = self._existing_pillar_family_keys(siblings + created_nodes)
         round_family_keys: set[str] = set()
 
-        for pillar in normalized_pillars:
+        record_ids = candidate_record_ids or [None] * len(normalized_pillars)
+        for index, pillar in enumerate(normalized_pillars):
+            record_id = record_ids[index] if index < len(record_ids) else None
             if max_new_items is not None and len(round_created) >= max_new_items:
-                break
+                if record_id:
+                    self.db.update_layer1_candidate_record(
+                        record_id,
+                        disposition="budget_deferred",
+                        reason="total_cap_reached_before_candidate_persistence",
+                        normalized_payload=pillar.model_dump(mode="json"),
+                    )
+                continue
             assessment = self._assessment_for_pillar(pillar.title, assessments)
             filter_reason = self._layer1_filter_reason(assessment)
             if filter_reason is not None:
@@ -394,12 +620,37 @@ class Layer1EngineMixin(Layer1OverlapMixin):
                     source_model=source_model,
                     source_lens=source_lens,
                 )
+                if record_id:
+                    off_layer = bool(
+                        assessment
+                        and (assessment.too_narrow or assessment.too_implementation_specific)
+                    )
+                    self.db.update_layer1_candidate_record(
+                        record_id,
+                        disposition="off_layer" if off_layer else "rejected_quality",
+                        reason=filter_reason,
+                        normalized_payload=pillar.model_dump(mode="json"),
+                        assessment_payload=assessment.model_dump(mode="json") if assessment else {},
+                    )
                 continue
 
             candidate_title = self._candidate_pillar_title(pillar.title, assessment)
             family_key = self._pillar_family_key(candidate_title, assessment)
             if family_key in existing_family_keys:
                 round_duplicates += 1
+                duplicate_node = self._layer1_family_node(
+                    family_key,
+                    siblings + created_nodes + round_created,
+                )
+                if record_id:
+                    self.db.update_layer1_candidate_record(
+                        record_id,
+                        disposition="duplicate",
+                        reason="canonical_family_already_exists",
+                        normalized_payload=pillar.model_dump(mode="json"),
+                        assessment_payload=assessment.model_dump(mode="json") if assessment else {},
+                        duplicate_of_node_id=duplicate_node.id if duplicate_node else None,
+                    )
                 continue
 
             payload = self._layer1_payload(pillar.model_dump(), assessment, source_model, source_lens)
@@ -427,6 +678,15 @@ class Layer1EngineMixin(Layer1OverlapMixin):
                     source_model=source_model,
                     source_lens=source_lens,
                 )
+                if record_id:
+                    self.db.update_layer1_candidate_record(
+                        record_id,
+                        disposition="duplicate",
+                        reason="semantic_overlap_blocked",
+                        normalized_payload=pillar.model_dump(mode="json"),
+                        assessment_payload=assessment.model_dump(mode="json") if assessment else {},
+                        duplicate_of_node_id=similarity_matches[0].node_id if similarity_matches else None,
+                    )
                 continue
 
             if similarity_matches:
@@ -444,6 +704,15 @@ class Layer1EngineMixin(Layer1OverlapMixin):
             )
             self._store_pillar_embedding(project_id, created_node, embedding_result)
             round_created.append(created_node)
+            if record_id:
+                self.db.update_layer1_candidate_record(
+                    record_id,
+                    disposition="accepted",
+                    reason="persisted_as_new_layer1_pillar",
+                    normalized_payload=pillar.model_dump(mode="json"),
+                    assessment_payload=assessment.model_dump(mode="json") if assessment else {},
+                    target_node_id=created_node.id,
+                )
 
         return Layer1RoundOutcome(
             created_nodes=round_created,
