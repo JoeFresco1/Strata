@@ -100,6 +100,7 @@ from strata.storage import build_database
 from strata.tree import build_tree
 from strata.api_export import register_export_routes
 from strata.api_jobs import register_job_routes
+from strata.api_discovery import register_discovery_routes
 from strata.api_layer1 import register_layer1_routes
 from strata.api_lifecycle import register_lifecycle_routes
 from strata.api_overlap import register_overlap_routes
@@ -206,10 +207,12 @@ def create_app() -> FastAPI:
             embedding_profiles=app_model_settings["embedding_profiles"],
             assignments=app_model_settings["assignments"],
             prompt_catalog=app_model_settings["prompt_catalog"],
+            discovery_settings=app_model_settings["discovery_settings"],
         )
     register_lifecycle_routes(app, services)
     register_telemetry_routes(app, services)
     register_job_routes(app, services)
+    register_discovery_routes(app, services)
     register_layer1_routes(app, services)
     register_overlap_routes(app, services)
     register_export_routes(app, services)

@@ -35,6 +35,8 @@ class PlatformJobService:
         "telemetry_replay",
         "diagnostics_export",
         "assistant_message",
+        "product_discovery_generation",
+        "competitor_research",
     }
 
     def __init__(self, services: Any):
@@ -134,6 +136,8 @@ class PlatformJobService:
             "telemetry_replay": self._run_telemetry_replay,
             "diagnostics_export": self._run_diagnostics_export,
             "assistant_message": self._run_assistant_message,
+            "product_discovery_generation": self._run_product_discovery,
+            "competitor_research": self._run_competitor_research,
         }
         handler = handlers.get(job.workflow)
         if handler is None:
@@ -159,6 +163,50 @@ class PlatformJobService:
         if research_job.status == "cancelled":
             raise JobCancelled()
         return {"research_job": research_job.model_dump(mode="json")}
+
+    def _run_product_discovery(self, job: PlatformJob) -> dict[str, Any]:
+        """Run the explicit discovery workflow and persist a candidate revision."""
+        self._checkpoint(job.id, "Preparing published brief context", 5)
+        payload = job.request_payload
+        self._checkpoint(job.id, "Resolving optional research mode", 15)
+        self._checkpoint(job.id, "Generating structured Product Discovery", 30)
+        revision = self.services.discovery_service.generate_candidate(
+            project_id=job.project_id,
+            competitor_research_mode=str(
+                payload.get("competitor_research_mode") or "no_competitor_research"
+            ),
+            generation_job_id=job.id,
+            competitor_research_revision_id=payload.get("competitor_research_revision_id"),
+            settings_snapshot=payload.get("runtime_settings"),
+            command_id=job.id,
+        )
+        self._checkpoint(job.id, "Validating and reviewing practicality", 75)
+        self._checkpoint(job.id, "Persisting candidate revision", 95)
+        return {
+            "discovery_revision_id": revision.id,
+            "competitor_research_revision_id": revision.competitor_research_revision_id,
+            "projection_ids": [],
+            "raw_response_preserved": bool(revision.model_authored_fields.get("raw_response")),
+            "schema_valid": True,
+            "repair_attempts": 0,
+            "final_candidate_counts": {
+                "lenses": len(revision.discovery.lenses),
+                "actors": len(revision.discovery.actors),
+                "domains": len(revision.discovery.domains),
+                "enterprise_obligations": len(revision.discovery.enterprise_obligations),
+                "cross_domain_opportunities": len(revision.discovery.cross_domain_opportunities),
+            },
+            "stop_reason": "candidate_persisted_for_human_review",
+        }
+
+    def _run_competitor_research(self, job: PlatformJob) -> dict[str, Any]:
+        """Run independently checkpointed competitor research with partial completion."""
+        if self.services.competitor_research_service is None:
+            raise ValueError("Competitor research service is not available.")
+        return self.services.competitor_research_service.run(
+            job,
+            lambda step, progress: self._checkpoint(job.id, step, progress),
+        )
 
     def _run_layer1_generation(self, job: PlatformJob) -> dict[str, Any]:
         payload = job.request_payload

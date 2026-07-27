@@ -505,7 +505,271 @@ def _backfill_revision_dependencies(db: Database) -> None:
             if pillar_tokens.get(scope_id):
                 db.add_artifact_dependency(project_id=project_id, dependent_artifact_type="research_assessment", dependent_artifact_id=str(finding["id"]), dependent_revision_id=revision_id, source_artifact_type="layer1_pillar", source_artifact_id=scope_id, source_revision_id=pillar_tokens[scope_id], dependency_kind="research", lineage_quality="inferred")
             if feature_tokens.get(scope_id):
-                db.add_artifact_dependency(project_id=project_id, dependent_artifact_type="research_assessment", dependent_artifact_id=str(finding["id"]), dependent_revision_id=revision_id, source_artifact_type="layer2_feature", source_artifact_id=scope_id, source_revision_id=feature_tokens[scope_id], dependency_kind="research", lineage_quality="inferred")
+                    db.add_artifact_dependency(project_id=project_id, dependent_artifact_type="research_assessment", dependent_artifact_id=str(finding["id"]), dependent_revision_id=revision_id, source_artifact_type="layer2_feature", source_artifact_id=scope_id, source_revision_id=feature_tokens[scope_id], dependency_kind="research", lineage_quality="inferred")
+
+
+def _product_discovery_revisions(db: Database) -> None:
+    """Add independent immutable revision stores for discovery, research, and projections."""
+    json_type = "JSONB" if db.is_postgres else "TEXT"
+    timestamp_type = "TIMESTAMPTZ" if db.is_postgres else "TEXT"
+    boolean_type = "BOOLEAN" if db.is_postgres else "INTEGER"
+    if db.is_postgres:
+        db._execute(
+            "ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS "
+            "discovery_settings JSONB NOT NULL DEFAULT '{}'::jsonb"
+        )
+    else:
+        settings_columns = {
+            str(row[1]) for row in db._fetchall("PRAGMA table_info(project_model_settings)")
+        }
+        if "discovery_settings" not in settings_columns:
+            db._execute(
+                "ALTER TABLE project_model_settings ADD COLUMN "
+                "discovery_settings TEXT NOT NULL DEFAULT '{}'"
+            )
+    db._execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS product_discovery_heads (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+            current_candidate_revision_id TEXT,
+            current_published_revision_id TEXT,
+            revision_counter INTEGER NOT NULL DEFAULT 0 CHECK (revision_counter >= 0),
+            created_at {timestamp_type} NOT NULL,
+            updated_at {timestamp_type} NOT NULL,
+            UNIQUE(project_id, id)
+        )
+        """
+    )
+    db._execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS competitor_research_heads (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+            current_candidate_revision_id TEXT,
+            current_published_revision_id TEXT,
+            revision_counter INTEGER NOT NULL DEFAULT 0 CHECK (revision_counter >= 0),
+            created_at {timestamp_type} NOT NULL,
+            updated_at {timestamp_type} NOT NULL,
+            UNIQUE(project_id, id)
+        )
+        """
+    )
+    db._execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS competitor_research_revisions (
+            id TEXT PRIMARY KEY,
+            head_id TEXT NOT NULL REFERENCES competitor_research_heads(id) ON DELETE CASCADE,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            revision_number INTEGER NOT NULL CHECK (revision_number >= 1),
+            source_brief_revision_id TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('candidate', 'approved', 'published', 'rejected', 'superseded')),
+            scope {json_type} NOT NULL,
+            profiles {json_type} NOT NULL,
+            evidence {json_type} NOT NULL,
+            inferred_pillars {json_type} NOT NULL,
+            territories {json_type} NOT NULL,
+            gaps {json_type} NOT NULL,
+            derived_lenses {json_type} NOT NULL,
+            human_decisions {json_type} NOT NULL,
+            runtime_provenance {json_type} NOT NULL,
+            checkpoint_state {json_type} NOT NULL,
+            partial_completion {boolean_type} NOT NULL DEFAULT FALSE,
+            freshness_state TEXT NOT NULL CHECK (freshness_state IN ('current', 'stale', 'superseded', 'unknown')),
+            stale_reason TEXT NOT NULL DEFAULT '',
+            content_hash TEXT NOT NULL,
+            creation_command_id TEXT NOT NULL DEFAULT '',
+            created_at {timestamp_type} NOT NULL,
+            research_date {timestamp_type},
+            last_verified_at {timestamp_type},
+            approved_at {timestamp_type},
+            published_at {timestamp_type},
+            rejected_at {timestamp_type},
+            superseded_at {timestamp_type},
+            UNIQUE(head_id, revision_number),
+            UNIQUE(project_id, id),
+            FOREIGN KEY (project_id, source_brief_revision_id)
+                REFERENCES brief_revisions(project_id, id) DEFERRABLE INITIALLY DEFERRED
+        )
+        """
+    )
+    db._execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS product_discovery_revisions (
+            id TEXT PRIMARY KEY,
+            head_id TEXT NOT NULL REFERENCES product_discovery_heads(id) ON DELETE CASCADE,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            revision_number INTEGER NOT NULL CHECK (revision_number >= 1),
+            source_brief_revision_id TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('candidate', 'approved', 'published', 'rejected', 'superseded')),
+            competitor_research_mode TEXT NOT NULL CHECK (
+                competitor_research_mode IN (
+                    'no_competitor_research', 'lightweight_competitor_scan', 'deep_competitor_research'
+                )
+            ),
+            competitor_research_revision_id TEXT REFERENCES competitor_research_revisions(id),
+            generation_job_id TEXT REFERENCES platform_jobs(id) ON DELETE SET NULL,
+            payload {json_type} NOT NULL,
+            model_authored_fields {json_type} NOT NULL,
+            human_owned_fields {json_type} NOT NULL,
+            review_findings {json_type} NOT NULL,
+            runtime_provenance {json_type} NOT NULL,
+            audit_history {json_type} NOT NULL,
+            dependency_metadata {json_type} NOT NULL,
+            freshness_state TEXT NOT NULL CHECK (freshness_state IN ('current', 'stale', 'superseded', 'unknown')),
+            stale_reason TEXT NOT NULL DEFAULT '',
+            content_hash TEXT NOT NULL,
+            creation_command_id TEXT NOT NULL DEFAULT '',
+            created_at {timestamp_type} NOT NULL,
+            approved_at {timestamp_type},
+            published_at {timestamp_type},
+            rejected_at {timestamp_type},
+            superseded_at {timestamp_type},
+            UNIQUE(head_id, revision_number),
+            UNIQUE(project_id, id),
+            FOREIGN KEY (project_id, source_brief_revision_id)
+                REFERENCES brief_revisions(project_id, id) DEFERRABLE INITIALLY DEFERRED
+        )
+        """
+    )
+    db._execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS discovery_context_projections (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            projection_type TEXT NOT NULL CHECK (projection_type IN ('layer1_discovery', 'competitive')),
+            source_discovery_revision_id TEXT NOT NULL REFERENCES product_discovery_revisions(id) ON DELETE CASCADE,
+            source_competitor_research_revision_id TEXT REFERENCES competitor_research_revisions(id) ON DELETE SET NULL,
+            compiler_version TEXT NOT NULL,
+            payload {json_type} NOT NULL,
+            included_item_ids {json_type} NOT NULL,
+            excluded_item_ids {json_type} NOT NULL,
+            inclusion_rationale {json_type} NOT NULL,
+            exclusion_rationale {json_type} NOT NULL,
+            token_estimate INTEGER NOT NULL CHECK (token_estimate >= 0),
+            content_hash TEXT NOT NULL,
+            creation_command_id TEXT NOT NULL DEFAULT '',
+            created_at {timestamp_type} NOT NULL,
+            UNIQUE(project_id, projection_type, content_hash)
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_discovery_revisions_project ON product_discovery_revisions(project_id, revision_number)",
+        "CREATE INDEX IF NOT EXISTS idx_discovery_revisions_brief ON product_discovery_revisions(project_id, source_brief_revision_id)",
+        "CREATE INDEX IF NOT EXISTS idx_competitor_revisions_project ON competitor_research_revisions(project_id, revision_number)",
+        "CREATE INDEX IF NOT EXISTS idx_competitor_revisions_brief ON competitor_research_revisions(project_id, source_brief_revision_id)",
+        "CREATE INDEX IF NOT EXISTS idx_discovery_projections_source ON discovery_context_projections(project_id, source_discovery_revision_id)",
+    ):
+        db._execute(statement)
+    if db.is_postgres:
+        for table, name, columns, target in (
+            (
+                "product_discovery_heads",
+                "discovery_head_candidate_fk",
+                "(id, current_candidate_revision_id)",
+                "product_discovery_revisions(head_id, id)",
+            ),
+            (
+                "product_discovery_heads",
+                "discovery_head_published_fk",
+                "(id, current_published_revision_id)",
+                "product_discovery_revisions(head_id, id)",
+            ),
+            (
+                "competitor_research_heads",
+                "competitor_head_candidate_fk",
+                "(id, current_candidate_revision_id)",
+                "competitor_research_revisions(head_id, id)",
+            ),
+            (
+                "competitor_research_heads",
+                "competitor_head_published_fk",
+                "(id, current_published_revision_id)",
+                "competitor_research_revisions(head_id, id)",
+            ),
+        ):
+            if db._fetchone("SELECT 1 FROM pg_constraint WHERE conname = %s", (name,)) is None:
+                db._execute(
+                    f"ALTER TABLE {table} ADD CONSTRAINT {name} FOREIGN KEY {columns} "
+                    f"REFERENCES {target} DEFERRABLE INITIALLY DEFERRED"
+                )
+        db._execute(
+            """
+            CREATE OR REPLACE FUNCTION strata_protect_published_discovery_content() RETURNS trigger AS $$
+            BEGIN
+                IF OLD.state = 'published' AND (
+                    NEW.payload IS DISTINCT FROM OLD.payload OR
+                    NEW.model_authored_fields IS DISTINCT FROM OLD.model_authored_fields OR
+                    NEW.human_owned_fields IS DISTINCT FROM OLD.human_owned_fields OR
+                    NEW.review_findings IS DISTINCT FROM OLD.review_findings OR
+                    NEW.runtime_provenance IS DISTINCT FROM OLD.runtime_provenance OR
+                    NEW.source_brief_revision_id IS DISTINCT FROM OLD.source_brief_revision_id OR
+                    NEW.competitor_research_revision_id IS DISTINCT FROM OLD.competitor_research_revision_id OR
+                    NEW.content_hash IS DISTINCT FROM OLD.content_hash
+                ) THEN
+                    RAISE EXCEPTION 'Published Product Discovery content is immutable';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+            """
+        )
+        db._execute(
+            """
+            CREATE OR REPLACE FUNCTION strata_protect_published_competitor_content() RETURNS trigger AS $$
+            BEGIN
+                IF OLD.state = 'published' AND (
+                    NEW.scope IS DISTINCT FROM OLD.scope OR
+                    NEW.profiles IS DISTINCT FROM OLD.profiles OR
+                    NEW.evidence IS DISTINCT FROM OLD.evidence OR
+                    NEW.inferred_pillars IS DISTINCT FROM OLD.inferred_pillars OR
+                    NEW.territories IS DISTINCT FROM OLD.territories OR
+                    NEW.gaps IS DISTINCT FROM OLD.gaps OR
+                    NEW.derived_lenses IS DISTINCT FROM OLD.derived_lenses OR
+                    NEW.human_decisions IS DISTINCT FROM OLD.human_decisions OR
+                    NEW.runtime_provenance IS DISTINCT FROM OLD.runtime_provenance OR
+                    NEW.source_brief_revision_id IS DISTINCT FROM OLD.source_brief_revision_id OR
+                    NEW.content_hash IS DISTINCT FROM OLD.content_hash
+                ) THEN
+                    RAISE EXCEPTION 'Published competitor research content is immutable';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+            """
+        )
+        db._execute("DROP TRIGGER IF EXISTS protect_published_discovery_content ON product_discovery_revisions")
+        db._execute(
+            "CREATE TRIGGER protect_published_discovery_content BEFORE UPDATE ON product_discovery_revisions "
+            "FOR EACH ROW EXECUTE FUNCTION strata_protect_published_discovery_content()"
+        )
+        db._execute("DROP TRIGGER IF EXISTS protect_published_competitor_content ON competitor_research_revisions")
+        db._execute(
+            "CREATE TRIGGER protect_published_competitor_content BEFORE UPDATE ON competitor_research_revisions "
+            "FOR EACH ROW EXECUTE FUNCTION strata_protect_published_competitor_content()"
+        )
+    else:
+        db._execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS protect_published_discovery_content
+            BEFORE UPDATE OF payload, model_authored_fields, human_owned_fields, review_findings,
+                runtime_provenance, source_brief_revision_id, competitor_research_revision_id, content_hash
+            ON product_discovery_revisions
+            WHEN OLD.state = 'published'
+            BEGIN SELECT RAISE(ABORT, 'Published Product Discovery content is immutable'); END
+            """
+        )
+        db._execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS protect_published_competitor_content
+            BEFORE UPDATE OF scope, profiles, evidence, inferred_pillars, territories, gaps,
+                derived_lenses, human_decisions, runtime_provenance, source_brief_revision_id, content_hash
+            ON competitor_research_revisions
+            WHEN OLD.state = 'published'
+            BEGIN SELECT RAISE(ABORT, 'Published competitor research content is immutable'); END
+            """
+        )
 
 
 MIGRATIONS = [
@@ -515,6 +779,7 @@ MIGRATIONS = [
     Migration(4, "critic_human_authority_and_findings", _critic_human_authority),
     Migration(5, "canonical_mutation_command_ledger", _canonical_mutation_commands),
     Migration(6, "immutable_briefs_and_dependency_freshness", _immutable_briefs_and_dependencies),
+    Migration(7, "product_discovery_and_competitor_research", _product_discovery_revisions),
 ]
 
 

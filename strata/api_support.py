@@ -43,6 +43,7 @@ from strata.assistant_index import AssistantIndexService
 from strata.assistant_service import AssistantService
 from strata.brief import BriefService
 from strata.command_service import CommandService
+from strata.competitor_research_service import CompetitorResearchService
 from strata.command_types import (
     CommandActor,
     CommandError,
@@ -66,6 +67,7 @@ from strata.config import (
     resolve_default_model_profile,
 )
 from strata.db import Database
+from strata.discovery_service import DiscoveryService
 from strata.embeddings import EmbeddingService
 from strata.export import export_layer2_markdown, export_layer3_feature_expansions, export_project
 from strata.generation import GenerationService
@@ -109,6 +111,8 @@ class AppServices:
     overlap_service: OverlapCriticRunner | None = None
     job_service: PlatformJobService | None = None
     command_service: CommandService | None = None
+    discovery_service: DiscoveryService | None = None
+    competitor_research_service: CompetitorResearchService | None = None
 
 
 def _normalize_runtime_model_defaults(config: AppConfig) -> None:
@@ -186,6 +190,8 @@ def _build_services(config: AppConfig | None = None) -> AppServices:
         assistant_service=AssistantService(db, llm_client, assistant_index, server_manager),
     )
     services.overlap_service = OverlapCriticRunner(services)
+    services.discovery_service = DiscoveryService(services)
+    services.competitor_research_service = CompetitorResearchService(services)
     services.job_service = PlatformJobService(services)
     services.command_service = CommandService(services)
     return services
@@ -287,6 +293,7 @@ def _project_snapshot(services: AppServices, project_id: str) -> AppSnapshotResp
         layer2_graph=layer2_graph,
         overlap=overlap,
         layer3=layer3,
+        product_discovery=services.db.discovery_snapshot(project_id),
     )
 
 
@@ -299,6 +306,7 @@ def _load_app_model_settings(services: AppServices) -> dict[str, object]:
     raw_concurrency_policy = services.db.get_app_setting("app_concurrency_policy")
     raw_assignments = services.db.get_app_setting("app_assignments")
     raw_prompt_catalog = services.db.get_app_setting("app_prompt_catalog")
+    raw_discovery_settings = services.db.get_app_setting("app_discovery_settings")
     payload: dict[str, object] = {}
     try:
         payload["llm_profiles"] = json.loads(raw_llm_profiles) if raw_llm_profiles else []
@@ -325,6 +333,10 @@ def _load_app_model_settings(services: AppServices) -> dict[str, object]:
         payload["prompt_catalog"] = json.loads(raw_prompt_catalog) if raw_prompt_catalog else load_prompt_catalog()
     except json.JSONDecodeError:
         payload["prompt_catalog"] = load_prompt_catalog()
+    try:
+        payload["discovery_settings"] = json.loads(raw_discovery_settings) if raw_discovery_settings else {}
+    except json.JSONDecodeError:
+        payload["discovery_settings"] = {}
     return normalize_model_settings(payload, services.config)
 
 
@@ -337,6 +349,7 @@ def _persist_app_model_settings(services: AppServices, settings: dict[str, objec
     services.db.set_app_setting("app_concurrency_policy", json.dumps(settings.get("concurrency_policy", {})))
     services.db.set_app_setting("app_assignments", json.dumps(settings.get("assignments", {})))
     services.db.set_app_setting("app_prompt_catalog", json.dumps(settings.get("prompt_catalog", {})))
+    services.db.set_app_setting("app_discovery_settings", json.dumps(settings.get("discovery_settings", {})))
 
 
 def _sync_default_app_profiles(settings: dict[str, object], services: AppServices) -> dict[str, object]:

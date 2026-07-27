@@ -60,6 +60,11 @@ DIRECT_PROJECT_TABLES = [
     "artifact_dependencies",
     "artifact_freshness_states",
     "artifact_stale_transitions",
+    "competitor_research_heads",
+    "competitor_research_revisions",
+    "product_discovery_heads",
+    "product_discovery_revisions",
+    "discovery_context_projections",
 ]
 
 DEPENDENT_TABLES = {
@@ -396,6 +401,11 @@ class ProjectLifecycleDatabaseMixin:
             "project_telemetry_settings",
             "project_data_ownership_settings",
             "platform_jobs",
+            "competitor_research_heads",
+            "competitor_research_revisions",
+            "product_discovery_heads",
+            "product_discovery_revisions",
+            "discovery_context_projections",
             "brief_conversations",
             "nodes",
             "generations",

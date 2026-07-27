@@ -17,6 +17,12 @@ PROJECT_LLM_ASSIGNMENTS = (
     "layer2_overlap_critic",
     "layer3_generation",
     "layer0_research",
+    "product_discovery_generation",
+    "cross_domain_exploration",
+    "discovery_practicality_review",
+    "competitor_evidence_extraction",
+    "competitor_pillar_inference",
+    "competitor_strategic_comparison",
     "layer1_research",
     "layer2_research",
     "assistant_orchestration",
@@ -50,6 +56,12 @@ ASSIGNMENT_TO_DOMAIN = {
     "layer2_overlap_critic": "review",
     "layer3_generation": "generation",
     "layer0_research": "research",
+    "product_discovery_generation": "generation",
+    "cross_domain_exploration": "generation",
+    "discovery_practicality_review": "review",
+    "competitor_evidence_extraction": "research",
+    "competitor_pillar_inference": "research",
+    "competitor_strategic_comparison": "research",
     "layer1_research": "research",
     "layer2_research": "research",
     "assistant_orchestration": "assistant",
@@ -119,6 +131,12 @@ def _base_model_settings(config: AppConfig) -> dict[str, Any]:
             "layer2_overlap_critic": DEFAULT_LLM_PROFILE_ID,
             "layer3_generation": DEFAULT_LLM_PROFILE_ID,
             "layer0_research": DEFAULT_LLM_PROFILE_ID,
+            "product_discovery_generation": DEFAULT_LLM_PROFILE_ID,
+            "cross_domain_exploration": DEFAULT_LLM_PROFILE_ID,
+            "discovery_practicality_review": DEFAULT_LLM_PROFILE_ID,
+            "competitor_evidence_extraction": DEFAULT_LLM_PROFILE_ID,
+            "competitor_pillar_inference": DEFAULT_LLM_PROFILE_ID,
+            "competitor_strategic_comparison": DEFAULT_LLM_PROFILE_ID,
             "layer1_research": DEFAULT_LLM_PROFILE_ID,
             "layer2_research": DEFAULT_LLM_PROFILE_ID,
             "assistant_orchestration": DEFAULT_LLM_PROFILE_ID,
@@ -132,6 +150,17 @@ def _base_model_settings(config: AppConfig) -> dict[str, Any]:
         },
         "prompt_catalog": load_prompt_catalog(),
         "competitive_intelligence_enabled": True,
+        "discovery_settings": {
+            "generation_temperature": 0.7,
+            "cross_domain_temperature": 0.9,
+            "practicality_review_temperature": 0.2,
+            "competitor_evidence_temperature": 0.2,
+            "competitor_pillar_temperature": 0.5,
+            "competitor_comparison_temperature": 0.5,
+            "generation_max_output_tokens": min(12000, max(256, config.max_output_tokens)),
+            "practicality_review_max_output_tokens": min(6000, max(256, config.max_output_tokens)),
+            "seed": None,
+        },
     }
 
 
@@ -357,6 +386,30 @@ def normalize_model_settings(payload: dict[str, Any], config: AppConfig) -> dict
     )
     normalized["prompt_catalog"] = _normalize_prompt_catalog(payload.get("prompt_catalog"), normalized["prompt_catalog"])
     normalized["competitive_intelligence_enabled"] = bool(payload.get("competitive_intelligence_enabled", True))
+    normalized["discovery_settings"] = _normalize_discovery_settings(
+        payload.get("discovery_settings"),
+        normalized["discovery_settings"],
+    )
+    return normalized
+
+
+def _normalize_discovery_settings(raw: Any, defaults: dict[str, Any]) -> dict[str, Any]:
+    """Bound Product Discovery model parameters without hard-coding them in workflows."""
+    payload = raw if isinstance(raw, dict) else {}
+    normalized = dict(defaults)
+    for key in (
+        "generation_temperature",
+        "cross_domain_temperature",
+        "practicality_review_temperature",
+        "competitor_evidence_temperature",
+        "competitor_pillar_temperature",
+        "competitor_comparison_temperature",
+    ):
+        normalized[key] = max(0.0, min(2.0, float(payload.get(key, defaults[key]))))
+    for key in ("generation_max_output_tokens", "practicality_review_max_output_tokens"):
+        normalized[key] = max(256, min(16000, int(payload.get(key, defaults[key]))))
+    seed = payload.get("seed", defaults.get("seed"))
+    normalized["seed"] = int(seed) if seed is not None else None
     return normalized
 
 

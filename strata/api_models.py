@@ -399,6 +399,7 @@ class RuntimeModelSettingsUpdateRequest(BaseModel):
     embedding_profiles: list[ProjectEmbeddingProfileRequest] = Field(default_factory=list)
     assignments: dict[str, Any] = Field(default_factory=dict)
     prompt_catalog: dict[str, str] = Field(default_factory=dict)
+    discovery_settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectLLMProfileRequest(BaseModel):
@@ -433,6 +434,7 @@ class ProjectModelSettingsUpdateRequest(BaseModel):
     assignments: dict[str, Any] = Field(default_factory=dict)
     prompt_catalog: dict[str, str] = Field(default_factory=dict)
     competitive_intelligence_enabled: bool = True
+    discovery_settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectWorkspaceStateUpdateRequest(BaseModel):
@@ -536,6 +538,7 @@ class AppSnapshotResponse(BaseModel):
     layer2_graph: dict[str, Any] = Field(default_factory=dict)
     overlap: dict[str, Any] = Field(default_factory=dict)
     layer3: dict[str, Any] = Field(default_factory=dict)
+    product_discovery: dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelProfileResponse(BaseModel):
@@ -567,3 +570,4 @@ class AppConfigResponse(BaseModel):
     embedding_profiles: list[ProjectEmbeddingProfileRequest] = Field(default_factory=list)
     assignments: dict[str, Any] = Field(default_factory=dict)
     prompt_catalog: dict[str, str] = Field(default_factory=dict)
+    discovery_settings: dict[str, Any] = Field(default_factory=dict)

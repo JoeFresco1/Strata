@@ -71,6 +71,7 @@ class PostgresSchemaMixin:
                         assignments JSONB NOT NULL,
                         prompt_catalog JSONB NOT NULL DEFAULT '{}'::jsonb,
                         competitive_intelligence_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                        discovery_settings JSONB NOT NULL DEFAULT '{}'::jsonb,
                         created_at TIMESTAMPTZ NOT NULL,
                         updated_at TIMESTAMPTZ NOT NULL
                     )
@@ -88,6 +89,7 @@ class PostgresSchemaMixin:
                 cursor.execute("ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS concurrency_policy JSONB NOT NULL DEFAULT '{}'::jsonb")
                 cursor.execute("ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS prompt_catalog JSONB NOT NULL DEFAULT '{}'::jsonb")
                 cursor.execute("ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS competitive_intelligence_enabled BOOLEAN NOT NULL DEFAULT TRUE")
+                cursor.execute("ALTER TABLE project_model_settings ADD COLUMN IF NOT EXISTS discovery_settings JSONB NOT NULL DEFAULT '{}'::jsonb")
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS brief_conversations (
