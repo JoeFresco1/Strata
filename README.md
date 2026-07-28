@@ -242,7 +242,10 @@ flowchart TB
 
 The React application and API are served together on port `8000` in production. PostgreSQL is the source of truth. Long-running generation, research, diagnostics, and assistant work use durable jobs with recovery and inspection surfaces.
 
-Read the [production architecture](docs/PRODUCTION_ARCHITECTURE.md) or the [layer architecture](docs/layer%20architecture.md) for the deeper model.
+Read the [production architecture](docs/PRODUCTION_ARCHITECTURE.md), the
+[layer architecture](docs/layer%20architecture.md), or the experimental
+[Layer 1 territory exploration workflow](docs/LAYER1_TERRITORY_EXPLORATION.md)
+for the deeper model and evaluation commands.
 
 ## Project status and roadmap
 

@@ -453,7 +453,14 @@ class Layer1EngineMixin(Layer1OverlapMixin):
         project_id: str,
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """Compile a deterministic required-first lens queue from published discovery."""
-        snapshot = self.db.discovery_snapshot(project_id)
+        try:
+            snapshot = self.db.discovery_snapshot(project_id)
+        except Exception as exc:
+            # Legacy fixtures may instantiate the base schema without applying
+            # later discovery migrations; preserve baseline-lens generation.
+            if "product_discovery" not in str(exc):
+                raise
+            snapshot = {}
         published = snapshot.get("published") if isinstance(snapshot, dict) else None
         discovery = published.get("discovery", {}) if isinstance(published, dict) else {}
         human_fields = published.get("human_owned_fields", {}) if isinstance(published, dict) else {}

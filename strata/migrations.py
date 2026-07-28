@@ -8,6 +8,7 @@ from strata.config import AppConfig
 from strata.db import Database, utc_now
 from strata.dependency_db import canonical_content_hash, feature_revision_token, pillar_revision_token
 from strata.storage import build_database
+from strata.layer1_territory_migration import add_layer1_territory_exploration
 
 
 @dataclass(frozen=True)
@@ -858,6 +859,7 @@ MIGRATIONS = [
     Migration(6, "immutable_briefs_and_dependency_freshness", _immutable_briefs_and_dependencies),
     Migration(7, "product_discovery_and_competitor_research", _product_discovery_revisions),
     Migration(8, "layer1_stateful_discovery_expansion", _layer1_stateful_expansion),
+    Migration(9, "layer1_divergent_territory_exploration", add_layer1_territory_exploration),
 ]
 
 

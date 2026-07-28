@@ -22,6 +22,7 @@ function jobMatches(workflowNames, scope) {
 
 export default function ProductTreeTab({
   activeProjectId,
+  apiFetch,
   brief,
   conversation,
   handleBriefSave,
@@ -131,6 +132,8 @@ export default function ProductTreeTab({
     if (activeWorkspaceTab === "layer1") {
       return (
         <Layer1View
+          projectId={activeProjectId}
+          apiFetch={apiFetch}
           snapshot={snapshotWithJobs}
           onGenerate={handleGenerateLayer1}
           onCreatePillar={handleLayer1PillarCreate}

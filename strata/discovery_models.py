@@ -58,6 +58,7 @@ class DiscoveryLens(DiscoveryItem):
     recommendation: Literal["required", "recommended", "optional", "rejected"] = "optional"
     applicable_downstream_layers: list[int] = Field(default_factory=list)
     applicable_actor_ids: list[str] = Field(default_factory=list)
+    required_discovery_item_ids: list[str] = Field(default_factory=list)
     related_lens_ids: list[str] = Field(default_factory=list)
     omission_risks: list[str] = Field(default_factory=list)
     supporting_competitor_ids: list[str] = Field(default_factory=list)

@@ -3,6 +3,7 @@ import ColumnHeader from "./ColumnHeader";
 import { layer1Pillars } from "./workspaceSelectors";
 import WorkspacePageLayout, { WorkspaceActionButton, WorkspaceFilterField, WorkspaceStatusBadge } from "./WorkspacePage";
 import WorkspaceJobNotice from "./WorkspaceJobNotice";
+import Layer1ExplorationPanel from "./Layer1ExplorationPanel";
 
 function searchableText(values) {
   return values.filter(Boolean).join(" ").toLowerCase();
@@ -37,6 +38,8 @@ export default function Layer1View({
   overlapJobState,
   onCancelJob,
   competitiveIntelligenceEnabled = true,
+  projectId,
+  apiFetch,
 }) {
   const pillars = layer1Pillars(snapshot);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -47,6 +50,7 @@ export default function Layer1View({
   const [sortConfig, setSortConfig] = useState({ key: "priority", direction: "asc" });
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewFilter, setReviewFilter] = useState("unresolved");
+  const [layer1Mode, setLayer1Mode] = useState("pillars");
   const generationRunning = generationJobState?.state === "running";
   const researchRunning = researchJobState?.state === "running";
   const overlapRunning = overlapJobState?.state === "running";
@@ -209,6 +213,15 @@ export default function Layer1View({
         </WorkspaceFilterField>
       )}
     >
+      <div className="segmented layer1-mode-switch" role="tablist" aria-label="Layer 1 workspace mode">
+        <button type="button" className={layer1Mode === "pillars" ? "active" : ""} onClick={() => setLayer1Mode("pillars")} role="tab" aria-selected={layer1Mode === "pillars"}>Pillars</button>
+        <button type="button" className={layer1Mode === "exploration" ? "active" : ""} onClick={() => setLayer1Mode("exploration")} role="tab" aria-selected={layer1Mode === "exploration"}>Territory exploration</button>
+      </div>
+
+      {layer1Mode === "exploration" ? (
+        <Layer1ExplorationPanel projectId={projectId} apiFetch={apiFetch} />
+      ) : (
+      <>
 
       {mergeNotice ? <div className="status-banner">{mergeNotice}</div> : null}
       <WorkspaceJobNotice jobState={generationJobState} label="Layer 1 generation" onCancel={onCancelJob} />
@@ -348,6 +361,8 @@ export default function Layer1View({
       <div className="workspace-footer-action">
         <button type="button" className="secondary-button" disabled={!allReviewed}>Proceed to Layer 2</button>
       </div>
+      </>
+      )}
     </WorkspacePageLayout>
   );
 }

@@ -13,6 +13,7 @@ from strata.embeddings import EmbeddingService
 from strata.execution_policy import resolve_embedding_model_name, resolve_llm_profile, resolved_runtime_request
 from strata.llm import LLMError, LlamaCppClient
 from strata.layer1_engine import Layer1EngineMixin, LAYER1_LENSES
+from strata.layer1_territory_engine import Layer1TerritoryEngineMixin
 from strata.layer2_engine import (
     LAYER2_EXHAUSTION_FAMILIES,
     LAYER2_LENSES,
@@ -50,7 +51,12 @@ CRITIC_SCHEMA = """{
 
 
 
-class GenerationService(Layer1EngineMixin, Layer2EngineMixin, Layer3ServiceMixin):
+class GenerationService(
+    Layer1TerritoryEngineMixin,
+    Layer1EngineMixin,
+    Layer2EngineMixin,
+    Layer3ServiceMixin,
+):
     """Coordinate LLM generation across layers while sharing runtime and database helpers."""
 
     def __init__(

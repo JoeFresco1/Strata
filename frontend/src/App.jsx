@@ -1095,6 +1095,7 @@ export default function App() {
               ) : (
                 <ProductTreeTab
                   activeProjectId={activeProjectId}
+                  apiFetch={apiFetch}
                   brief={brief}
                   conversation={conversation}
                   handleBriefSave={handleBriefSave}

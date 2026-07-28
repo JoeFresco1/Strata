@@ -211,6 +211,145 @@ class BuildLayer1DiscoveryContextProjection(ApplicationCommand):
     revision_id: str
 
 
+# Layer 1 territory exploration
+@dataclass(frozen=True, kw_only=True)
+class StartLayer1TerritoryExpansion(ApplicationCommand):
+    config: dict[str, Any] = field(default_factory=dict)
+    budget: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunLayer1LensAttempt(ApplicationCommand):
+    run_id: str
+    lens_execution_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class RetryLayer1LensWithTemperature(RunLayer1LensAttempt):
+    temperature: float
+
+
+@dataclass(frozen=True, kw_only=True)
+class RetryLayer1LensWithStrongerExclusions(RunLayer1LensAttempt):
+    pass
+
+
+@dataclass(frozen=True, kw_only=True)
+class MarkLayer1LensComplete(ApplicationCommand):
+    run_id: str
+    lens_execution_id: str
+    state: Literal[
+        "saturated",
+        "covered_with_subordinate_territory",
+        "intentionally_excluded",
+        "requires_human_decision",
+        "blocked_by_model",
+        "budget_exhausted",
+        "cancelled",
+    ]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReopenLayer1Lens(ApplicationCommand):
+    run_id: str
+    lens_execution_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class AddClosedTerritory(ApplicationCommand):
+    run_id: str | None
+    title: str
+    description: str = ""
+    semantic_examples: tuple[str, ...] = ()
+    scope: Literal["run", "project"] = "run"
+    reason: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class RemoveClosedTerritory(ApplicationCommand):
+    logical_id: str
+    run_id: str | None = None
+    reason: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class AddAntiGenericPattern(ApplicationCommand):
+    title: str
+    description: str = ""
+    semantic_examples: tuple[str, ...] = ()
+    source_run_ids: tuple[str, ...] = ()
+    confidence: float = 0.5
+    scope: str = "project"
+
+
+@dataclass(frozen=True, kw_only=True)
+class DisableAntiGenericPattern(ApplicationCommand):
+    logical_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class ClassifyTerritoryCandidate(ApplicationCommand):
+    candidate_id: str
+    destination: str
+    reason: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReclassifyTerritoryCandidate(ClassifyTerritoryCandidate):
+    pass
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromoteTerritoryToPillarCandidate(ApplicationCommand):
+    candidate_id: str
+    reason: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class RouteTerritoryToLayer2(ApplicationCommand):
+    candidate_id: str
+    reason: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunLayer1AdversarialPass(ApplicationCommand):
+    run_id: str
+    role: str = "skeptical implementation consultant"
+
+
+@dataclass(frozen=True, kw_only=True)
+class BuildLayer1SynthesisContext(ApplicationCommand):
+    run_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class GenerateLayer1ArchitectureCandidates(ApplicationCommand):
+    run_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class SelectLayer1ArchitectureCandidate(ApplicationCommand):
+    run_id: str
+    architecture_candidate_id: str
+    note: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class CreateHybridLayer1Architecture(ApplicationCommand):
+    run_id: str
+    title: str
+    rationale: str
+    pillars: tuple[dict[str, Any], ...]
+    mappings: tuple[dict[str, Any], ...]
+    significant_non_pillar_territory_ids: tuple[str, ...] = ()
+    unresolved_risk_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
+class CancelLayer1ExpansionRun(ApplicationCommand):
+    run_id: str
+
+
 # Competitor research
 @dataclass(frozen=True, kw_only=True)
 class StartCompetitorResearch(ApplicationCommand):

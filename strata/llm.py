@@ -140,6 +140,7 @@ class LlamaCppClient:
         temperature: float | None = None,
         top_p: float | None = None,
         max_tokens: int = 2500,
+        timeout_seconds: int | None = None,
         telemetry: dict[str, Any] | None = None,
     ) -> LLMResponse:
         target_base_url = (base_url or self.base_url).rstrip("/")
@@ -164,7 +165,7 @@ class LlamaCppClient:
             response = requests.post(
                 f"{target_base_url}/v1/chat/completions",
                 json=payload,
-                timeout=self.timeout,
+                timeout=timeout_seconds or self.timeout,
                 headers=headers,
             )
             response.raise_for_status()
