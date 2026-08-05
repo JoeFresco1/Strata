@@ -1,5 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiFetch, subscribeApiActivity } from "./apiClient";
+import { streamLayer0Conversation } from "./layer0Conversation";
+import { withExpectedStateToken, withRequestId } from "./requestUtils";
 import { HAMBURGER_ACTIONS, applyAssistantNavigation, assistantScopeFor, findWorkspaceEntity, sortProjects } from "./appUtils";
 import AppModals from "./AppModals";
 import AssistantDrawer from "./AssistantDrawer";
@@ -315,7 +317,7 @@ export default function App() {
     try {
       await apiFetch(`/nodes/${nodeId}`, {
         method: "PATCH",
-        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.nodes?.find((item) => item.id === nodeId)?.state_token, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withExpectedStateToken(payload, snapshot?.nodes?.find((item) => item.id === nodeId)?.state_token)),
       });
       applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
       setStatusMessage("Node updated.");
@@ -330,42 +332,67 @@ export default function App() {
     try {
       await apiFetch(`/projects/${activeProjectId}/brief`, {
         method: "PATCH",
-        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.brief?.state_token, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withExpectedStateToken(payload, snapshot?.brief?.state_token)),
       });
       applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
     } catch (saveError) {
       setError(saveError.message);
     }
   }
-  async function handlePlanChat(message, requestId) {
-    // Sends conversational Layer 0 input and applies extracted brief updates.
+  async function handlePlanChat(message, requestId, options = {}) {
+    // Streams conversational Layer 0 output; inferred canonical edits remain proposals.
     setError("");
     try {
-      const payload = await apiFetch(`/projects/${activeProjectId}/brief/chat`, {
-        method: "POST",
-        body: JSON.stringify({ message, request_id: requestId, expected_state_token: snapshot?.brief?.state_token }),
+      await streamLayer0Conversation({
+        projectId: activeProjectId,
+        body: {
+          message,
+          request_id: requestId,
+          expected_state_token: snapshot?.brief?.state_token,
+          retry: Boolean(options.retry),
+        },
+        signal: options.signal,
+        onEvent: options.onEvent || (() => {}),
       });
-      applySnapshot({
-        ...snapshot,
-        brief: payload.brief,
-        brief_conversation: payload.conversation,
-      });
-      return payload;
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
     } catch (chatError) {
+      if (chatError.name === "AbortError") return;
       setError(chatError.message);
       throw chatError;
     }
   }
-  async function handlePublishBrief() {
-    // Locks Layer 0 for downstream generation and queues initial research.
+  async function handlePlanChatStop(requestId) {
+    // Requests provider cancellation while the browser aborts its local stream immediately.
+    return apiFetch(`/projects/${activeProjectId}/brief/chat/${requestId}/stop`, {
+      method: "POST",
+      silent: true,
+    });
+  }
+  async function handleBriefProposalDecision(turnId, decision) {
+    // Applies reviewed fields through the canonical command route or dismisses the proposal.
     setError("");
     try {
-      const query = new URLSearchParams({ expected_state_token: snapshot?.brief?.state_token || "", request_id: crypto.randomUUID() });
+      const payload = await apiFetch(`/projects/${activeProjectId}/brief/proposals/${turnId}/decision`, {
+        method: "POST",
+        body: JSON.stringify(decision),
+      });
+      applySnapshot({ ...snapshot, brief: payload.brief, brief_conversation: payload.conversation });
+      return payload;
+    } catch (proposalError) {
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
+      throw proposalError;
+    }
+  }
+  async function handlePublishBrief() {
+    // Locks Layer 0 without automatically starting discovery, research, or Layer 1.
+    setError("");
+    try {
+      const query = new URLSearchParams(withExpectedStateToken({}, snapshot?.brief?.state_token || ""));
       const payload = await apiFetch(`/projects/${activeProjectId}/brief/publish?${query}`, {
         method: "POST",
       });
       applySnapshot(payload.snapshot);
-      setStatusMessage("Layer 0 published. Local competitor research queued.");
+      setStatusMessage("Layer 0 published. Product Discovery is ready when you are.");
     } catch (publishError) {
       setError(publishError.message);
     }
@@ -388,7 +415,7 @@ export default function App() {
     try {
       await apiFetch(`/projects/${activeProjectId}/research/layer1`, {
         method: "POST",
-        body: JSON.stringify({ pillar_ids: pillarIds, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withRequestId({ pillar_ids: pillarIds })),
       });
       applySnapshot(await apiFetch(`/projects/${activeProjectId}`));
       setStatusMessage("Layer 1 research queued.");
@@ -492,13 +519,174 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer2/features`, {
         method: "POST",
-        body: JSON.stringify({ ...payload, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withRequestId(payload)),
       });
       applySnapshot(response.snapshot);
       setStatusMessage("Layer 2 feature added.");
     } catch (createError) {
       setError(createError.message);
       throw createError;
+    }
+  }
+  async function handleGenerateProductDiscovery(options = {}) {
+    // Queues explicit Product Discovery generation; optional research remains separate.
+    setError("");
+    try {
+      await apiFetch(`/projects/${activeProjectId}/discovery/generate`, {
+        method: "POST",
+        body: JSON.stringify(withRequestId(options)),
+      });
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
+      setStatusMessage("Product Discovery queued.");
+    } catch (discoveryError) {
+      setError(discoveryError.message);
+    }
+  }
+  async function handleDiscoveryRevisionAction(revisionId, action, revision) {
+    // Applies approval, publication, or rejection through canonical discovery commands.
+    setError("");
+    try {
+      await apiFetch(`/projects/${activeProjectId}/discovery/revisions/${revisionId}/${action}`, {
+        method: "POST",
+        body: JSON.stringify({
+          expected_state_token: revision?.state_token || snapshot?.product_discovery?.state_token,
+          request_id: crypto.randomUUID(),
+        }),
+      });
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
+      const actionLabel = { approve: "approved", publish: "published", reject: "rejected", restore: "restored" }[action] || action;
+      setStatusMessage(`Product Discovery revision ${actionLabel}.`);
+    } catch (discoveryError) {
+      setError(discoveryError.message);
+    }
+  }
+  async function handleDiscoveryEdit(revision, operation, payload = {}) {
+    // Applies human-owned discovery changes by creating a replacement candidate revision.
+    setError("");
+    try {
+      const routes = {
+        human_fields: { path: "human-fields", method: "PATCH" },
+        add_lens: { path: "lenses", method: "POST" },
+        exclude_lens: { path: `lenses/${payload.lens_id}/exclude`, method: "POST" },
+        detach_research: { path: "competitor-research/detach", method: "POST" },
+      };
+      const route = routes[operation];
+      if (!route) throw new Error(`Unsupported discovery edit: ${operation}`);
+      const body = operation === "human_fields"
+        ? { updates: payload.updates }
+        : operation === "add_lens"
+          ? { lens: payload.lens }
+          : operation === "exclude_lens"
+            ? { excluded: payload.excluded }
+            : {};
+      await apiFetch(`/projects/${activeProjectId}/discovery/revisions/${revision.id}/${route.path}`, {
+        method: route.method,
+        body: JSON.stringify({
+          ...body,
+          expected_state_token: revision.state_token,
+          request_id: crypto.randomUUID(),
+        }),
+      });
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
+      setStatusMessage("Human discovery decisions saved in a new candidate revision.");
+    } catch (discoveryError) {
+      setError(discoveryError.message);
+    }
+  }
+  async function handleStartCompetitorResearch(scope) {
+    // Starts only the explicit bounded research mode selected in Product Discovery.
+    setError("");
+    try {
+      await apiFetch(`/projects/${activeProjectId}/discovery/competitor-research`, {
+        method: "POST",
+        body: JSON.stringify(withRequestId(scope)),
+      });
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
+      setStatusMessage("Competitor research queued.");
+    } catch (researchError) {
+      setError(researchError.message);
+    }
+  }
+  async function handleCompetitorResearchAction(revisionId, action, revision) {
+    // Keeps research approval independent from Product Discovery publication.
+    setError("");
+    try {
+      await apiFetch(`/projects/${activeProjectId}/discovery/competitor-research/${revisionId}/${action}`, {
+        method: "POST",
+        body: JSON.stringify({
+          expected_state_token: revision?.state_token,
+          request_id: crypto.randomUUID(),
+        }),
+      });
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
+      setStatusMessage(`Competitor research ${action}d.`);
+    } catch (researchError) {
+      setError(researchError.message);
+    }
+  }
+  async function handleAttachCompetitorResearch(discoveryRevision, researchRevision) {
+    // Creates a new discovery candidate with approved research attached.
+    setError("");
+    try {
+      await apiFetch(`/projects/${activeProjectId}/discovery/revisions/${discoveryRevision.id}/competitor-research/attach`, {
+        method: "POST",
+        body: JSON.stringify({
+          competitor_research_revision_id: researchRevision.id,
+          expected_state_token: discoveryRevision.state_token,
+          request_id: crypto.randomUUID(),
+        }),
+      });
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
+      setStatusMessage("Approved competitor research attached to a new discovery candidate.");
+    } catch (researchError) {
+      setError(researchError.message);
+    }
+  }
+  async function handleCompetitorResearchEdit(revision, operation, payload = {}) {
+    // Persists finding and competitor decisions in an immutable replacement research revision.
+    setError("");
+    try {
+      let path;
+      let body;
+      if (operation === "finding") {
+        path = `findings/${payload.finding_id}`;
+        body = { context_state: payload.context_state };
+      } else if (operation === "add_competitor") {
+        path = "competitors";
+        body = { competitor_name: payload.competitor_name };
+      } else if (operation === "remove_competitor") {
+        const query = new URLSearchParams({
+          expected_state_token: revision.state_token,
+          request_id: crypto.randomUUID(),
+        });
+        await apiFetch(`/projects/${activeProjectId}/discovery/competitor-research/${revision.id}/competitors/${payload.competitor_id}?${query}`, {
+          method: "DELETE",
+        });
+        applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
+        setStatusMessage("Competitor excluded from later research refreshes.");
+        return;
+      } else if (operation === "refresh") {
+        path = "refresh";
+        body = {
+          competitor_ids: payload.competitor_ids || [],
+          finding_ids: payload.finding_ids || [],
+          stale_only: payload.stale_only || false,
+        };
+      } else {
+        throw new Error(`Unsupported competitor research edit: ${operation}`);
+      }
+      await apiFetch(`/projects/${activeProjectId}/discovery/competitor-research/${revision.id}/${path}`, {
+        method: "POST",
+        body: JSON.stringify({
+          ...body,
+          expected_state_token: revision.state_token,
+          request_id: crypto.randomUUID(),
+        }),
+      });
+      applySnapshot(await apiFetch(`/projects/${activeProjectId}`, { force: true }));
+      setStatusMessage("Competitor research decision saved in a new candidate revision.");
+    } catch (researchError) {
+      setError(researchError.message);
     }
   }
 
@@ -531,7 +719,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/overlap/${layer}/verdicts/${verdictId}/resolve`, {
         method: "POST",
-        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.overlap?.[layer]?.verdicts?.find((item) => item.id === verdictId)?.state_token, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withExpectedStateToken(payload, snapshot?.overlap?.[layer]?.verdicts?.find((item) => item.id === verdictId)?.state_token)),
       });
       applySnapshot(response.snapshot);
       setStatusMessage(`Overlap verdict resolved: ${payload.action.replaceAll("_", " ")}.`);
@@ -558,7 +746,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer1/pillars`, {
         method: "POST",
-        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.brief?.state_token, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withExpectedStateToken(payload, snapshot?.brief?.state_token)),
       });
       applySnapshot(response.snapshot);
       setStatusMessage("Layer 1 pillar added.");
@@ -573,7 +761,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer2/features/${featureId}`, {
         method: "PATCH",
-        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.layer2_graph?.features?.find((item) => item.id === featureId)?.state_token, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withExpectedStateToken(payload, snapshot?.layer2_graph?.features?.find((item) => item.id === featureId)?.state_token)),
       });
       applySnapshot(response.snapshot);
       setStatusMessage("Layer 2 feature updated.");
@@ -675,7 +863,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/research/layer2`, {
         method: "POST",
-        body: JSON.stringify({ feature_ids: featureIds, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withRequestId({ feature_ids: featureIds })),
       });
       applySnapshot({
         ...snapshot,
@@ -694,7 +882,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/generate/layer3`, {
         method: "POST",
-        body: JSON.stringify({ feature_ids: featureIds, thinking_enabled: false, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withRequestId({ feature_ids: featureIds, thinking_enabled: false })),
       });
       applySnapshot(response.snapshot);
       setStatusMessage(`Layer 3 generation queued for ${featureIds.length} feature${featureIds.length === 1 ? "" : "s"}.`);
@@ -710,7 +898,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}`, {
         method: "PATCH",
-        body: JSON.stringify({ ...payload, expected_state_token: snapshot?.layer3?.expansions?.find((item) => item.id === expansionId)?.active_revision_id, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withExpectedStateToken(payload, snapshot?.layer3?.expansions?.find((item) => item.id === expansionId)?.active_revision_id)),
       });
       applySnapshot(response.snapshot);
       setStatusMessage("Layer 3 expansion saved.");
@@ -725,7 +913,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}/review`, {
         method: "POST",
-        body: JSON.stringify({ action, note: "", expected_state_token: snapshot?.layer3?.expansions?.find((item) => item.id === expansionId)?.active_revision_id, request_id: crypto.randomUUID() }),
+        body: JSON.stringify(withExpectedStateToken({ action, note: "" }, snapshot?.layer3?.expansions?.find((item) => item.id === expansionId)?.active_revision_id)),
       });
       applySnapshot(response.snapshot);
       setStatusMessage(`Layer 3 expansion marked ${action}.`);
@@ -762,7 +950,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}/candidates/${candidateRevisionId}/reject`, {
         method: "POST",
-        body: JSON.stringify({ request_id: crypto.randomUUID(), expected_active_revision_id: snapshot?.layer3?.expansions?.find((item) => item.id === expansionId)?.active_revision_id, note: "", actor: "user" }),
+        body: JSON.stringify(withRequestId({ expected_active_revision_id: snapshot?.layer3?.expansions?.find((item) => item.id === expansionId)?.active_revision_id, note: "", actor: "user" })),
       });
       applySnapshot(response.snapshot);
       setStatusMessage("Layer 3 candidate rejected.");
@@ -778,7 +966,7 @@ export default function App() {
     try {
       const response = await apiFetch(`/projects/${activeProjectId}/layer3/expansions/${expansionId}/revisions/${revisionId}/restore`, {
         method: "POST",
-        body: JSON.stringify({ expected_active_revision_id: expectedActiveRevisionId, request_id: crypto.randomUUID(), actor: "user" }),
+        body: JSON.stringify(withRequestId({ expected_active_revision_id: expectedActiveRevisionId, actor: "user" })),
       });
       applySnapshot(response.snapshot);
       setStatusMessage("Earlier Layer 3 revision restored as the new active revision.");
@@ -805,14 +993,47 @@ export default function App() {
   }
 
   // Trigger a project export and show the saved file paths.
-  async function handleExport() {
+  async function handleExport(mode = "approved") {
     setError("");
     try {
-      const payload = await apiFetch(`/projects/${activeProjectId}/export`, {
+      const context = await apiFetch(`/projects/${activeProjectId}/specification/compilation-context`);
+      const compiled = await apiFetch(`/projects/${activeProjectId}/specification/manifests/compile`, {
         method: "POST",
+        body: JSON.stringify({
+          mode,
+          historical_brief_revision_id: "",
+          expected_state_token: context.source_state_token,
+          request_id: crypto.randomUUID(),
+        }),
       });
-      setLastExport({ kind: "Full project", ...payload });
-      setStatusMessage(`Exported to ${payload.markdown_path} and ${payload.json_path}`);
+      const manifest = compiled.manifest;
+      if (mode === "approved" && !manifest.exportable) {
+        setLastExport({ kind: "Specification", manifest, issues: manifest.issues, mode });
+        setStatusMessage(`Manifest v${manifest.sequence_number} was compiled but did not pass export validation.`);
+        return;
+      }
+      const rendered = await apiFetch(`/projects/${activeProjectId}/specification/manifests/${manifest.manifest_id}/render`, {
+        method: "POST",
+        body: JSON.stringify({
+          formats: ["json", "markdown"],
+          expected_state_token: manifest.content_hash,
+          request_id: crypto.randomUUID(),
+        }),
+      });
+      const payload = {
+        kind: "Specification",
+        mode,
+        manifest,
+        manifest_id: manifest.manifest_id,
+        manifest_version: manifest.sequence_number,
+        issues: manifest.issues,
+        markdown_path: rendered.rendered.markdown_path,
+        json_path: rendered.rendered.json_path,
+        markdown_download_url: `${API_BASE}/projects/${activeProjectId}/specification/manifests/${manifest.manifest_id}/artifacts/markdown`,
+        json_download_url: `${API_BASE}/projects/${activeProjectId}/specification/manifests/${manifest.manifest_id}/artifacts/json`,
+      };
+      setLastExport(payload);
+      setStatusMessage(`Specification v${manifest.sequence_number} exported to JSON and Markdown.`);
     } catch (exportError) {
       setError(exportError.message);
     }
@@ -1119,10 +1340,19 @@ export default function App() {
                   handleNodeSave={handleNodeSave}
                   handleOverlapResolution={handleOverlapResolution}
                   handleProjectArchiveExport={handleProjectArchiveExport}
+                  handleBriefProposalDecision={handleBriefProposalDecision}
                   handlePlanChat={handlePlanChat}
+                  handlePlanChatStop={handlePlanChatStop}
                   handlePublishBrief={handlePublishBrief}
                   handleRerunLayer0Research={handleRerunLayer0Research}
                   handleRerunLayer1Research={handleRerunLayer1Research}
+                  handleGenerateProductDiscovery={handleGenerateProductDiscovery}
+                  handleDiscoveryRevisionAction={handleDiscoveryRevisionAction}
+                  handleDiscoveryEdit={handleDiscoveryEdit}
+                  handleStartCompetitorResearch={handleStartCompetitorResearch}
+                  handleCompetitorResearchAction={handleCompetitorResearchAction}
+                  handleCompetitorResearchEdit={handleCompetitorResearchEdit}
+                  handleAttachCompetitorResearch={handleAttachCompetitorResearch}
                   handleCancelJob={handleCancelJob}
                   competitiveIntelligenceEnabled={competitiveIntelligenceEnabled}
                   lastExport={lastExport}

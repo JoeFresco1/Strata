@@ -6,6 +6,9 @@ The production scope now runs through Layer 3. Layer 3 is the Feature Expansion 
 
 ## Files
 
+- `REPOSITORY_GUIDE.md`: where the code, tests, scripts, runtime entry points, and documentation belong
+- `notes/`: preserved design and planning notes that are useful context but are not runtime requirements
+
 - `00-overview.md`: product intent, operating principles, and non-goals
 - `01-layer-1-discovery.md`: how pillar discovery should broaden, cluster, and stop
 - `02-layer-2.md`: current graph-native Layer 2 behavior and review contract
@@ -14,3 +17,5 @@ The production scope now runs through Layer 3. Layer 3 is the Feature Expansion 
 - `05-ui-and-export.md`: the review workflow and export behavior
 - `layer architecture.md`: cross-layer agentic flow, user interaction, generation, and memory handling by layer
 - `PRODUCTION_ARCHITECTURE.md`: supported runtime, service boundaries, persistence, and canonical data flows
+- `PRODUCT_DISCOVERY.md`: versioned Product Discovery, optional competitor research, compact context, UI, provenance, tests, and the deferred Layer 1 integration boundary
+- `PRODUCT_DISCOVERY_TEST_MATRIX.md`: mapping from the 50 required Product Discovery checks to focused and regression evidence

@@ -69,6 +69,7 @@ class Layer0ChatRequest(BaseModel):
     message: str
     request_id: str | None = None
     expected_state_token: str | None = None
+    retry: bool = False
 
 
 class Layer0PlanGuidanceResponse(BaseModel):
@@ -85,6 +86,15 @@ class Layer0ChatResponse(BaseModel):
     brief: dict[str, Any]
     conversation: list[dict[str, Any]]
     plan_guidance: Layer0PlanGuidanceResponse
+    proposal: dict[str, Any] | None = None
+
+
+class Layer0ProposalDecisionRequest(BaseModel):
+    decision: Literal["apply", "dismiss"]
+    selected_fields: list[str] = Field(default_factory=list)
+    edited_values: dict[str, Any] = Field(default_factory=dict)
+    expected_state_token: str | None = None
+    request_id: str | None = None
 
 
 class PublishBriefResponse(BaseModel):
@@ -366,6 +376,24 @@ class Layer2CompetitiveSettingsRequest(BaseModel):
 class ExportResponse(BaseModel):
     markdown_path: str
     json_path: str
+    manifest_id: str | None = None
+    manifest_version: int | None = None
+    manifest_status: str | None = None
+    exportable: bool | None = None
+    issues: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SpecificationCompileRequest(BaseModel):
+    mode: Literal["draft", "approved", "historical", "diagnostic"] = "approved"
+    historical_brief_revision_id: str = ""
+    expected_state_token: str
+    request_id: str
+
+
+class SpecificationRenderRequest(BaseModel):
+    formats: list[Literal["json", "markdown"]] = Field(default_factory=lambda: ["json", "markdown"])
+    expected_state_token: str
+    request_id: str
 
 
 class ResearchStartRequest(BaseModel):
@@ -399,6 +427,7 @@ class RuntimeModelSettingsUpdateRequest(BaseModel):
     embedding_profiles: list[ProjectEmbeddingProfileRequest] = Field(default_factory=list)
     assignments: dict[str, Any] = Field(default_factory=dict)
     prompt_catalog: dict[str, str] = Field(default_factory=dict)
+    discovery_settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectLLMProfileRequest(BaseModel):
@@ -433,6 +462,7 @@ class ProjectModelSettingsUpdateRequest(BaseModel):
     assignments: dict[str, Any] = Field(default_factory=dict)
     prompt_catalog: dict[str, str] = Field(default_factory=dict)
     competitive_intelligence_enabled: bool = True
+    discovery_settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectWorkspaceStateUpdateRequest(BaseModel):
@@ -536,6 +566,7 @@ class AppSnapshotResponse(BaseModel):
     layer2_graph: dict[str, Any] = Field(default_factory=dict)
     overlap: dict[str, Any] = Field(default_factory=dict)
     layer3: dict[str, Any] = Field(default_factory=dict)
+    product_discovery: dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelProfileResponse(BaseModel):
@@ -567,3 +598,4 @@ class AppConfigResponse(BaseModel):
     embedding_profiles: list[ProjectEmbeddingProfileRequest] = Field(default_factory=list)
     assignments: dict[str, Any] = Field(default_factory=dict)
     prompt_catalog: dict[str, str] = Field(default_factory=dict)
+    discovery_settings: dict[str, Any] = Field(default_factory=dict)

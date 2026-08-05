@@ -143,6 +143,7 @@ class ProjectModelSettings(BaseModel):
     assignments: dict[str, Any] = Field(default_factory=dict)
     prompt_catalog: dict[str, str] = Field(default_factory=dict)
     competitive_intelligence_enabled: bool = True
+    discovery_settings: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 

@@ -22,6 +22,7 @@ from strata.db_embeddings import DatabaseEmbeddingMixin
 from strata.db_data_ownership import DataOwnershipDatabaseMixin
 from strata.db_jobs import PlatformJobDatabaseMixin
 from strata.db_lifecycle import ProjectLifecycleDatabaseMixin
+from strata.discovery_db import DiscoveryDatabaseMixin
 from strata.dependency_db import DependencyDatabaseMixin
 from strata.db_overlap import OverlapDatabaseMixin
 from strata.critic_db import CriticDatabaseMixin
@@ -32,6 +33,7 @@ from strata.db_telemetry import TelemetryDatabaseMixin
 from strata.db_schema import DatabaseSchemaMixin
 from strata.layer2_db import Layer2DatabaseMixin
 from strata.layer3_db import Layer3DatabaseMixin
+from strata.specification_db import SpecificationDatabaseMixin
 from strata.models import (
     BriefConversationTurn,
     Layer1PillarRecord,
@@ -56,7 +58,7 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class Database(ProjectLifecycleDatabaseMixin, DependencyDatabaseMixin, DataOwnershipDatabaseMixin, TelemetryDatabaseMixin, PlatformJobDatabaseMixin, OverlapDatabaseMixin, CriticDatabaseMixin, AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin, ResearchDatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
+class Database(ProjectLifecycleDatabaseMixin, SpecificationDatabaseMixin, DiscoveryDatabaseMixin, DependencyDatabaseMixin, DataOwnershipDatabaseMixin, TelemetryDatabaseMixin, PlatformJobDatabaseMixin, OverlapDatabaseMixin, CriticDatabaseMixin, AssistantDatabaseMixin, Layer3DatabaseMixin, Layer2DatabaseMixin, ResearchDatabaseMixin, DatabaseEmbeddingMixin, DatabaseSchemaMixin, DatabaseRowMixin):
     """Store SpecForge state in either PostgreSQL or SQLite through one stable API."""
 
     def __init__(self, target: str | Path, *, postgres_admin_url: str | None = None):
@@ -366,6 +368,7 @@ class Database(ProjectLifecycleDatabaseMixin, DependencyDatabaseMixin, DataOwner
         assignments: dict[str, Any],
         prompt_catalog: dict[str, Any],
         competitive_intelligence_enabled: bool = True,
+        discovery_settings: dict[str, Any] | None = None,
     ) -> ProjectModelSettings:
         """Create or update the per-project model profile and assignment map."""
         now = utc_now()
@@ -378,9 +381,9 @@ class Database(ProjectLifecycleDatabaseMixin, DependencyDatabaseMixin, DataOwner
                 f"""
                 INSERT INTO project_model_settings (
                     project_id, llm_profiles, embedding_profiles, execution_intent, routing_policy, concurrency_policy,
-                    assignments, prompt_catalog, competitive_intelligence_enabled, created_at, updated_at
+                    assignments, prompt_catalog, competitive_intelligence_enabled, discovery_settings, created_at, updated_at
                 )
-                VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
+                VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
                 """,
                 (
                     project_id,
@@ -392,6 +395,7 @@ class Database(ProjectLifecycleDatabaseMixin, DependencyDatabaseMixin, DataOwner
                     self._dump_json(assignments),
                     self._dump_json(prompt_catalog),
                     competitive_intelligence_enabled,
+                    self._dump_json(discovery_settings or {}),
                     now,
                     now,
                 ),
@@ -408,6 +412,7 @@ class Database(ProjectLifecycleDatabaseMixin, DependencyDatabaseMixin, DataOwner
                     assignments = {self.param},
                     prompt_catalog = {self.param},
                     competitive_intelligence_enabled = {self.param},
+                    discovery_settings = {self.param},
                     updated_at = {self.param}
                 WHERE project_id = {self.param}
                 """,
@@ -420,6 +425,7 @@ class Database(ProjectLifecycleDatabaseMixin, DependencyDatabaseMixin, DataOwner
                     self._dump_json(assignments),
                     self._dump_json(prompt_catalog),
                     competitive_intelligence_enabled,
+                    self._dump_json(discovery_settings or {}),
                     now,
                     project_id,
                 ),
@@ -550,6 +556,27 @@ class Database(ProjectLifecycleDatabaseMixin, DependencyDatabaseMixin, DataOwner
         if row is None:
             raise ValueError(f"Brief conversation turn not found: {turn_id}")
         return self._row_to_brief_conversation_turn(row)
+
+    def update_brief_conversation_turn(
+        self,
+        turn_id: str,
+        *,
+        content: str | None = None,
+        extracted_updates: dict[str, Any] | None = None,
+    ) -> BriefConversationTurn:
+        """Persist streamed content or proposal state on an existing Layer 0 turn."""
+        current = self.get_brief_conversation_turn(turn_id)
+        next_content = current.content if content is None else content
+        next_updates = current.extracted_updates if extracted_updates is None else extracted_updates
+        self._execute(
+            f"""
+            UPDATE brief_conversations
+            SET content = {self.param}, extracted_updates = {self.param}
+            WHERE id = {self.param}
+            """,
+            (next_content, self._dump_json(next_updates), turn_id),
+        )
+        return self.get_brief_conversation_turn(turn_id)
 
     def list_brief_conversation(self, project_id: str, *, limit: int = 80) -> list[BriefConversationTurn]:
         """Return recent Plan-mode turns in chronological order for the workspace."""

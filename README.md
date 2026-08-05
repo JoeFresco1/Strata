@@ -13,10 +13,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/JoeFresco1/Spec_Forge/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/JoeFresco1/Spec_Forge/ci.yml?branch=main&style=flat-square&label=build"></a>
+  <a href="https://github.com/JoeFresco1/Strata/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/JoeFresco1/Strata/ci.yml?branch=main&style=flat-square&label=build"></a>
   <a href="LICENSE"><img alt="AGPL-3.0 license" src="https://img.shields.io/badge/license-AGPL--3.0-5B5BD6?style=flat-square"></a>
-  <a href="https://github.com/JoeFresco1/Spec_Forge/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/JoeFresco1/Spec_Forge?style=flat-square"></a>
-  <a href="https://github.com/JoeFresco1/Spec_Forge/releases"><img alt="Pre-release" src="https://img.shields.io/badge/status-v0.1%20pre--release-D97706?style=flat-square"></a>
+  <a href="https://github.com/JoeFresco1/Strata/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/JoeFresco1/Strata?style=flat-square"></a>
+  <a href="https://github.com/JoeFresco1/Strata/releases"><img alt="Pre-release" src="https://img.shields.io/badge/status-v0.1%20pre--release-D97706?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -158,7 +158,7 @@ Expand approved features into reviewable product behavior. Resolve open decision
 You need [Docker Engine with Compose](https://docs.docker.com/compose/) and an OpenAI-compatible model endpoint.
 
 ```bash
-git clone https://github.com/JoeFresco1/Spec_Forge.git strata
+git clone https://github.com/JoeFresco1/Strata.git strata
 cd strata
 cp .env.example .env
 docker compose up --build -d
@@ -244,6 +244,8 @@ The React application and API are served together on port `8000` in production. 
 
 Read the [production architecture](docs/PRODUCTION_ARCHITECTURE.md) or the [layer architecture](docs/layer%20architecture.md) for the deeper model.
 
+For a newcomer-friendly map of the code, runtime entry points, tests, scripts, and documentation, see the [repository guide](docs/REPOSITORY_GUIDE.md).
+
 ## Project status and roadmap
 
 Strata is an early self-hosted project. The core Layer 0 → Delivery workflow is implemented and the repository includes CI, migrations, release packaging, diagnostics, backup tooling, and browser QA evidence.
@@ -324,7 +326,7 @@ Five years from now, success is not Strata writing more plans.
 
 Success is that a team can open any product decision and see where it came from, what it affects, what evidence supported it, what was rejected, and what changed before implementation began. Product architecture becomes a living, inspectable system—not a document that expires the moment work starts.
 
-If that is the kind of tool you want to exist, [star the repository](https://github.com/JoeFresco1/Spec_Forge), try it on a real idea, and help shape it.
+If that is the kind of tool you want to exist, [star the repository](https://github.com/JoeFresco1/Strata), try it on a real idea, and help shape it.
 
 ---
 

@@ -60,6 +60,15 @@ DIRECT_PROJECT_TABLES = [
     "artifact_dependencies",
     "artifact_freshness_states",
     "artifact_stale_transitions",
+    "competitor_research_heads",
+    "competitor_research_revisions",
+    "product_discovery_heads",
+    "product_discovery_revisions",
+    "discovery_context_projections",
+    "specification_manifests",
+    "specification_manifest_memberships",
+    "specification_manifest_issues",
+    "specification_rendered_artifacts",
 ]
 
 DEPENDENT_TABLES = {
@@ -80,6 +89,10 @@ CLONE_EXCLUDED_TABLES = {
     "assistant_runs",
     "assistant_specialist_runs",
     "assistant_action_proposals",
+    "specification_manifests",
+    "specification_manifest_memberships",
+    "specification_manifest_issues",
+    "specification_rendered_artifacts",
 }
 
 CLONE_RESET_JOB_STATUSES = {"queued", "running", "failed", "interrupted"}
@@ -356,6 +369,10 @@ class ProjectLifecycleDatabaseMixin:
         """Insert one remapped archive row, reusing the caller's transaction when provided."""
         if table not in self._table_names():
             return
+        if table == "specification_rendered_artifacts":
+            # Archive payloads contain renderer metadata, not the rendered bytes. Importing
+            # source-machine paths would make downloads point at stale or unrelated files.
+            return
         columns = self._table_columns(table)
         payload = {key: self._remap_value(value, id_map) for key, value in row.items() if key in columns}
         if "project_id" in columns:
@@ -366,10 +383,34 @@ class ProjectLifecycleDatabaseMixin:
             payload["id"] = id_map[old_id]
         if table == "layer3_revision_actions" and "request_id" in columns:
             payload["request_id"] = f"import:{uuid.uuid4()}"
-        if "created_at" in columns:
+        preserve_manifest_history = table.startswith("specification_")
+        if "created_at" in columns and not preserve_manifest_history:
             payload["created_at"] = now
-        if "updated_at" in columns:
+        if "updated_at" in columns and not preserve_manifest_history:
             payload["updated_at"] = now
+        if table == "specification_manifests":
+            from strata.specification_models import specification_content_hash
+            manifest_payload = self._json_value(payload.get("payload"), {})
+            original_payload = self._json_value(row.get("payload"), {})
+            original_identity = {
+                "manifest_id": original_payload.get("manifest_id"),
+                "project_id": original_payload.get("project_id"),
+                "command_id": original_payload.get("command_id"),
+                "content_hash": original_payload.get("content_hash"),
+                "actor": original_payload.get("actor"),
+                "origin": original_payload.get("origin"),
+                "created_at": original_payload.get("created_at"),
+            }
+            manifest_payload["manifest_id"] = payload.get("id", manifest_payload.get("manifest_id"))
+            manifest_payload["project_id"] = project_id
+            manifest_payload["command_id"] = payload.get("command_id", manifest_payload.get("command_id"))
+            manifest_payload["imported_historical"] = True
+            manifest_payload["import_metadata"] = {
+                "imported_at": now, "source": original_identity,
+            }
+            manifest_payload["content_hash"] = specification_content_hash(manifest_payload)
+            payload["payload"] = manifest_payload
+            payload["content_hash"] = manifest_payload["content_hash"]
         if table == "project_workspace_state":
             payload["selected_entity_id"] = "layer0-root"
             payload["selected_entity_type"] = "brief"
@@ -396,6 +437,11 @@ class ProjectLifecycleDatabaseMixin:
             "project_telemetry_settings",
             "project_data_ownership_settings",
             "platform_jobs",
+            "competitor_research_heads",
+            "competitor_research_revisions",
+            "product_discovery_heads",
+            "product_discovery_revisions",
+            "discovery_context_projections",
             "brief_conversations",
             "nodes",
             "generations",
@@ -436,6 +482,10 @@ class ProjectLifecycleDatabaseMixin:
             "assistant_runs",
             "assistant_specialist_runs",
             "assistant_action_proposals",
+            "specification_manifests",
+            "specification_manifest_memberships",
+            "specification_manifest_issues",
+            "specification_rendered_artifacts",
             "model_call_events",
         ]
         return [table for table in preferred if table in tables]

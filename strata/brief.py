@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import threading
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from strata.db import Database
 from strata.execution_policy import resolve_llm_profile, resolved_runtime_request
@@ -10,6 +13,7 @@ from strata.models import ProjectBrief
 from strata.provider_onboarding import assert_provider_ready
 from strata.prompts import (
     build_layer0_brief_extraction_prompt,
+    build_layer0_conversation_response_prompt,
     build_layer0_plan_reply_prompt,
     build_system_prompt,
     load_prompt_catalog,
@@ -56,6 +60,8 @@ class BriefService:
         self.db = db
         self.llm_client = llm_client
         self.server_manager = server_manager
+        self._plan_cancellations: dict[str, threading.Event] = {}
+        self._plan_cancellations_lock = threading.Lock()
 
     def ensure_brief(self, project_id: str) -> ProjectBrief:
         """Create the canonical brief from the project idea when no draft exists yet."""
@@ -104,8 +110,9 @@ class BriefService:
         *,
         origin: str = "system_workflow",
         actor: str = "strata",
+        base_state_token: str = "",
     ) -> tuple[str, ProjectBrief, dict[str, Any]]:
-        """Extract structured values from a Plan-mode message and store both the turn and reply."""
+        """Store a conversational reply and proposal without mutating the canonical brief."""
         clean_message = message.strip()
         if not clean_message:
             raise ValueError("Plan-mode message cannot be empty.")
@@ -126,11 +133,10 @@ class BriefService:
         )
 
         updates = self._extract_updates(current, tail, clean_message)
-        brief = self.update_brief(
-            project_id, updates, origin=origin, actor=actor, creation_command_id=request_id or "",
-        ) if updates else current
-        guidance = self._plan_guidance(brief, tail, clean_message, updates)
-        reply = str(guidance.get("assistant_message", "")).strip() or self._fallback_plan_guidance(brief, updates)["assistant_message"]
+        projected = self._projected_brief(current, updates)
+        guidance = self._plan_guidance(projected, tail, clean_message, updates)
+        reply = str(guidance.get("assistant_message", "")).strip() or self._fallback_plan_guidance(projected, updates)["assistant_message"]
+        proposal = self._proposal(current, updates, base_state_token)
         self.db.append_brief_conversation_turn(
             project_id=project_id,
             role="assistant",
@@ -139,9 +145,162 @@ class BriefService:
             extracted_updates={
                 "brief_updates": updates,
                 "plan_guidance": guidance,
+                "proposal": proposal,
+                "stream_status": "completed",
+                "activity": self._activity_summary(bool(updates)),
+                "actor": actor,
+                "origin": origin,
             },
         )
-        return reply, brief, guidance
+        return reply, current, guidance
+
+    def stream_plan_turn(
+        self,
+        project_id: str,
+        message: str,
+        request_id: str,
+        *,
+        base_state_token: str,
+        retry: bool = False,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream one Layer 0 reply and durably retain completion, failure, or cancellation."""
+        clean_message = message.strip()
+        if not clean_message:
+            raise ValueError("Layer 0 message cannot be empty.")
+        assert_provider_ready(self.db, "Layer 0 planning and extraction")
+        current = self.ensure_brief(project_id)
+        existing = self.db.get_brief_conversation_by_request(project_id, request_id, "assistant")
+        if existing is not None and not retry:
+            yield {"type": "complete", "turn": existing.model_dump(mode="json")}
+            return
+        conversation = self.db.list_brief_conversation(project_id, limit=12)
+        tail = [{"role": turn.role, "content": turn.content} for turn in conversation if turn.id != getattr(existing, "id", None)]
+        self.db.append_brief_conversation_turn(
+            project_id=project_id, role="user", content=clean_message, request_id=request_id,
+        )
+        cancellation = self._register_plan_request(request_id)
+        activity = self._activity_summary(False)
+        partial = ""
+        yield {"type": "activity", "steps": activity, "status": "Reviewing the current brief"}
+        try:
+            updates = self._extract_updates(current, tail, clean_message)
+            if cancellation.is_set():
+                turn = self._save_plan_assistant(
+                    project_id, request_id, existing, partial, {}, {}, "stopped", activity,
+                )
+                yield {"type": "stopped", "turn": turn.model_dump(mode="json")}
+                return
+            proposal = self._proposal(current, updates, base_state_token)
+            projected = self._projected_brief(current, updates)
+            guidance = self._fallback_plan_guidance(projected, updates)
+            activity = self._activity_summary(bool(updates))
+            yield {"type": "activity", "steps": activity, "status": "Preparing the response"}
+            runtime = self._llm_runtime(project_id, "layer0_plan")
+            prompt_catalog = self._prompt_catalog(project_id)
+            prompt = build_layer0_conversation_response_prompt(
+                current_brief=self._brief_payload(current),
+                conversation_tail=tail,
+                user_message=clean_message,
+                proposed_updates=updates,
+                open_fields=self._open_fields(projected),
+                prompt_catalog=prompt_catalog,
+            )
+            for chunk in self.llm_client.stream_text(
+                system_prompt=build_system_prompt(prompt_catalog=prompt_catalog),
+                user_prompt=prompt,
+                base_url=runtime["base_url"],
+                model_name=runtime["model_name"],
+                max_tokens=650,
+                temperature=0.35,
+                telemetry=model_call_context(
+                    project_id=project_id, layer="layer0", workflow="plan_conversation",
+                    runtime_profile=runtime, prompt_key="layer0_conversation_response",
+                ),
+                should_cancel=cancellation.is_set,
+            ):
+                partial += chunk
+                yield {"type": "delta", "content": chunk}
+            status = "stopped" if cancellation.is_set() else "completed"
+            if status == "stopped" and proposal:
+                proposal = {**proposal, "status": "cancelled"}
+            if not partial and status == "completed":
+                partial = guidance["assistant_message"]
+                yield {"type": "delta", "content": partial}
+            turn = self._save_plan_assistant(
+                project_id, request_id, existing, partial, proposal, guidance, status, activity,
+                model_identity=str(runtime.get("model_name") or self.llm_client.model_name),
+            )
+            yield {
+                "type": status,
+                "turn": turn.model_dump(mode="json"),
+                "proposal": proposal or None,
+                "plan_guidance": guidance,
+            }
+        except Exception as exc:
+            turn = self._save_plan_assistant(
+                project_id, request_id, existing, partial, {}, {}, "failed", activity,
+                error={"kind": type(exc).__name__, "message": str(exc)},
+            )
+            yield {
+                "type": "error", "message": str(exc), "error_kind": type(exc).__name__,
+                "turn": turn.model_dump(mode="json"),
+            }
+        finally:
+            self._unregister_plan_request(request_id)
+
+    def cancel_plan_turn(self, request_id: str) -> bool:
+        """Signal the active provider stream and suppress any late proposal application."""
+        with self._plan_cancellations_lock:
+            cancellation = self._plan_cancellations.get(request_id)
+        if cancellation is None:
+            return False
+        cancellation.set()
+        return True
+
+    def _register_plan_request(self, request_id: str) -> threading.Event:
+        """Create the in-process cancellation signal for one active Layer 0 response."""
+        cancellation = threading.Event()
+        with self._plan_cancellations_lock:
+            self._plan_cancellations[request_id] = cancellation
+        return cancellation
+
+    def _unregister_plan_request(self, request_id: str) -> None:
+        """Remove a completed Layer 0 request from the cancellation registry."""
+        with self._plan_cancellations_lock:
+            self._plan_cancellations.pop(request_id, None)
+
+    def _save_plan_assistant(
+        self,
+        project_id: str,
+        request_id: str,
+        existing: Any,
+        content: str,
+        proposal: dict[str, Any],
+        guidance: dict[str, Any],
+        status: str,
+        activity: list[str],
+        *,
+        model_identity: str = "",
+        error: dict[str, Any] | None = None,
+    ) -> Any:
+        """Persist the final state of a streamed assistant turn without touching the brief."""
+        metadata = {
+            "brief_updates": proposal.get("updates", {}),
+            "proposal": proposal,
+            "plan_guidance": guidance,
+            "stream_status": status,
+            "activity": activity,
+            "model_identity": model_identity,
+            "error": error or {},
+        }
+        if existing is not None:
+            return self.db.update_brief_conversation_turn(
+                existing.id, content=content, extracted_updates=metadata,
+            )
+        return self.db.append_brief_conversation_turn(
+            project_id=project_id, role="assistant", content=content,
+            request_id=request_id, extracted_updates=metadata,
+        )
 
     def publish(
         self, project_id: str, *, origin: str = "system_workflow", actor: str = "strata",
@@ -354,6 +513,105 @@ class BriefService:
             elif field in payload:
                 payload[field] = str(value).strip()
         return payload
+
+    def proposal_updates(
+        self,
+        turn: Any,
+        selected_fields: list[str],
+        edited_values: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return only reviewed proposal fields, including explicit user edits."""
+        proposal = dict(turn.extracted_updates.get("proposal") or {})
+        if proposal.get("status") not in {"pending", "partially_applied"}:
+            raise ValueError("This proposed brief update is no longer pending.")
+        available = self._normalized_updates(dict(proposal.get("updates") or {}))
+        selected = selected_fields or list(available)
+        unknown = [field for field in selected if field not in available]
+        if unknown:
+            raise ValueError(f"Proposal does not contain: {', '.join(unknown)}")
+        reviewed = {field: available[field] for field in selected}
+        for field, value in edited_values.items():
+            if field in reviewed:
+                reviewed[field] = value
+        return self._normalized_updates(reviewed)
+
+    def record_proposal_decision(
+        self,
+        turn: Any,
+        *,
+        status: str,
+        fields: list[str] | None = None,
+        command_id: str = "",
+        conflict: dict[str, Any] | None = None,
+        next_state_token: str = "",
+    ) -> Any:
+        """Attach the human decision and command/conflict reference to a proposal card."""
+        metadata = dict(turn.extracted_updates)
+        proposal = dict(metadata.get("proposal") or {})
+        applied = list(dict.fromkeys(list(proposal.get("applied_fields") or []) + list(fields or [])))
+        all_fields = list(dict(proposal.get("updates") or {}))
+        if status == "applied" and len(applied) < len(all_fields):
+            status = "partially_applied"
+        proposal.update({
+            "status": status,
+            "applied_fields": applied,
+            "command_id": command_id,
+            "conflict": conflict or {},
+        })
+        if next_state_token:
+            proposal["base_state_token"] = next_state_token
+        metadata["proposal"] = proposal
+        return self.db.update_brief_conversation_turn(turn.id, extracted_updates=metadata)
+
+    def _proposal(
+        self,
+        current: ProjectBrief,
+        updates: dict[str, Any],
+        base_state_token: str,
+    ) -> dict[str, Any]:
+        """Describe inferred changes as a reviewable card rather than a mutation."""
+        if not updates:
+            return {}
+        current_payload = self._brief_payload(current)
+        merged = self._merged_brief_payload(current_payload, updates)
+        fields: list[dict[str, Any]] = []
+        for field in BRIEF_FIELD_ORDER:
+            if field not in updates:
+                continue
+            before = current_payload.get(field)
+            operation = "new" if before in (None, "", []) else ("appended" if field in LIST_FIELDS else "replaced")
+            fields.append({
+                "field": field,
+                "current_value": before,
+                "proposed_value": merged[field],
+                "operation": operation,
+                "reason": "Captured from the latest user message for explicit review.",
+            })
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "pending",
+            "base_state_token": base_state_token,
+            "updates": updates,
+            "fields": fields,
+            "applied_fields": [],
+        }
+
+    def _projected_brief(self, current: ProjectBrief, updates: dict[str, Any]) -> ProjectBrief:
+        """Create an in-memory preview used for follow-up guidance without saving anything."""
+        return current.model_copy(update=self._merged_brief_payload(current.model_dump(mode="json"), updates))
+
+    @staticmethod
+    def _activity_summary(has_proposal: bool) -> list[str]:
+        """Expose safe workflow stages without revealing private model reasoning."""
+        steps = [
+            "Reviewing the current brief",
+            "Comparing your message with existing fields",
+            "Identifying missing product context",
+        ]
+        if has_proposal:
+            steps.append("Preparing proposed brief updates")
+        steps.append("Checking whether the brief changed during generation")
+        return steps
 
     def _open_fields(self, brief: ProjectBrief) -> list[str]:
         """Return the remaining brief fields that still need meaningful human input."""

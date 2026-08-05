@@ -106,11 +106,11 @@ export default function ProjectToolsTab({
           {exportCount ? <span className="project-tool-inline-meta">{exportCount} saved path{exportCount === 1 ? "" : "s"}</span> : null}
         </div>
         <div className="button-row">
-          <button type="button" onClick={onExport}>
-            Create Full Project Export
+          <button type="button" onClick={() => onExport("approved")}>
+            Compile Full Specification
           </button>
           <button type="button" onClick={onLayer2Export}>
-            Create Layer 2 Export
+            Create Layer 2 Diagnostic Export
           </button>
           <button type="button" onClick={onProjectArchiveExport}>
             Export Project Archive
@@ -121,7 +121,7 @@ export default function ProjectToolsTab({
           <div className="export-result" role="status">
             <strong>{lastExport.kind} export created</strong>
             {lastExport.markdown_path ? <span>Markdown: {lastExport.markdown_path}</span> : null}
-            <span>JSON: {lastExport.json_path}</span>
+            {lastExport.json_path ? <span>JSON: {lastExport.json_path}</span> : null}
           </div>
         ) : null}
         {layer2Graph.review_open ? (

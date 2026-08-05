@@ -59,6 +59,7 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     assignments TEXT NOT NULL,
                     prompt_catalog TEXT NOT NULL DEFAULT '{}',
                     competitive_intelligence_enabled INTEGER NOT NULL DEFAULT 1,
+                    discovery_settings TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
@@ -878,6 +879,7 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
             "ALTER TABLE project_model_settings ADD COLUMN routing_policy TEXT NOT NULL DEFAULT '{}'",
             "ALTER TABLE project_model_settings ADD COLUMN concurrency_policy TEXT NOT NULL DEFAULT '{}'",
             "ALTER TABLE project_model_settings ADD COLUMN competitive_intelligence_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE project_model_settings ADD COLUMN discovery_settings TEXT NOT NULL DEFAULT '{}'",
             "ALTER TABLE assistant_messages ADD COLUMN execution_intent_override TEXT",
             "ALTER TABLE assistant_runs ADD COLUMN execution_intent TEXT NOT NULL DEFAULT 'local_first'",
             "ALTER TABLE assistant_runs ADD COLUMN effective_parallelism INTEGER NOT NULL DEFAULT 1",

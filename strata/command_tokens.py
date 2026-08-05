@@ -29,6 +29,23 @@ class CommandTokenMixin:
             "lifecycle_state": project.lifecycle_state, "source_project_id": project.source_project_id,
         })
 
+    def specification_source_state_token(self, project_id: str) -> str:
+        """Hash every canonical source coordinate used by manifest selection."""
+        head = self.db.get_brief_head(project_id) or {}
+        pillars = self.db.list_nodes(project_id, parent_id=None, layer=1, node_type="pillar")
+        features = self.db.list_layer2_features(project_id)
+        layer3_heads = self.db._fetchall(
+            f"SELECT id, feature_id, active_revision_id FROM layer3_expansion_heads WHERE project_id = {self.db.param} ORDER BY id",
+            (project_id,),
+        )
+        return state_token({
+            "project": self.project_state_token(self.db.get_project(project_id)),
+            "published_brief_revision_id": head.get("current_published_revision_id"),
+            "pillars": [self.pillar_state_token(item) for item in sorted(pillars, key=lambda value: value.id)],
+            "features": [self.feature_state_token(item) for item in sorted(features, key=lambda value: value.id)],
+            "layer3_heads": [dict(item) for item in layer3_heads],
+        })
+
     def pillar_state_token(self, pillar: Any) -> str:
         """Return a token that changes for every authoritative Layer 1 field."""
         return state_token({

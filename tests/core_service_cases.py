@@ -172,6 +172,19 @@ class LLMClientTests(unittest.TestCase):
 
         self.assertEqual(cleaned, '{"ok": true}')
 
+    def test_stream_visible_text_hides_private_reasoning_channels(self) -> None:
+        self.assertEqual(LlamaCppClient._stream_visible_text("<think>private"), "")
+        self.assertEqual(
+            LlamaCppClient._stream_visible_text("<think>private</think>The useful answer"),
+            "The useful answer",
+        )
+        self.assertEqual(
+            LlamaCppClient._stream_visible_text(
+                "<|channel|>analysis<|message|>private<|channel|>final<|message|>Public answer"
+            ),
+            "Public answer",
+        )
+
 
 class ProviderValidatorTests(unittest.TestCase):
     def test_invalid_url_is_rejected(self) -> None:
@@ -221,7 +234,7 @@ class ProviderValidatorTests(unittest.TestCase):
 
 
 class BriefServiceTests(unittest.TestCase):
-    def test_plan_turn_updates_same_canonical_brief(self) -> None:
+    def test_plan_turn_proposes_without_mutating_canonical_brief(self) -> None:
         class StubClient:
             def generate_json(self, **_: object):
                 class Response:
@@ -240,11 +253,109 @@ class BriefServiceTests(unittest.TestCase):
             reply, brief, guidance = service.append_plan_turn(project.id, "Competitor is Acme.")
 
             self.assertIn("What became clearer", reply)
-            self.assertEqual(brief.problem, "Slow manual review")
-            self.assertEqual(brief.known_competitors, ["Acme"])
-            self.assertEqual(brief.goals, ["Faster review"])
+            self.assertEqual(brief.problem, "")
+            self.assertEqual(brief.known_competitors, [])
+            self.assertEqual(brief.goals, [])
             self.assertIn("target users", guidance["assistant_message"])
-            self.assertEqual(len(db.list_brief_conversation(project.id)), 2)
+            turns = db.list_brief_conversation(project.id)
+            self.assertEqual(len(turns), 2)
+            self.assertEqual(turns[-1].extracted_updates["proposal"]["status"], "pending")
+            self.assertEqual(turns[-1].extracted_updates["proposal"]["updates"]["problem"], "Slow manual review")
+
+    def test_stopped_stream_preserves_partial_and_disables_proposal(self) -> None:
+        class StreamingStub:
+            model_name = "test-model"
+
+            def generate_json(self, **_: object):
+                class Response:
+                    parsed_json = {"updates": {"problem": "Manual review is slow"}}
+                return Response()
+
+            def stream_text(self, **kwargs: object):
+                yield "The product problem is "
+                if not kwargs["should_cancel"]():  # type: ignore[index,operator]
+                    yield "clearer now."
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            db.set_app_setting("provider_readiness", json.dumps({"ready": True, "message": "Ready for tests."}))
+            service = BriefService(db, StreamingStub())  # type: ignore[arg-type]
+            stream = service.stream_plan_turn(
+                project.id, "Reviews take too long.", "stream-1", base_state_token="brief-token",
+            )
+
+            self.assertEqual(next(stream)["type"], "activity")
+            self.assertEqual(next(stream)["type"], "activity")
+            self.assertEqual(next(stream)["content"], "The product problem is ")
+            self.assertTrue(service.cancel_plan_turn("stream-1"))
+            final_events = list(stream)
+
+            self.assertEqual(final_events[-1]["type"], "stopped")
+            assistant = db.get_brief_conversation_by_request(project.id, "stream-1", "assistant")
+            self.assertEqual(assistant.content, "The product problem is ")
+            self.assertEqual(assistant.extracted_updates["stream_status"], "stopped")
+            self.assertEqual(assistant.extracted_updates["proposal"]["status"], "cancelled")
+            self.assertEqual(db.get_project_brief(project.id).problem, "")
+            with self.assertRaisesRegex(ValueError, "no longer pending"):
+                service.proposal_updates(assistant, [], {})
+
+    def test_stream_retry_updates_pair_without_duplicate_user_message(self) -> None:
+        class StreamingStub:
+            model_name = "test-model"
+            reply = "First response"
+
+            def generate_json(self, **_: object):
+                class Response:
+                    parsed_json = {"updates": {}}
+                return Response()
+
+            def stream_text(self, **_: object):
+                yield self.reply
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            db.set_app_setting("provider_readiness", json.dumps({"ready": True, "message": "Ready for tests."}))
+            client = StreamingStub()
+            service = BriefService(db, client)  # type: ignore[arg-type]
+
+            list(service.stream_plan_turn(project.id, "Challenge this.", "retry-1", base_state_token="token"))
+            client.reply = "Replacement response"
+            list(service.stream_plan_turn(project.id, "Challenge this.", "retry-1", base_state_token="token", retry=True))
+
+            turns = db.list_brief_conversation(project.id)
+            self.assertEqual([turn.role for turn in turns], ["user", "assistant"])
+            self.assertEqual(turns[-1].content, "Replacement response")
+
+    def test_stream_failure_preserves_user_message_and_inline_error_state(self) -> None:
+        class FailingStreamStub:
+            model_name = "test-model"
+
+            def generate_json(self, **_: object):
+                class Response:
+                    parsed_json = {"updates": {}}
+                return Response()
+
+            def stream_text(self, **_: object):
+                raise LLMError("Model unavailable")
+                yield ""  # pragma: no cover
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "specforge.db")
+            project = db.create_project("Test", "A useful product")
+            db.set_app_setting("provider_readiness", json.dumps({"ready": True, "message": "Ready for tests."}))
+            service = BriefService(db, FailingStreamStub())  # type: ignore[arg-type]
+
+            events = list(service.stream_plan_turn(
+                project.id, "Keep this message.", "failure-1", base_state_token="token",
+            ))
+
+            turns = db.list_brief_conversation(project.id)
+            self.assertEqual(events[-1]["type"], "error")
+            self.assertEqual(turns[0].content, "Keep this message.")
+            self.assertEqual(turns[1].extracted_updates["stream_status"], "failed")
+            self.assertIn("Model unavailable", turns[1].extracted_updates["error"]["message"])
 
     def test_publish_preserves_problem_field(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

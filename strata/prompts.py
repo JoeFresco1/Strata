@@ -467,3 +467,28 @@ def build_layer0_plan_reply_prompt(
         prompts_path=prompts_path,
         prompt_catalog=prompt_catalog,
     )
+
+
+def build_layer0_conversation_response_prompt(
+    *,
+    current_brief: dict[str, Any],
+    conversation_tail: list[dict[str, str]],
+    user_message: str,
+    proposed_updates: dict[str, Any],
+    open_fields: list[str],
+    prompts_path: Path | None = None,
+    prompt_catalog: dict[str, str] | None = None,
+) -> str:
+    """Build the plain-text Layer 0 response prompt used by the streaming transport."""
+    return render_prompt(
+        "layer0_conversation_response",
+        {
+            "current_brief": json.dumps(current_brief, ensure_ascii=True, indent=2),
+            "conversation_tail": json.dumps(conversation_tail[-8:], ensure_ascii=True, indent=2),
+            "user_message": user_message,
+            "proposed_updates": json.dumps(proposed_updates, ensure_ascii=True, indent=2),
+            "open_fields": json.dumps(open_fields, ensure_ascii=True),
+        },
+        prompts_path=prompts_path,
+        prompt_catalog=prompt_catalog,
+    )

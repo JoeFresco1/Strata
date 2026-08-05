@@ -28,6 +28,7 @@ class CommandLayer0Mixin:
             reply, brief, guidance = self.services.brief_service.append_plan_turn(
                 command.project_id, command.message, command.idempotency_key,
                 origin=command.actor.origin.value, actor=command.actor.actor_id,
+                base_state_token=self.brief_state_token(current),
             )
             return {"reply": reply, "brief": brief.model_dump(mode="json"), "guidance": guidance}, self.brief_state_token(brief), StaleEffect()
         return self._execute(command, target_type="brief", target_id=command.project_id, operation=operation)

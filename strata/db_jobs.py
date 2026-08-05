@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from strata.models import PlatformJob
+from strata.json_safety import ensure_json_safe
 
 
 UNSET = object()
@@ -122,7 +123,7 @@ class PlatformJobDatabaseMixin:
                 params.append(value)
         if result_payload is not None:
             updates.append(f"result_payload = {self.param}")
-            params.append(self._dump_json(result_payload))
+            params.append(self._dump_json(ensure_json_safe(result_payload, path="job.result_payload")))
         if error_type is not UNSET:
             updates.append(f"error_type = {self.param}")
             params.append(error_type)

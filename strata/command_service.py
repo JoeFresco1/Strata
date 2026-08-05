@@ -3,35 +3,47 @@ from __future__ import annotations
 import uuid
 from dataclasses import asdict
 from typing import Any, Callable
-
 from strata.command_lifecycle import CommandLifecycleMixin
 from strata.command_freshness import CommandFreshnessMixin
+from strata.command_discovery import CommandDiscoveryMixin
 from strata.command_layer0 import CommandLayer0Mixin
+from strata.command_specification import CommandSpecificationMixin
 from strata.command_tokens import CommandTokenMixin
-
 from strata.command_types import (
     AcceptLayer3Candidate,
+    AddCompetitor,
+    AddHumanDiscoveryLens,
     AppendBriefPlanTurn,
     ActorType,
     ApplicationCommand,
     ApproveFeature,
+    ApproveCompetitorResearchRevision,
+    ApproveProductDiscoveryRevision,
     ArchiveProject,
+    AttachCompetitorResearchToDiscovery,
     BulkResolveFeatureReview,
     BulkSetPillarState,
+    BuildLayer1DiscoveryContextProjection,
+    CancelCompetitorResearch,
     CommandConflictError,
     CommandError,
     CommandNotFoundError,
     CommandResult,
     CommandValidationError,
+    CompileSpecificationManifest,
     CreateFeature,
     CreateOrUpdateFeatureRelationship,
     CreatePillar,
     CutFeature,
     CutPillar,
+    DetachCompetitorResearchFromDiscovery,
     DismissCriticFinding,
     EditFeature,
     EditLayer3ActiveRevision,
     EditPillar,
+    ExcludeCompetitorFinding,
+    ExcludeDiscoveryLens,
+    GenerateProductDiscovery,
     GenerateLayer3Candidate,
     HumanAuthorityRequiredError,
     IdempotencyConflictError,
@@ -40,10 +52,13 @@ from strata.command_types import (
     KeepFeature,
     MarkFeatureNeedsReview,
     KeepPillar,
+    IncludeCompetitorFinding,
+    MarkCompetitorFindingStale,
     MergeFeatures,
     MergePillars,
     PartiallyAcceptLayer3Candidate,
     PrioritizePillar,
+    PublishProductDiscoveryRevision,
     PublishBrief,
     ReopenCriticFinding,
     ReviewLayer3ActiveRevision,
@@ -52,17 +67,27 @@ from strata.command_types import (
     RenameFeature,
     RenamePillar,
     RequestLayer1Generation,
+    RequestDiscoveryRegeneration,
     RequestLayer2Generation,
     RequestLayer3Generation,
     RequestOverlapReview,
     RequestResearch,
+    RebuildCompetitiveContextProjection,
+    RefreshCompetitorResearch,
+    RenderSpecificationManifest,
+    RejectCompetitorResearchRevision,
+    RejectProductDiscoveryRevision,
     ResolveCriticFinding,
     ResolveFeatureReview,
     ResolveOverlapVerdict,
     RestoreLayer3Revision,
+    RestoreProductDiscoveryRevision,
     StaleEffect,
     StaleSourceError,
     UnarchiveProject,
+    RemoveCompetitor,
+    StartCompetitorResearch,
+    UpdateDiscoveryHumanFields,
     UpdateProjectMetadata,
     UpdateBriefDraft,
     command_fingerprint,
@@ -72,8 +97,6 @@ from strata.dependency_db import feature_revision_token, pillar_revision_token
 from strata.db import utc_now
 from strata.layer3_db import Layer3RevisionConflict
 from strata.layer3_service import validate_product_level_content
-
-
 HUMAN_ONLY_COMMANDS = (
     UpdateBriefDraft, AppendBriefPlanTurn, PublishBrief, CreatePillar, EditPillar, KeepPillar, CutPillar,
     PrioritizePillar, RenamePillar, MergePillars, BulkSetPillarState, CreateFeature, EditFeature,
@@ -82,10 +105,16 @@ HUMAN_ONLY_COMMANDS = (
     AcceptLayer3Candidate, PartiallyAcceptLayer3Candidate, RejectLayer3Candidate,
     RestoreLayer3Revision, EditLayer3ActiveRevision, ReviewLayer3ActiveRevision, ResolveCriticFinding, DismissCriticFinding,
     ReopenCriticFinding, ResolveOverlapVerdict, UpdateProjectMetadata, ArchiveProject, UnarchiveProject,
+    ApproveProductDiscoveryRevision, PublishProductDiscoveryRevision, RejectProductDiscoveryRevision,
+    RestoreProductDiscoveryRevision, UpdateDiscoveryHumanFields, AddHumanDiscoveryLens, ExcludeDiscoveryLens,
+    ApproveCompetitorResearchRevision, RejectCompetitorResearchRevision, AttachCompetitorResearchToDiscovery,
+    DetachCompetitorResearchFromDiscovery, ExcludeCompetitorFinding, IncludeCompetitorFinding,
+    MarkCompetitorFindingStale,
+    AddCompetitor, RemoveCompetitor, CancelCompetitorResearch,
 )
 
 
-class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0Mixin, CommandTokenMixin):
+class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0Mixin, CommandDiscoveryMixin, CommandSpecificationMixin, CommandTokenMixin):
     """Execute typed authoritative mutations through one transaction and audit boundary."""
 
     def __init__(self, services: Any):
@@ -99,6 +128,29 @@ class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0
             UpdateBriefDraft: self._update_brief,
             AppendBriefPlanTurn: self._append_brief_plan_turn,
             PublishBrief: self._publish_brief,
+            GenerateProductDiscovery: self._generate_product_discovery,
+            RequestDiscoveryRegeneration: self._generate_product_discovery,
+            ApproveProductDiscoveryRevision: lambda item: self._transition_discovery(item, "approved"),
+            PublishProductDiscoveryRevision: lambda item: self._transition_discovery(item, "published"),
+            RejectProductDiscoveryRevision: lambda item: self._transition_discovery(item, "rejected"),
+            RestoreProductDiscoveryRevision: self._restore_discovery,
+            UpdateDiscoveryHumanFields: self._update_discovery_human_fields,
+            AddHumanDiscoveryLens: self._add_human_lens,
+            ExcludeDiscoveryLens: self._exclude_discovery_lens,
+            BuildLayer1DiscoveryContextProjection: self._build_discovery_projection,
+            StartCompetitorResearch: self._start_competitor_research,
+            CancelCompetitorResearch: self._cancel_competitor_research,
+            ApproveCompetitorResearchRevision: lambda item: self._transition_competitor_research(item, "approved"),
+            RejectCompetitorResearchRevision: lambda item: self._transition_competitor_research(item, "rejected"),
+            AttachCompetitorResearchToDiscovery: self._attach_competitor_research,
+            DetachCompetitorResearchFromDiscovery: self._attach_competitor_research,
+            ExcludeCompetitorFinding: self._set_competitor_finding_state,
+            IncludeCompetitorFinding: self._set_competitor_finding_state,
+            MarkCompetitorFindingStale: self._set_competitor_finding_state,
+            AddCompetitor: self._modify_competitor_scope,
+            RemoveCompetitor: self._modify_competitor_scope,
+            RefreshCompetitorResearch: self._refresh_competitor_research,
+            RebuildCompetitiveContextProjection: self._rebuild_competitive_projection,
             CreatePillar: self._create_pillar,
             EditPillar: self._edit_pillar,
             KeepPillar: lambda item: self._set_pillar_state(item, "kept", "keep"),
@@ -139,6 +191,8 @@ class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0
             UpdateProjectMetadata: self._update_project_metadata,
             UnarchiveProject: self._unarchive_project,
             ImportProjectArchive: self._import_archive,
+            CompileSpecificationManifest: self._compile_specification,
+            RenderSpecificationManifest: self._render_specification,
         }
         handler = handlers.get(type(command))
         if handler is None:

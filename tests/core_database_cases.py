@@ -325,9 +325,9 @@ class DatabaseTests(unittest.TestCase):
     def test_schema_migrations_are_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "specforge.db")
-            self.assertEqual(apply_migrations(db), [1, 2, 3, 4, 5, 6])
+            self.assertEqual(apply_migrations(db), [1, 2, 3, 4, 5, 6, 7, 8])
             self.assertEqual(apply_migrations(db), [])
-            self.assertEqual(migration_status(db)["current_version"], 6)
+            self.assertEqual(migration_status(db)["current_version"], 8)
 
     def test_telemetry_aggregates_usage_and_honors_body_retention(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -802,6 +802,102 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(pillars[0]["title"], "Workflow Intelligence")
                 self.assertEqual(pillars[0]["status"], "prioritized")
                 self.assertEqual(pillars[0]["json_payload"]["source"], "manual")
+
+    def test_layer0_proposal_apply_uses_revision_token_and_surfaces_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "api.db"
+            config = AppConfig(database_backend="sqlite", db_path=db_path, embeddings_enabled=False)
+            with patch("strata.api.AppConfig", return_value=config), TestClient(create_app()) as client:
+                project_id = client.post(
+                    "/api/projects", json={"name": "Proposal", "idea": "A planning tool"},
+                ).json()["id"]
+                initial = client.get(f"/api/projects/{project_id}").json()
+                initial_token = initial["brief"]["state_token"]
+                db = Database(db_path)
+                applied_turn = db.append_brief_conversation_turn(
+                    project_id=project_id,
+                    role="assistant",
+                    content="I can make the problem more specific.",
+                    request_id="proposal-apply",
+                    extracted_updates={
+                        "stream_status": "completed",
+                        "proposal": {
+                            "id": "proposal-1",
+                            "status": "pending",
+                            "base_state_token": initial_token,
+                            "updates": {"problem": "Planning converges before alternatives are explored."},
+                            "fields": [{
+                                "field": "problem", "current_value": "",
+                                "proposed_value": "Planning converges before alternatives are explored.",
+                                "operation": "new", "reason": "Captured from the user message.",
+                            }],
+                            "applied_fields": [],
+                        },
+                    },
+                )
+
+                applied = client.post(
+                    f"/api/projects/{project_id}/brief/proposals/{applied_turn.id}/decision",
+                    json={"decision": "apply", "expected_state_token": initial_token, "request_id": "apply-1"},
+                )
+                self.assertEqual(applied.status_code, 200)
+                self.assertEqual(applied.json()["brief"]["problem"], "Planning converges before alternatives are explored.")
+                self.assertEqual(db.get_brief_conversation_turn(applied_turn.id).extracted_updates["proposal"]["status"], "applied")
+
+                current_token = applied.json()["brief"]["state_token"]
+                partial_turn = db.append_brief_conversation_turn(
+                    project_id=project_id,
+                    role="assistant",
+                    content="Two more possible fields.",
+                    request_id="proposal-partial",
+                    extracted_updates={
+                        "proposal": {
+                            "id": "proposal-partial", "status": "pending", "base_state_token": current_token,
+                            "updates": {"target_users": "Product teams", "constraints": "Local first"},
+                            "fields": [
+                                {"field": "target_users", "current_value": "", "proposed_value": "Product teams", "operation": "new", "reason": "Captured."},
+                                {"field": "constraints", "current_value": "", "proposed_value": "Local first", "operation": "new", "reason": "Captured."},
+                            ],
+                            "applied_fields": [],
+                        },
+                    },
+                )
+                partial = client.post(
+                    f"/api/projects/{project_id}/brief/proposals/{partial_turn.id}/decision",
+                    json={
+                        "decision": "apply", "selected_fields": ["constraints"],
+                        "expected_state_token": current_token, "request_id": "apply-partial",
+                    },
+                )
+                self.assertEqual(partial.status_code, 200)
+                self.assertEqual(partial.json()["brief"]["constraints"], "Local first")
+                self.assertEqual(partial.json()["brief"]["target_users"], "")
+                self.assertEqual(db.get_brief_conversation_turn(partial_turn.id).extracted_updates["proposal"]["status"], "partially_applied")
+
+                stale_turn = db.append_brief_conversation_turn(
+                    project_id=project_id,
+                    role="assistant",
+                    content="A stale suggestion.",
+                    request_id="proposal-stale",
+                    extracted_updates={
+                        "proposal": {
+                            "id": "proposal-2", "status": "pending", "base_state_token": initial_token,
+                            "updates": {"target_users": "Product teams"},
+                            "fields": [{
+                                "field": "target_users", "current_value": "", "proposed_value": "Product teams",
+                                "operation": "new", "reason": "Captured from the user message.",
+                            }],
+                            "applied_fields": [],
+                        },
+                    },
+                )
+                conflict = client.post(
+                    f"/api/projects/{project_id}/brief/proposals/{stale_turn.id}/decision",
+                    json={"decision": "apply", "expected_state_token": initial_token, "request_id": "apply-stale"},
+                )
+
+                self.assertEqual(conflict.status_code, 409)
+                self.assertEqual(db.get_brief_conversation_turn(stale_turn.id).extracted_updates["proposal"]["status"], "stale")
 
     def test_layer3_boundary_rejects_implementation_specs(self) -> None:
         forbidden_examples = [

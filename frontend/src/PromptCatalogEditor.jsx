@@ -4,6 +4,11 @@ const PROMPT_FIELD_HELP = {
   system_json_generator: "Base system instruction for every structured JSON response.",
   layer0_brief_extraction: "Extracts brief field updates from Plan mode messages.",
   layer0_plan_guidance: "Shapes the short assistant reply and next questions in Plan mode.",
+  layer0_conversation_response: "Shapes the streamed user-facing Layer 0 conversation response.",
+  product_discovery_generation_v1: "Generates the versioned structured Product Discovery artifact from a published brief.",
+  competitor_evidence_extraction_v1: "Extracts attributable competitor findings from retained source text.",
+  competitor_pillar_inference_v1: "Infers competitor product territories with explicit evidence links and confidence.",
+  competitor_strategic_comparison_v1: "Builds advisory competitive territories, gaps, and derived lenses.",
   layer1_pillar_generation: "Guides broad Layer 1 pillar brainstorming.",
   layer1_pillar_normalization: "Cleans raw Layer 1 ideas into stable pillar concepts.",
   layer1_pillar_assessment: "Scores and clusters candidate Layer 1 pillars.",
@@ -36,7 +41,7 @@ const PROMPT_GROUPS = [
     title: "Layer 0",
     tabLabel: "Layer 0",
     description: "Planning and brief-intake prompts used before publish.",
-    fields: ["layer0_brief_extraction", "layer0_plan_guidance"],
+    fields: ["layer0_brief_extraction", "layer0_plan_guidance", "layer0_conversation_response"],
   },
   {
     title: "Layer 1",
@@ -47,6 +52,17 @@ const PROMPT_GROUPS = [
       "layer1_pillar_normalization",
       "layer1_pillar_assessment",
       "layer1_pillar_research_assessment",
+    ],
+  },
+  {
+    title: "Product Discovery",
+    tabLabel: "Discovery",
+    description: "Structured product exploration and evidence-bound competitor extraction before Layer 1.",
+    fields: [
+      "product_discovery_generation_v1",
+      "competitor_evidence_extraction_v1",
+      "competitor_pillar_inference_v1",
+      "competitor_strategic_comparison_v1",
     ],
   },
   {

@@ -14,6 +14,7 @@ const SETTINGS_SECTIONS = [
   { id: "compute", label: "Compute Mode" },
   { id: "profiles", label: "Model Profiles" },
   { id: "assignments", label: "Task Assignments" },
+  { id: "discovery", label: "Discovery Runtime" },
   { id: "connection", label: "Connection" },
 ];
 const ROUTING_DOMAINS = [
@@ -25,6 +26,9 @@ const ROUTING_DOMAINS = [
 ];
 const ASSIGNMENT_GROUPS = [
   { title: "Layer 0", routingKey: "layer0", fields: ["layer0_plan", "layer0_extraction", "layer0_research"] },
+  { title: "Product Discovery", routingKey: "generation", fields: ["product_discovery_generation", "cross_domain_exploration"] },
+  { title: "Discovery Review", routingKey: "review", fields: ["discovery_practicality_review"] },
+  { title: "Competitor Discovery", routingKey: "research", fields: ["competitor_evidence_extraction", "competitor_pillar_inference", "competitor_strategic_comparison"] },
   { title: "Generation", routingKey: "generation", fields: ["layer1_generation", "layer2_generation"] },
   { title: "Research & Embeddings", routingKey: "research", fields: ["layer1_research", "layer2_research", "layer1_similarity_embeddings", "layer2_similarity_embeddings", "research_embeddings"] },
   { title: "Review Critics", routingKey: "review", fields: ["layer1_overlap_critic", "layer2_overlap_critic"] },
@@ -34,6 +38,12 @@ const ASSIGNMENT_GROUPS = [
 const LLM_ASSIGNMENT_LABELS = {
   layer0_plan: "Layer 0 Plan Chat",
   layer0_extraction: "Layer 0 Brief Extraction",
+  product_discovery_generation: "Product Discovery Generation",
+  cross_domain_exploration: "Cross-domain Exploration",
+  discovery_practicality_review: "Discovery Practicality Review",
+  competitor_evidence_extraction: "Competitor Evidence Extraction",
+  competitor_pillar_inference: "Competitor Pillar Inference",
+  competitor_strategic_comparison: "Competitor Strategic Comparison",
   layer1_generation: "Layer 1 Generation",
   layer2_generation: "Layer 2 Generation",
   layer1_overlap_critic: "Layer 1 Overlap Critic",
@@ -55,6 +65,12 @@ const EMBEDDING_ASSIGNMENT_LABELS = {
 const ASSIGNMENT_HELP = {
   layer0_plan: "Use this model for the live Layer 0 intake conversation and brief shaping.",
   layer0_extraction: "Use this model to turn Plan mode messages into structured brief fields.",
+  product_discovery_generation: "Generates the structured Product Discovery candidate from an exact published brief revision.",
+  cross_domain_exploration: "Explores bounded cross-domain opportunities without making them authoritative.",
+  discovery_practicality_review: "Reviews discovery items for usefulness, superficiality, and unsupported claims without deleting them.",
+  competitor_evidence_extraction: "Extracts structured claims only from retained competitor source evidence.",
+  competitor_pillar_inference: "Infers competitor product pillars with explicit evidence links and confidence.",
+  competitor_strategic_comparison: "Builds bounded territories, gaps, and derived lenses from approved competitive evidence.",
   layer1_generation: "Use one or more models to brainstorm and broaden the Layer 1 pillar set.",
   layer2_generation: "Use this model to expand selected pillars into Layer 2 subfeatures.",
   layer1_overlap_critic: "Reviews existing Layer 1 pillars for overlap after generation or manual edits.",
@@ -527,6 +543,33 @@ function ConnectionSection({ settings, config, onChange }) {
   );
 }
 
+function DiscoveryRuntimeSection({ settings, onChange }) {
+  const discovery = settings.discovery_settings || {};
+  const update = (field, value) => onChange({
+    ...settings,
+    discovery_settings: { ...discovery, [field]: value },
+  });
+  return (
+    <section className="panel settings-section">
+      <div className="settings-section-head">
+        <h3>Product Discovery runtime</h3>
+        <p className="muted">Tune independent generation, review, and competitor-research passes. These settings never start a workflow automatically.</p>
+      </div>
+      <div className="brief-grid settings-profile-fields">
+        <label>Discovery temperature<input type="number" min="0" max="2" step="0.05" value={discovery.generation_temperature ?? 0.7} onChange={(event) => update("generation_temperature", Number(event.target.value))} /></label>
+        <label>Cross-domain temperature<input type="number" min="0" max="2" step="0.05" value={discovery.cross_domain_temperature ?? 0.9} onChange={(event) => update("cross_domain_temperature", Number(event.target.value))} /></label>
+        <label>Practicality review temperature<input type="number" min="0" max="2" step="0.05" value={discovery.practicality_review_temperature ?? 0.2} onChange={(event) => update("practicality_review_temperature", Number(event.target.value))} /></label>
+        <label>Evidence extraction temperature<input type="number" min="0" max="2" step="0.05" value={discovery.competitor_evidence_temperature ?? 0.2} onChange={(event) => update("competitor_evidence_temperature", Number(event.target.value))} /></label>
+        <label>Competitor inference temperature<input type="number" min="0" max="2" step="0.05" value={discovery.competitor_pillar_temperature ?? 0.5} onChange={(event) => update("competitor_pillar_temperature", Number(event.target.value))} /></label>
+        <label>Strategic comparison temperature<input type="number" min="0" max="2" step="0.05" value={discovery.competitor_comparison_temperature ?? 0.5} onChange={(event) => update("competitor_comparison_temperature", Number(event.target.value))} /></label>
+        <label>Generation output tokens<input type="number" min="256" max="12000" value={discovery.generation_max_output_tokens ?? 1800} onChange={(event) => update("generation_max_output_tokens", Number(event.target.value))} /></label>
+        <label>Review output tokens<input type="number" min="256" max="6000" value={discovery.practicality_review_max_output_tokens ?? 1800} onChange={(event) => update("practicality_review_max_output_tokens", Number(event.target.value))} /></label>
+        <label>Optional deterministic seed<input type="number" value={discovery.seed ?? ""} placeholder="Provider default" onChange={(event) => update("seed", event.target.value === "" ? null : Number(event.target.value))} /></label>
+      </div>
+    </section>
+  );
+}
+
 function StickySaveBar({ saveState, saveLabel, onSave }) {
   return (
     <div className="settings-sticky-save" role="region" aria-label="Settings save controls">
@@ -584,6 +627,7 @@ function ModelSettingsEditor({
       {(!appMode || activeSection === "compute") ? <ComputeModeSection settings={settings} onChange={onChange} /> : null}
       {(!appMode || activeSection === "profiles") ? <ModelProfilesSection settings={settings} config={config} onChange={onChange} /> : null}
       {(!appMode || activeSection === "assignments") ? <TaskAssignmentsSection settings={settings} onChange={onChange} /> : null}
+      {(!appMode || activeSection === "discovery") ? <DiscoveryRuntimeSection settings={settings} onChange={onChange} /> : null}
       {appMode && activeSection === "connection" ? <ConnectionSection settings={settings} config={config} onChange={onChange} /> : null}
 
       <StickySaveBar saveState={saveState} saveLabel={saveLabel} onSave={saveSettings} />

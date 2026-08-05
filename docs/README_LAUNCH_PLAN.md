@@ -88,7 +88,7 @@ Check the card at small mobile preview size. The mark and headline must still re
 
 Before a broad launch:
 
-1. Rename the GitHub repository from `Spec_Forge` to `strata` and update clone URLs, badge URLs, package metadata, release links, and compatibility references.
+1. Keep the GitHub repository identity consistent as `Strata` across clone URLs, badge URLs, package metadata, release links, and compatibility references.
 2. Add issue templates for bug reports, product proposals, provider compatibility, and documentation.
 3. Add a pull request template with verification, UI evidence, migration impact, privacy impact, and layer-boundary checks.
 4. Publish a small `examples/` directory with one sanitized project archive and its exported Markdown/JSON output.
@@ -105,7 +105,7 @@ These are product or release gaps, not writing problems.
 
 ### Highest priority
 
-- **The public identity is split.** The product is Strata, but the remote repository and clone URL are still `Spec_Forge`. This is the largest first-impression trust leak.
+- **The public identity is now aligned.** The product and canonical repository are both presented as Strata; keep compatibility references explicit when older `Spec_Forge` names remain in local launch scripts.
 - **There is no real product media.** A repository claiming a visual, structured workflow needs a credible hero screenshot and short end-to-end loop.
 - **The release is described as ready but remains a pre-release.** Publish a tagged `v0.1.0`, checksums, upgrade notes, and a verified clean-install transcript.
 - **Provider guidance is compatibility-based, not quality-based.** Users need a maintained table of tested runtimes, model sizes, context requirements, workflow suitability, speed, and known limitations.

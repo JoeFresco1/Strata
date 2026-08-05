@@ -6,7 +6,7 @@ import hashlib
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
 import requests
@@ -275,6 +275,108 @@ class LlamaCppClient:
             status="completed", body=body, content=content,
         )
         return content
+
+    def stream_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        model_name: str | None = None,
+        base_url: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int = 900,
+        telemetry: dict[str, Any] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Iterator[str]:
+        """Yield provider-authored text chunks while suppressing private reasoning markup."""
+        target_base_url = (base_url or self.base_url).rstrip("/")
+        payload = {
+            "model": model_name or self.model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": temperature if temperature is not None else self.default_temperature,
+            "top_p": top_p if top_p is not None else self.default_top_p,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        started_at = datetime.now(timezone.utc)
+        started = time.perf_counter()
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
+        raw_content = ""
+        visible_content = ""
+        response_body: dict[str, Any] = {"model": payload["model"]}
+        try:
+            with requests.post(
+                f"{target_base_url}/v1/chat/completions",
+                json=payload,
+                timeout=self.timeout,
+                headers=headers,
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines(decode_unicode=True):
+                    if should_cancel and should_cancel():
+                        response.close()
+                        break
+                    if not line or not line.startswith("data:"):
+                        continue
+                    encoded = line[5:].strip()
+                    if encoded == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(encoded)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("model"):
+                        response_body["model"] = event["model"]
+                    if event.get("usage"):
+                        response_body["usage"] = event["usage"]
+                    choices = event.get("choices") or []
+                    delta = choices[0].get("delta", {}) if choices else {}
+                    raw_content += str(delta.get("content") or "")
+                    next_visible = self._stream_visible_text(raw_content)
+                    if next_visible.startswith(visible_content):
+                        chunk = next_visible[len(visible_content):]
+                        visible_content = next_visible
+                        if chunk:
+                            yield chunk
+        except requests.Timeout as exc:
+            self._record_telemetry(
+                telemetry, payload, target_base_url, started_at, started,
+                status="failed", body=response_body, content=visible_content,
+                error_type="timeout", error_message=str(exc),
+            )
+            raise LLMError(f"llama.cpp streaming request timed out: {exc}") from exc
+        except requests.RequestException as exc:
+            self._record_telemetry(
+                telemetry, payload, target_base_url, started_at, started,
+                status="failed", body=response_body, content=visible_content,
+                error_type="request_error", error_message=str(exc),
+            )
+            raise LLMError(f"llama.cpp streaming request failed: {exc}") from exc
+        self._record_telemetry(
+            telemetry, payload, target_base_url, started_at, started,
+            status="cancelled" if should_cancel and should_cancel() else "completed",
+            body=response_body, content=visible_content,
+        )
+
+    @staticmethod
+    def _stream_visible_text(content: str) -> str:
+        """Return only user-facing stream text, buffering incomplete thought channels."""
+        if re.search(r"(?is)<\|?channel\|?>\s*(?:analysis|thought)", content):
+            final_match = re.search(
+                r"(?is)<\|?channel\|?>\s*final(?:<\|?message\|?>)?\s*(.*)$",
+                content,
+            )
+            return LlamaCppClient._strip_reasoning_wrappers(final_match.group(1)) if final_match else ""
+        open_think = re.search(r"(?is)<think>", content)
+        if open_think and not re.search(r"(?is)</think>", content[open_think.start():]):
+            return LlamaCppClient._strip_reasoning_wrappers(content[:open_think.start()])
+        return LlamaCppClient._strip_reasoning_wrappers(content)
 
     def _record_telemetry(
         self,

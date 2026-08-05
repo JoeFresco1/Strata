@@ -45,10 +45,19 @@ export default function ProductTreeTab({
   handleNodeSave,
   handleOverlapResolution,
   handleProjectArchiveExport,
+  handleBriefProposalDecision,
   handlePlanChat,
+  handlePlanChatStop,
   handlePublishBrief,
   handleRerunLayer0Research,
   handleRerunLayer1Research,
+  handleGenerateProductDiscovery,
+  handleDiscoveryRevisionAction,
+  handleDiscoveryEdit,
+  handleStartCompetitorResearch,
+  handleCompetitorResearchAction,
+  handleCompetitorResearchEdit,
+  handleAttachCompetitorResearch,
   handleCancelJob,
   competitiveIntelligenceEnabled = true,
   lastExport,
@@ -105,6 +114,8 @@ export default function ProductTreeTab({
     layer2_graph: layer2Graph || {},
   };
   const layer0ResearchJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer0"], "layer0"));
+  const discoveryJob = getLayerJobState(snapshotWithJobs, jobMatches(["product_discovery_generation"], "product_discovery"));
+  const competitorResearchJob = getLayerJobState(snapshotWithJobs, jobMatches(["competitor_research"], "product_discovery"));
   const layer1GenerationJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer1_generation", "generate_layer1"], null));
   const layer1ResearchJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer1_pillar_competitors"], null));
   const layer1OverlapJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer1_overlap_critic"], null));
@@ -120,11 +131,23 @@ export default function ProductTreeTab({
           conversation={conversation}
           onSave={handleBriefSave}
           onChat={handlePlanChat}
+          onStopChat={handlePlanChatStop}
+          onProposalDecision={handleBriefProposalDecision}
           onPublish={handlePublishBrief}
           onResearch={handleRerunLayer0Research}
           onProceed={() => setTab("layer1")}
           researchJobState={layer0ResearchJob}
           onCancelJob={handleCancelJob}
+          discovery={snapshot?.product_discovery}
+          discoveryJobState={discoveryJob}
+          competitorResearchJobState={competitorResearchJob}
+          onGenerateDiscovery={handleGenerateProductDiscovery}
+          onDiscoveryRevisionAction={handleDiscoveryRevisionAction}
+          onDiscoveryEdit={handleDiscoveryEdit}
+          onStartCompetitorResearch={handleStartCompetitorResearch}
+          onCompetitorResearchAction={handleCompetitorResearchAction}
+          onCompetitorResearchEdit={handleCompetitorResearchEdit}
+          onAttachCompetitorResearch={handleAttachCompetitorResearch}
         />
       );
     }

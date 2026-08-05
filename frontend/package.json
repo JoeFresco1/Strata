@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "test:cache": "node --test tests/apiClient.test.mjs",
+    "test:layer0": "node --test tests/layer0Conversation.test.mjs",
+    "test:requests": "node --test tests/requestUtils.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

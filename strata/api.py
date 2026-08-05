@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import threading
 import uuid
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from strata.api_models import (
     AssistantActionDecisionRequest,
     CriticFindingResolutionRequest,
@@ -18,6 +20,7 @@ from strata.api_models import (
     AppSnapshotResponse,
     Layer0ChatRequest,
     Layer0ChatResponse,
+    Layer0ProposalDecisionRequest,
     Layer2BulkActionRequest,
     Layer2CompetitiveSettingsRequest,
     Layer2FeatureCreateRequest,
@@ -100,6 +103,7 @@ from strata.storage import build_database
 from strata.tree import build_tree
 from strata.api_export import register_export_routes
 from strata.api_jobs import register_job_routes
+from strata.api_discovery import register_discovery_routes
 from strata.api_layer1 import register_layer1_routes
 from strata.api_lifecycle import register_lifecycle_routes
 from strata.api_overlap import register_overlap_routes
@@ -206,10 +210,12 @@ def create_app() -> FastAPI:
             embedding_profiles=app_model_settings["embedding_profiles"],
             assignments=app_model_settings["assignments"],
             prompt_catalog=app_model_settings["prompt_catalog"],
+            discovery_settings=app_model_settings["discovery_settings"],
         )
     register_lifecycle_routes(app, services)
     register_telemetry_routes(app, services)
     register_job_routes(app, services)
+    register_discovery_routes(app, services)
     register_layer1_routes(app, services)
     register_overlap_routes(app, services)
     register_export_routes(app, services)
@@ -455,7 +461,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/projects/{project_id}/brief/chat", response_model=Layer0ChatResponse)
     def append_layer0_chat(project_id: str, request: Layer0ChatRequest) -> Layer0ChatResponse:
-        """Append a Plan-mode chat turn and extract fields into the same draft brief."""
+        """Append a non-streaming Layer 0 turn and retain inferred edits as a proposal."""
         try:
             result = services.command_service.handle(AppendBriefPlanTurn(
                 project_id=project_id, actor=CommandActor.human_ui(), idempotency_key=request.request_id or str(uuid.uuid4()),
@@ -474,11 +480,103 @@ def create_app() -> FastAPI:
                 for turn in services.db.list_brief_conversation(project_id)
             ],
             plan_guidance=guidance,
+            proposal=(
+                services.db.get_brief_conversation_by_request(project_id, request.request_id, "assistant")
+                .extracted_updates.get("proposal")
+                if request.request_id and services.db.get_brief_conversation_by_request(project_id, request.request_id, "assistant")
+                else None
+            ),
         )
+
+    @app.post("/api/projects/{project_id}/brief/chat/stream")
+    def stream_layer0_chat(project_id: str, request: Layer0ChatRequest) -> StreamingResponse:
+        """Stream a real provider response as NDJSON while preserving durable partial state."""
+        current = services.brief_service.ensure_brief(project_id)
+        actual_token = services.command_service.brief_state_token(current)
+        if request.expected_state_token and request.expected_state_token != actual_token:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "conflict",
+                    "message": "The Layer 0 brief changed before generation started.",
+                    "expected_revision": request.expected_state_token,
+                    "actual_revision": actual_token,
+                    "recovery": "reload_or_compare",
+                },
+            )
+        request_id = request.request_id or str(uuid.uuid4())
+
+        def event_stream():
+            """Encode each service event without buffering the provider response."""
+            for event in services.brief_service.stream_plan_turn(
+                project_id, request.message, request_id,
+                base_state_token=actual_token, retry=request.retry,
+            ):
+                yield "data: " + json.dumps(event, ensure_ascii=False, default=str) + "\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/projects/{project_id}/brief/chat/{request_id}/stop")
+    def stop_layer0_chat(project_id: str, request_id: str) -> dict[str, object]:
+        """Signal cancellation for one project-local active Layer 0 response."""
+        services.db.get_project(project_id)
+        return {"request_id": request_id, "cancellation_requested": services.brief_service.cancel_plan_turn(request_id)}
+
+    @app.post("/api/projects/{project_id}/brief/proposals/{turn_id}/decision")
+    def decide_layer0_proposal(
+        project_id: str,
+        turn_id: str,
+        request: Layer0ProposalDecisionRequest,
+    ) -> dict[str, object]:
+        """Apply reviewed proposal fields through the canonical command layer or dismiss them."""
+        turn = services.db.get_brief_conversation_turn(turn_id)
+        if turn.project_id != project_id or turn.role != "assistant":
+            raise HTTPException(status_code=404, detail="Layer 0 proposal not found for this project.")
+        proposal = dict(turn.extracted_updates.get("proposal") or {})
+        if not proposal:
+            raise HTTPException(status_code=400, detail="This assistant message has no proposed brief update.")
+        if request.decision == "dismiss":
+            updated_turn = services.brief_service.record_proposal_decision(turn, status="dismissed")
+            return {
+                "brief": {**services.brief_service.ensure_brief(project_id).model_dump(mode="json"), "state_token": services.command_service.brief_state_token(services.brief_service.ensure_brief(project_id))},
+                "turn": updated_turn.model_dump(mode="json"),
+                "conversation": [item.model_dump(mode="json") for item in services.db.list_brief_conversation(project_id)],
+            }
+        try:
+            updates = services.brief_service.proposal_updates(turn, request.selected_fields, request.edited_values)
+            result = services.command_service.handle(UpdateBriefDraft(
+                project_id=project_id,
+                actor=CommandActor.human_ui(),
+                idempotency_key=request.request_id or str(uuid.uuid4()),
+                expected_state_token=request.expected_state_token or str(proposal.get("base_state_token") or ""),
+                updates=updates,
+            ))
+        except CommandError as exc:
+            if exc.code == "conflict":
+                services.brief_service.record_proposal_decision(
+                    turn, status="stale", conflict={"message": exc.message, **exc.details},
+                )
+            raise _command_http_error(exc) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        updated_turn = services.brief_service.record_proposal_decision(
+            turn, status="applied", fields=list(updates), command_id=result.command_id,
+            next_state_token=result.state_token,
+        )
+        return {
+            "brief": {**result.data["brief"], "state_token": result.state_token},
+            "turn": updated_turn.model_dump(mode="json"),
+            "conversation": [item.model_dump(mode="json") for item in services.db.list_brief_conversation(project_id)],
+            "command_id": result.command_id,
+        }
 
     @app.post("/api/projects/{project_id}/brief/publish", response_model=PublishBriefResponse)
     def publish_project_brief(project_id: str, background_tasks: BackgroundTasks, expected_state_token: str | None = None, request_id: str | None = None) -> PublishBriefResponse:
-        """Publish Layer 0 and start local competitor research."""
+        """Publish Layer 0 without automatically starting model or research work."""
         try:
             result = services.command_service.handle(PublishBrief(
                 project_id=project_id, actor=CommandActor.human_ui(), expected_state_token=expected_state_token,

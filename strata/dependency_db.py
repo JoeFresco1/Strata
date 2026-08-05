@@ -357,6 +357,26 @@ class DependencyDatabaseMixin:
                         f"UPDATE layer3_expansion_revision_states SET freshness_state = {self.param}, updated_at = {self.param} WHERE revision_id = {self.param}",
                         ("stale", utc_now_value(), target["revision_id"]),
                     )
+                elif target["artifact_type"] == "product_discovery":
+                    self._execute(
+                        f"UPDATE product_discovery_revisions SET freshness_state = {self.param}, "
+                        f"stale_reason = {self.param} WHERE id = {self.param}",
+                        (
+                            "stale",
+                            f"Source {source_type} revision {source_revision} was replaced by {replacement_source_revision_id}.",
+                            target["revision_id"],
+                        ),
+                    )
+                elif target["artifact_type"] == "competitor_research":
+                    self._execute(
+                        f"UPDATE competitor_research_revisions SET freshness_state = {self.param}, "
+                        f"stale_reason = {self.param} WHERE id = {self.param}",
+                        (
+                            "stale",
+                            f"Source {source_type} revision {source_revision} was replaced by {replacement_source_revision_id}.",
+                            target["revision_id"],
+                        ),
+                    )
                 queue.append((target["artifact_type"], target["artifact_id"], target["revision_id"], False))
         return {
             "directly_affected": direct, "transitively_affected": transitive,

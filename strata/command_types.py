@@ -149,7 +149,144 @@ class AppendBriefPlanTurn(ApplicationCommand):
 
 @dataclass(frozen=True, kw_only=True)
 class PublishBrief(ApplicationCommand):
-    request_research: bool = True
+    request_research: bool = False
+
+
+# Product Discovery
+@dataclass(frozen=True, kw_only=True)
+class GenerateProductDiscovery(ApplicationCommand):
+    competitor_research_mode: Literal[
+        "no_competitor_research", "lightweight_competitor_scan", "deep_competitor_research"
+    ] = "no_competitor_research"
+    competitor_research_revision_id: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ApproveProductDiscoveryRevision(ApplicationCommand):
+    revision_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class PublishProductDiscoveryRevision(ApplicationCommand):
+    revision_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class RejectProductDiscoveryRevision(ApplicationCommand):
+    revision_id: str
+    note: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class RestoreProductDiscoveryRevision(ApplicationCommand):
+    revision_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class UpdateDiscoveryHumanFields(ApplicationCommand):
+    revision_id: str
+    updates: dict[str, Any]
+
+
+@dataclass(frozen=True, kw_only=True)
+class AddHumanDiscoveryLens(ApplicationCommand):
+    revision_id: str
+    lens: dict[str, Any]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExcludeDiscoveryLens(ApplicationCommand):
+    revision_id: str
+    lens_id: str
+    excluded: bool = True
+
+
+@dataclass(frozen=True, kw_only=True)
+class RequestDiscoveryRegeneration(GenerateProductDiscovery):
+    pass
+
+
+@dataclass(frozen=True, kw_only=True)
+class BuildLayer1DiscoveryContextProjection(ApplicationCommand):
+    revision_id: str
+
+
+# Competitor research
+@dataclass(frozen=True, kw_only=True)
+class StartCompetitorResearch(ApplicationCommand):
+    scope: dict[str, Any]
+
+
+@dataclass(frozen=True, kw_only=True)
+class CancelCompetitorResearch(ApplicationCommand):
+    job_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class ApproveCompetitorResearchRevision(ApplicationCommand):
+    revision_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class RejectCompetitorResearchRevision(ApplicationCommand):
+    revision_id: str
+    note: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class AttachCompetitorResearchToDiscovery(ApplicationCommand):
+    discovery_revision_id: str
+    competitor_research_revision_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class DetachCompetitorResearchFromDiscovery(ApplicationCommand):
+    discovery_revision_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExcludeCompetitorFinding(ApplicationCommand):
+    revision_id: str
+    finding_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class IncludeCompetitorFinding(ApplicationCommand):
+    revision_id: str
+    finding_id: str
+    context_state: Literal["required", "optional"] = "optional"
+
+
+@dataclass(frozen=True, kw_only=True)
+class MarkCompetitorFindingStale(ApplicationCommand):
+    revision_id: str
+    finding_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class AddCompetitor(ApplicationCommand):
+    revision_id: str
+    competitor_name: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class RemoveCompetitor(ApplicationCommand):
+    revision_id: str
+    competitor_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class RefreshCompetitorResearch(ApplicationCommand):
+    revision_id: str
+    competitor_ids: tuple[str, ...] = ()
+    finding_ids: tuple[str, ...] = ()
+    stale_only: bool = False
+
+
+@dataclass(frozen=True, kw_only=True)
+class RebuildCompetitiveContextProjection(ApplicationCommand):
+    discovery_revision_id: str
+    competitor_research_revision_id: str
 
 
 # Layer 1
@@ -407,6 +544,23 @@ class RequestOverlapReview(ApplicationCommand):
 class UpdateProjectMetadata(ApplicationCommand):
     name: str
     idea: str
+
+
+# Specification export
+@dataclass(frozen=True, kw_only=True)
+class CompileSpecificationManifest(ApplicationCommand):
+    """Compile one immutable specification snapshot under an explicit policy mode."""
+
+    mode: Literal["draft", "approved", "historical", "diagnostic"] = "approved"
+    historical_brief_revision_id: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class RenderSpecificationManifest(ApplicationCommand):
+    """Render JSON and/or Markdown from one already persisted manifest."""
+
+    manifest_id: str
+    formats: tuple[Literal["json", "markdown"], ...] = ("json", "markdown")
 
 
 @dataclass(frozen=True, kw_only=True)

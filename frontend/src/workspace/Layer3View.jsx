@@ -348,7 +348,7 @@ export default function Layer3View({
             </WorkspaceActionButton>
               <span className="workspace-action-divider" aria-hidden="true" />
               <WorkspaceActionButton secondary onClick={onExportLayer3} disabled={!approvedExpansionCount} disabledReason={!approvedExpansionCount ? "Approve at least one expansion before export." : ""}>
-                Export Layer 3
+                Layer 3 diagnostic export
               </WorkspaceActionButton>
             </div>
           </section>
