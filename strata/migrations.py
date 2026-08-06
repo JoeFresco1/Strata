@@ -705,6 +705,7 @@ def _product_discovery_revisions(db: Database) -> None:
             rejected_at {timestamp_type},
             superseded_at {timestamp_type},
             UNIQUE(head_id, revision_number),
+            UNIQUE(head_id, id),
             UNIQUE(project_id, id),
             FOREIGN KEY (project_id, source_brief_revision_id)
                 REFERENCES brief_revisions(project_id, id) DEFERRABLE INITIALLY DEFERRED
@@ -744,6 +745,7 @@ def _product_discovery_revisions(db: Database) -> None:
             rejected_at {timestamp_type},
             superseded_at {timestamp_type},
             UNIQUE(head_id, revision_number),
+            UNIQUE(head_id, id),
             UNIQUE(project_id, id),
             FOREIGN KEY (project_id, source_brief_revision_id)
                 REFERENCES brief_revisions(project_id, id) DEFERRABLE INITIALLY DEFERRED
@@ -781,6 +783,14 @@ def _product_discovery_revisions(db: Database) -> None:
     ):
         db._execute(statement)
     if db.is_postgres:
+        for table, name in (
+            ("product_discovery_revisions", "discovery_revision_head_id_fk_target"),
+            ("competitor_research_revisions", "competitor_revision_head_id_fk_target"),
+        ):
+            if db._fetchone("SELECT 1 FROM pg_constraint WHERE conname = %s", (name,)) is None:
+                db._execute(
+                    f"ALTER TABLE {table} ADD CONSTRAINT {name} UNIQUE (head_id, id)"
+                )
         for table, name, columns, target in (
             (
                 "product_discovery_heads",
