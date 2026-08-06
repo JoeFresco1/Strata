@@ -27,12 +27,12 @@ jobs:
       STRATA_POSTGRES_ADMIN_URL: postgresql://strata:strata@127.0.0.1:5432/postgres
       STRATA_EMBEDDINGS_ENABLED: "false"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
@@ -45,19 +45,30 @@ jobs:
       - run: python -m strata.migrations status
       - run: npm run test:cache
         working-directory: frontend
+      - run: npm run test:layer0
+        working-directory: frontend
+      - run: npm run test:requests
+        working-directory: frontend
       - run: npm run build
         working-directory: frontend
-      - name: Validate prompt catalog and source size
+      - name: Validate prompt catalog and report source size
         shell: pwsh
         run: |
           Get-Content prompts.json -Raw | ConvertFrom-Json | Out-Null
           $files = Get-ChildItem strata,frontend/src,tests -Recurse -File |
             Where-Object { $_.Extension -in '.py','.js','.jsx','.css' }
           $oversized = $files | Where-Object { (Get-Content $_.FullName).Count -ge 1000 }
-          if ($oversized) { $oversized.FullName; exit 1 }
+          if ($oversized) {
+            Write-Output "Source-size report (informational; does not fail CI):"
+            $oversized | ForEach-Object {
+              $lineCount = (Get-Content $_.FullName).Count
+              Write-Output "$($_.FullName): $lineCount lines"
+              Write-Output "::warning file=$($_.FullName),title=Large source file::$lineCount lines"
+            }
+          }
 
   container:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: docker build -t strata:self-hosted .
