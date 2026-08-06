@@ -40,6 +40,7 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: npm ci
         working-directory: frontend
+      - run: python -m strata.migrations upgrade
       - run: python -m pytest tests/test_core.py -q
       - run: python -m compileall strata
       - run: python -m strata.migrations status
