@@ -21,10 +21,11 @@ function latestPolicies(items) {
   return [...latest.values()];
 }
 
-export default function Layer1ExplorationPanel({ projectId, apiFetch }) {
+export default function Layer1ExplorationPanel({ projectId, apiFetch, currentPillars = [], onArchitectureApplied }) {
   const [runs, setRuns] = useState([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [detail, setDetail] = useState(null);
+  const [discovery, setDiscovery] = useState(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [candidateFilter, setCandidateFilter] = useState("all");
@@ -39,6 +40,11 @@ export default function Layer1ExplorationPanel({ projectId, apiFetch }) {
     setSelectedRunId((current) => current || nextRuns[0]?.id || "");
   }, [apiFetch, projectId]);
 
+  const loadDiscovery = useCallback(async () => {
+    if (!projectId || !apiFetch) return;
+    setDiscovery(await apiFetch(`/projects/${projectId}/discovery`, { force: true }));
+  }, [apiFetch, projectId]);
+
   const loadDetail = useCallback(async (runId) => {
     if (!runId || !apiFetch) {
       setDetail(null);
@@ -49,8 +55,8 @@ export default function Layer1ExplorationPanel({ projectId, apiFetch }) {
   }, [apiFetch, projectId]);
 
   useEffect(() => {
-    loadRuns().catch((requestError) => setError(requestError.message));
-  }, [loadRuns]);
+    Promise.all([loadRuns(), loadDiscovery()]).catch((requestError) => setError(requestError.message));
+  }, [loadDiscovery, loadRuns]);
 
   useEffect(() => {
     loadDetail(selectedRunId).catch((requestError) => setError(requestError.message));
@@ -84,6 +90,7 @@ export default function Layer1ExplorationPanel({ projectId, apiFetch }) {
     try {
       const payload = await request();
       await loadRuns();
+      await loadDiscovery();
       await loadDetail(refreshRun || payload?.run?.id);
       if (payload?.run?.id) setSelectedRunId(payload.run.id);
     } catch (requestError) {
@@ -91,6 +98,31 @@ export default function Layer1ExplorationPanel({ projectId, apiFetch }) {
     } finally {
       setBusy("");
     }
+  }
+
+  function generateDiscovery() {
+    return perform("discovery:generate", () => apiFetch(`/projects/${projectId}/discovery/generate`, {
+      method: "POST",
+      body: JSON.stringify({
+        competitor_research_mode: "no_competitor_research",
+        request_id: crypto.randomUUID(),
+      }),
+    }));
+  }
+
+  function transitionDiscovery(action) {
+    const revision = discovery?.current_candidate;
+    if (!revision) return Promise.resolve();
+    return perform(`discovery:${action}`, () => apiFetch(
+      `/projects/${projectId}/discovery/revisions/${revision.id}/${action}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_state_token: revision.state_token,
+          request_id: crypto.randomUUID(),
+        }),
+      },
+    ));
   }
 
   function startExploration() {
@@ -111,7 +143,12 @@ export default function Layer1ExplorationPanel({ projectId, apiFetch }) {
       `/projects/${projectId}/layer1/exploration-runs/${selectedRunId}/lenses/${lens.id}`,
       {
         method: "POST",
-        body: JSON.stringify({ action, ...extras }),
+        body: JSON.stringify({
+          action,
+          expected_state_token: lens.state_token,
+          request_id: crypto.randomUUID(),
+          ...extras,
+        }),
       },
     ));
   }
@@ -156,6 +193,32 @@ export default function Layer1ExplorationPanel({ projectId, apiFetch }) {
     })).then(() => setGenericTitle(""));
   }
 
+  async function applyArchitecture(architecture) {
+    const unresolved = architecture.unresolved_risk_ids || [];
+    const warning = unresolved.length
+      ? `This replaces the active Layer 1 map and acknowledges ${unresolved.length} unresolved risks. Existing pillars remain preserved as superseded and downstream work becomes stale. Continue?`
+      : "This replaces the active Layer 1 map. Existing pillars remain preserved as superseded and downstream work becomes stale. Continue?";
+    if (!window.confirm(warning)) return;
+    const activePillars = currentPillars.filter((pillar) => !["cut", "merged"].includes(pillar.status));
+    await perform(`apply:${architecture.id}`, () => apiFetch(
+      `/projects/${projectId}/layer1/exploration-runs/${selectedRunId}/application`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          architecture_candidate_id: architecture.id,
+          expected_current_pillar_tokens: Object.fromEntries(
+            activePillars.map((pillar) => [pillar.id, pillar.state_token]),
+          ),
+          confirm_replace: true,
+          acknowledge_unresolved_risks: unresolved.length > 0,
+          note: "Applied from the Layer 1 architecture review workspace.",
+          request_id: crypto.randomUUID(),
+        }),
+      },
+    ));
+    await onArchitectureApplied?.();
+  }
+
   if (!apiFetch) {
     return <div className="panel warning">Exploration APIs are unavailable in this workspace.</div>;
   }
@@ -168,16 +231,40 @@ export default function Layer1ExplorationPanel({ projectId, apiFetch }) {
           <p className="muted">Explore each Product Discovery lens independently, preserve every candidate, then compare pillar architectures.</p>
         </div>
         <div className="button-row">
-          <WorkspaceActionButton primary onClick={startExploration} disabled={Boolean(busy)}>
+          <WorkspaceActionButton primary onClick={startExploration} disabled={Boolean(busy) || !discovery?.published}>
             Start exploration
           </WorkspaceActionButton>
-          <WorkspaceActionButton secondary onClick={() => loadDetail(selectedRunId)} disabled={!selectedRunId || Boolean(busy)}>
+          <WorkspaceActionButton secondary onClick={() => Promise.all([loadDiscovery(), loadRuns(), loadDetail(selectedRunId)])} disabled={Boolean(busy)}>
             Refresh
           </WorkspaceActionButton>
         </div>
       </section>
 
       {error ? <div className="warning" role="alert">{error}</div> : null}
+
+      <section className="panel">
+        <div className="workspace-section-heading">
+          <div>
+            <strong>Product Discovery gate</strong>
+            <p className="muted">Layer 1 uses the reviewed lenses, actors, domains, lifecycle stages, risks, and enterprise obligations from this immutable revision.</p>
+          </div>
+          <WorkspaceStatusBadge status={discovery?.published ? "published" : discovery?.current_candidate?.state || "draft"} />
+        </div>
+        {discovery?.published ? (
+          <p>Published revision <code>{discovery.published.id.slice(0, 8)}</code> with {discovery.published.discovery?.lenses?.length || 0} lenses.</p>
+        ) : discovery?.current_candidate ? (
+          <div className="button-row">
+            <span>{discovery.current_candidate.discovery?.lenses?.length || 0} lenses ready for review.</span>
+            {discovery.current_candidate.state === "candidate" ? <button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => transitionDiscovery("approve")}>Approve Discovery</button> : null}
+            {discovery.current_candidate.state === "approved" ? <button type="button" className="primary-button" disabled={Boolean(busy)} onClick={() => transitionDiscovery("publish")}>Publish Discovery</button> : null}
+          </div>
+        ) : (
+          <div className="button-row">
+            <span className="muted">Generate a candidate from the published Layer 0 brief, then approve and publish it before exploration.</span>
+            <button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={generateDiscovery}>Generate Product Discovery</button>
+          </div>
+        )}
+      </section>
 
       {runs.length ? (
         <label className="layer1-run-picker">
@@ -376,15 +463,61 @@ export default function Layer1ExplorationPanel({ projectId, apiFetch }) {
               <ul>{detail.adversarial_findings.map((item) => <li key={item.id}><strong>{item.missing_product_territory}</strong> - {item.concrete_failure}</li>)}</ul>
             ) : <p className="muted">No adversarial findings yet.</p>}
             <div className="layer1-architecture-grid">
-              {detail.architecture_options.map((architecture) => (
-                <article key={architecture.id} className="layer1-architecture-card">
-                  <WorkspaceStatusBadge status={architecture.kind} />
-                  <strong>{architecture.title}</strong>
-                  <p>{architecture.rationale}</p>
-                  <p className="muted">{architecture.pillars.length} pillars - {architecture.significant_non_pillar_territory_ids.length} retained non-pillar territories</p>
-                  <button type="button" className="secondary-button" onClick={() => perform(`select:${architecture.id}`, () => apiFetch(`/projects/${projectId}/layer1/exploration-runs/${selectedRunId}/selection`, { method: "POST", body: JSON.stringify({ architecture_candidate_id: architecture.id }) }))}>Select this option</button>
-                </article>
-              ))}
+              {detail.architecture_options.map((architecture) => {
+                  const assessment = [...(detail.global_architecture_assessments || [])]
+                    .reverse()
+                    .find((item) => item.architecture_candidate_ids?.includes(architecture.id));
+                  const mappingByPillar = Object.fromEntries(
+                    (architecture.mappings || []).map((item) => [item.pillar_id, item]),
+                  );
+                  return (
+                    <article key={architecture.id} className="layer1-architecture-card">
+                      <WorkspaceStatusBadge status={architecture.kind} />
+                      <strong>{architecture.title}</strong>
+                      <p>{architecture.rationale}</p>
+                      <p className="muted">{architecture.pillars.length} pillars - {architecture.significant_non_pillar_territory_ids.length} retained non-pillar territories</p>
+                      <div className="layer1-architecture-pillar-list">
+                        {(architecture.pillars || []).map((pillar) => {
+                          const mapping = mappingByPillar[pillar.id];
+                          return (
+                            <div key={pillar.id}>
+                              <strong>{pillar.title}</strong>
+                              <p>{pillar.description || "No pillar description supplied."}</p>
+                              <p className="muted">
+                                {mapping?.territory_candidate_ids?.length || 0} mapped territories; {mapping?.covered_actor_ids?.length || 0} actors; {mapping?.covered_enterprise_obligation_ids?.length || 0} enterprise obligations
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {architecture.unresolved_risk_ids?.length ? (
+                        <div className="warning">Unresolved risks: {architecture.unresolved_risk_ids.join(", ")}</div>
+                      ) : null}
+                      {assessment ? (
+                        <details open={!assessment.ready_for_human_review}>
+                          <summary>Global architecture review</summary>
+                          <p>{assessment.rationale || "No critic rationale supplied."}</p>
+                          <p className="muted">
+                            Coherence {assessment.coherence_score}% · Differentiation {assessment.differentiation_score}% · Actors {assessment.actor_coverage_score}% · Domains {assessment.product_domain_coverage_score}% · Lifecycle {assessment.lifecycle_coverage_score}% · Enterprise obligations {assessment.enterprise_obligation_coverage_score}%
+                          </p>
+                          <WorkspaceStatusBadge status={assessment.ready_for_human_review ? "ready for human review" : "additional exploration required"} />
+                          {assessment.recommended_lens ? <p>Recommended additional lens: {assessment.recommended_lens}</p> : null}
+                        </details>
+                      ) : <div className="warning">Global architecture review has not completed.</div>}
+                      <button type="button" className="secondary-button" disabled={Boolean(busy) || !assessment} onClick={() => perform(`select:${architecture.id}`, () => apiFetch(`/projects/${projectId}/layer1/exploration-runs/${selectedRunId}/selection`, { method: "POST", body: JSON.stringify({ architecture_candidate_id: architecture.id, request_id: crypto.randomUUID() }) }))}>Select this option</button>
+                      {detail.latest_architecture_selection?.architecture_candidate_id === architecture.id ? (
+                        <button
+                          type="button"
+                          className="primary-button"
+                          disabled={Boolean(busy) || !assessment || detail.active_architecture_application?.architecture_candidate_id === architecture.id}
+                          onClick={() => applyArchitecture(architecture)}
+                        >
+                          {detail.active_architecture_application?.architecture_candidate_id === architecture.id ? "Applied" : "Apply to project map"}
+                        </button>
+                      ) : null}
+                    </article>
+                  );
+              })}
             </div>
           </section>
         </>

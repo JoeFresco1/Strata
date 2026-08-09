@@ -71,6 +71,16 @@ class Layer3ServiceMixin:
             if feature.status != "approved":
                 raise ValueError(f"Layer 2 feature must be approved before Layer 3 expansion: {feature_id}")
             pillar = self.db.get_node(feature.owner_pillar_id)
+            if pillar.status not in {"kept", "prioritized"}:
+                raise ValueError(
+                    f"Layer 3 expansion requires an active kept or prioritized parent pillar: {pillar.id}"
+                )
+            layer2_run = self._layer3_source_run(feature)
+            architecture_application = self._layer3_architecture_application(
+                project_id,
+                pillar,
+                layer2_run,
+            )
             siblings = [
                 self._layer3_feature_context(item)
                 for item in all_features.values()
@@ -93,6 +103,12 @@ class Layer3ServiceMixin:
                     "pillar_id": pillar.id,
                     "title": pillar.title,
                     "description": pillar.description or "",
+                    "architecture_application_id": pillar.json_payload.get(
+                        "architecture_application_id"
+                    ),
+                    "mapped_territory_candidate_ids": pillar.json_payload.get(
+                        "territory_candidate_ids", []
+                    ),
                 },
                 feature_context=self._layer3_feature_context(feature),
                 sibling_features=siblings,
@@ -132,6 +148,18 @@ class Layer3ServiceMixin:
                 "source_layer2_feature_revision": feature_revision_token(feature),
                 "source_brief_revision": str(brief.current_published_revision_id or "") if brief else "",
                 "source_pillar_revision": pillar_revision_token(pillar),
+                "source_layer1_architecture_application_id": (
+                    architecture_application.id if architecture_application else None
+                ),
+                "source_layer1_architecture_content_hash": (
+                    architecture_application.architecture_content_hash
+                    if architecture_application
+                    else ""
+                ),
+                "source_layer1_territory_candidate_ids": (
+                    layer2_run.source_territory_candidate_ids if layer2_run else []
+                ),
+                "source_layer2_generation_run_id": layer2_run.id if layer2_run else None,
             }
             artifact_payload = {
                 "project_id": project_id,
@@ -167,6 +195,13 @@ class Layer3ServiceMixin:
                     ("brief", brief.id if brief else "", str(brief.current_published_revision_id or "") if brief else ""),
                     ("layer1_pillar", pillar.id, pillar_revision_token(pillar)),
                     ("layer2_feature", feature.id, feature_revision_token(feature)),
+                    (
+                        "layer1_architecture_application",
+                        architecture_application.id if architecture_application else "",
+                        architecture_application.architecture_content_hash
+                        if architecture_application
+                        else "",
+                    ),
                 ):
                     if source_id and source_revision:
                         self.db.add_artifact_dependency(
@@ -177,6 +212,54 @@ class Layer3ServiceMixin:
                         )
             created.append(saved)
         return created
+
+    def _layer3_source_run(self, feature: Any) -> Any | None:
+        """Resolve one exact Layer 2 source run or reject mixed candidate lineage."""
+        source_runs = {
+            raw.generation_run_id: self.db.get_layer2_generation_run(raw.generation_run_id)
+            for candidate_id in feature.candidate_source_ids
+            for raw in [self.db.get_layer2_raw_candidate(candidate_id)]
+        }
+        if len(source_runs) > 1:
+            raise ValueError(
+                "Layer 3 expansion cannot infer exact lineage from feature candidates spanning multiple Layer 2 runs."
+            )
+        return next(iter(source_runs.values()), None)
+
+    def _layer3_architecture_application(
+        self,
+        project_id: str,
+        pillar: Any,
+        layer2_run: Any | None,
+    ) -> Any | None:
+        """Require the pillar, Layer 2 run, and current architecture application to agree."""
+        expected_id = str(pillar.json_payload.get("architecture_application_id") or "")
+        if not expected_id:
+            if layer2_run and layer2_run.source_architecture_application_id:
+                raise ValueError(
+                    "Layer 2 run architecture lineage is missing from the parent pillar."
+                )
+            return None
+        application = self.db.get_active_layer1_architecture_application(project_id)
+        if application is None or application.id != expected_id:
+            raise ValueError(
+                "The feature's parent pillar belongs to a superseded Layer 1 architecture."
+            )
+        freshness = self.db.freshness_for_artifact(
+            project_id,
+            "layer1_architecture_application",
+            application.id,
+            application.architecture_content_hash,
+        )
+        if freshness["freshness_state"] != "current":
+            raise ValueError(
+                "The feature's Layer 1 architecture is stale and must be regenerated before Layer 3 expansion."
+            )
+        if layer2_run and layer2_run.source_architecture_application_id != expected_id:
+            raise ValueError(
+                "Layer 2 run lineage does not match the feature's active Layer 1 architecture."
+            )
+        return application
 
     @staticmethod
     def _validate_feature_expansion(payload: dict[str, Any]) -> FeatureExpansionResponse:
@@ -279,4 +362,13 @@ class Layer3ServiceMixin:
             "depends_on": getattr(feature, "depends_on", []),
             "used_by": getattr(feature, "used_by", []),
             "notes": getattr(feature, "notes", ""),
+            "source_architecture_application_id": feature.metadata.get(
+                "source_architecture_application_id"
+            ),
+            "mapped_territory_candidate_ids": feature.metadata.get(
+                "mapped_territory_candidate_ids", []
+            ),
+            "retained_non_pillar_territory_candidate_ids": feature.metadata.get(
+                "retained_non_pillar_territory_candidate_ids", []
+            ),
         }

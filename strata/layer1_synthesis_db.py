@@ -10,6 +10,7 @@ from strata.layer1_territory_models import (
     ArchitectureKind,
     ArchitectureState,
     GlobalArchitectureAssessment,
+    Layer1ArchitectureApplication,
     Layer1CoverageState,
     Layer1SynthesisResult,
     LensCoverageAssessment,
@@ -118,7 +119,7 @@ class Layer1SynthesisDatabaseMixin:
                 "unresolved_discovery_item_ids",
                 "high_severity_unresolved_item_ids",
             ):
-                payload[field] = self._load_json(payload[field])
+                payload[field] = self._load_json_list(payload[field])
             results.append(LensCoverageAssessment.model_validate(payload))
         return results
 
@@ -214,10 +215,10 @@ class Layer1SynthesisDatabaseMixin:
             "candidate_integrity",
             "architecture_breadth",
             "runtime_cost",
-            "unresolved_high_severity_item_ids",
-            "incomplete_reasons",
         ):
             payload[field] = self._load_json(payload[field])
+        for field in ("unresolved_high_severity_item_ids", "incomplete_reasons"):
+            payload[field] = self._load_json_list(payload[field])
         return Layer1CoverageState.model_validate(payload)
 
     def persist_layer1_architecture_candidate(
@@ -398,19 +399,31 @@ class Layer1SynthesisDatabaseMixin:
         results: list[PillarArchitectureCandidate] = []
         for row in rows:
             payload = dict(row)
-            for field in (
-                "pillars",
-                "significant_non_pillar_territory_ids",
-                "unresolved_risk_ids",
-                "runtime_provenance",
-            ):
-                payload[field] = self._load_json(payload[field])
+            for field in ("pillars", "significant_non_pillar_territory_ids", "unresolved_risk_ids"):
+                payload[field] = self._load_json_list(payload[field])
+            payload["runtime_provenance"] = self._load_json(payload["runtime_provenance"])
             payload["mappings"] = [
                 item.model_dump(mode="python")
                 for item in self._list_layer1_pillar_mappings(str(payload["id"]))
             ]
             results.append(PillarArchitectureCandidate.model_validate(payload))
         return results
+
+    def get_layer1_architecture_candidate(
+        self,
+        architecture_candidate_id: str,
+    ) -> PillarArchitectureCandidate:
+        """Return one immutable architecture candidate with all mappings."""
+        row = self._fetchone(
+            f"SELECT run_id FROM layer1_architecture_candidates WHERE id = {self.param}",
+            (architecture_candidate_id,),
+        )
+        if row is None:
+            raise ValueError("Layer 1 architecture candidate was not found.")
+        for candidate in self.list_layer1_architecture_candidates(str(row["run_id"])):
+            if candidate.id == architecture_candidate_id:
+                return candidate
+        raise ValueError("Layer 1 architecture candidate was not found.")
 
     def _list_layer1_pillar_mappings(
         self,
@@ -437,7 +450,7 @@ class Layer1SynthesisDatabaseMixin:
                 "cross_cutting_concern_ids",
                 "subordinate_feature_family_ids",
             ):
-                payload[field] = self._load_json(payload[field])
+                payload[field] = self._load_json_list(payload[field])
             results.append(PillarTerritoryMapping.model_validate(payload))
         return results
 
@@ -488,6 +501,125 @@ class Layer1SynthesisDatabaseMixin:
             tuple(event.values()),
         )
         return event
+
+    def latest_layer1_architecture_selection(self, run_id: str) -> dict[str, Any] | None:
+        """Return the latest append-only human architecture decision for a run."""
+        row = self._fetchone(
+            f"""
+            SELECT * FROM layer1_architecture_selection_events
+            WHERE run_id = {self.param} ORDER BY sequence_number DESC LIMIT 1
+            """,
+            (run_id,),
+        )
+        return dict(row) if row is not None else None
+
+    def apply_layer1_architecture(
+        self,
+        *,
+        application_id: str,
+        architecture: PillarArchitectureCandidate,
+        selection_event_id: str,
+        applied_pillar_ids: list[str],
+        superseded_pillar_ids: list[str],
+        actor: str,
+        command_id: str,
+        note: str,
+    ) -> Layer1ArchitectureApplication:
+        """Activate one explicit application record and preserve prior applications."""
+        previous = self._fetchone(
+            f"""
+            SELECT id FROM layer1_architecture_applications
+            WHERE project_id = {self.param} AND state = 'active'
+            """,
+            (architecture.project_id,),
+        )
+        now = territory_now()
+        if previous is not None:
+            self._execute(
+                f"""
+                UPDATE layer1_architecture_applications
+                SET state = 'superseded', superseded_at = {self.param}
+                WHERE id = {self.param}
+                """,
+                (now, str(previous["id"])),
+            )
+        latest = self._fetchone(
+            f"""
+            SELECT MAX(sequence_number) AS sequence_number
+            FROM layer1_architecture_applications WHERE project_id = {self.param}
+            """,
+            (architecture.project_id,),
+        )
+        sequence_number = int(latest["sequence_number"] or 0) + 1
+        application = Layer1ArchitectureApplication(
+            id=application_id,
+            project_id=architecture.project_id,
+            run_id=architecture.run_id,
+            architecture_candidate_id=architecture.id,
+            selection_event_id=selection_event_id,
+            sequence_number=sequence_number,
+            state="active",
+            applied_pillar_ids=applied_pillar_ids,
+            superseded_pillar_ids=superseded_pillar_ids,
+            retained_territory_candidate_ids=architecture.significant_non_pillar_territory_ids,
+            architecture_content_hash=architecture.content_hash,
+            actor=actor,
+            command_id=command_id,
+            note=note,
+            created_at=now,
+        )
+        self._execute(
+            f"""
+            INSERT INTO layer1_architecture_applications (
+                id, project_id, run_id, architecture_candidate_id, selection_event_id,
+                sequence_number, state, applied_pillar_ids, superseded_pillar_ids,
+                retained_territory_candidate_ids, architecture_content_hash, actor,
+                command_id, note, created_at, superseded_at
+            ) VALUES ({', '.join([self.param] * 16)})
+            """,
+            (
+                application.id,
+                application.project_id,
+                application.run_id,
+                application.architecture_candidate_id,
+                application.selection_event_id,
+                application.sequence_number,
+                application.state,
+                self._dump_json(application.applied_pillar_ids),
+                self._dump_json(application.superseded_pillar_ids),
+                self._dump_json(application.retained_territory_candidate_ids),
+                application.architecture_content_hash,
+                application.actor,
+                application.command_id,
+                application.note,
+                application.created_at,
+                None,
+            ),
+        )
+        return application
+
+    def get_active_layer1_architecture_application(
+        self,
+        project_id: str,
+    ) -> Layer1ArchitectureApplication | None:
+        """Return the active applied architecture, if the project has one."""
+        row = self._fetchone(
+            f"""
+            SELECT * FROM layer1_architecture_applications
+            WHERE project_id = {self.param} AND state = 'active'
+            """,
+            (project_id,),
+        )
+        if row is None:
+            return None
+        payload = dict(row)
+        for field in (
+            "applied_pillar_ids",
+            "superseded_pillar_ids",
+            "retained_territory_candidate_ids",
+        ):
+            payload[field] = self._load_json_list(payload[field])
+        return Layer1ArchitectureApplication.model_validate(payload)
 
     def persist_layer1_synthesis_result(
         self,
@@ -543,6 +675,26 @@ class Layer1SynthesisDatabaseMixin:
             ),
         )
         return result
+
+    def list_layer1_synthesis_results(self, run_id: str) -> list[Layer1SynthesisResult]:
+        """Return append-only synthesis checkpoints in creation order."""
+        rows = self._fetchall(
+            f"SELECT * FROM layer1_synthesis_results WHERE run_id = {self.param} "
+            "ORDER BY created_at, id",
+            (run_id,),
+        )
+        results: list[Layer1SynthesisResult] = []
+        for row in rows:
+            payload = dict(row)
+            payload["architecture_candidate_ids"] = self._load_json_list(
+                payload["architecture_candidate_ids"]
+            )
+            payload["retained_non_pillar_territory_ids"] = self._load_json_list(
+                payload["retained_non_pillar_territory_ids"]
+            )
+            payload["runtime_provenance"] = self._load_json(payload["runtime_provenance"])
+            results.append(Layer1SynthesisResult.model_validate(payload))
+        return results
 
     def persist_layer1_global_architecture_assessment(
         self,
@@ -669,9 +821,9 @@ class Layer1SynthesisDatabaseMixin:
                 "fragmented_pillar_ids",
                 "hidden_territory_candidate_ids",
                 "unresolved_high_severity_risk_ids",
-                "runtime_provenance",
             ):
-                payload[field] = self._load_json(payload[field])
+                payload[field] = self._load_json_list(payload[field])
+            payload["runtime_provenance"] = self._load_json(payload["runtime_provenance"])
             results.append(GlobalArchitectureAssessment.model_validate(payload))
         return results
 

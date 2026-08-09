@@ -40,6 +40,7 @@ export default function Layer1View({
   competitiveIntelligenceEnabled = true,
   projectId,
   apiFetch,
+  onArchitectureApplied,
 }) {
   const pillars = layer1Pillars(snapshot);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -50,7 +51,7 @@ export default function Layer1View({
   const [sortConfig, setSortConfig] = useState({ key: "priority", direction: "asc" });
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewFilter, setReviewFilter] = useState("unresolved");
-  const [layer1Mode, setLayer1Mode] = useState("pillars");
+  const [layer1Mode, setLayer1Mode] = useState(pillars.length ? "pillars" : "exploration");
   const generationRunning = generationJobState?.state === "running";
   const researchRunning = researchJobState?.state === "running";
   const overlapRunning = overlapJobState?.state === "running";
@@ -156,11 +157,9 @@ export default function Layer1View({
             <div className="segmented-action-row layer1-inline-actions">
               <WorkspaceActionButton
                 primary
-                onClick={onGenerate}
-                disabled={generationRunning}
-                disabledReason={generationRunning ? "Layer 1 generation is already running." : ""}
+                onClick={() => setLayer1Mode("exploration")}
               >
-                Generate all
+                Open territory exploration
               </WorkspaceActionButton>
               <span className="workspace-action-divider" aria-hidden="true" />
               <WorkspaceActionButton secondary onClick={() => setNewPillarOpen((open) => !open)}>Add pillar</WorkspaceActionButton>
@@ -219,7 +218,12 @@ export default function Layer1View({
       </div>
 
       {layer1Mode === "exploration" ? (
-        <Layer1ExplorationPanel projectId={projectId} apiFetch={apiFetch} />
+        <Layer1ExplorationPanel
+          projectId={projectId}
+          apiFetch={apiFetch}
+          currentPillars={pillars}
+          onArchitectureApplied={onArchitectureApplied}
+        />
       ) : (
       <>
 

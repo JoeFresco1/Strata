@@ -147,6 +147,9 @@ def build_adversarial_territory_prompt(
     brief_projection: dict[str, Any],
     discovery_projection: dict[str, Any],
     current_territory_projection: list[dict[str, Any]],
+    territory_inventory: dict[str, list[str]] | None = None,
+    territory_population_summary: dict[str, Any] | None = None,
+    semantic_clusters: list[dict[str, Any]] | None = None,
 ) -> str:
     """Ask for concrete failure scenarios rather than another pillar brainstorm."""
     return f"""
@@ -155,6 +158,8 @@ in production. Do not propose pillars and do not rewrite existing territory.
 
 Identify concrete customer, operator, administrative, commercial, integration,
 privacy, migration, or governance scenarios the current map cannot support.
+Return exactly five highest-value scenarios. Keep every prose field to one concise
+sentence so the JSON object closes within the reserved response budget.
 
 Published Layer 0:
 {json.dumps(brief_projection, ensure_ascii=False, sort_keys=True)}
@@ -164,6 +169,15 @@ Bounded Product Discovery:
 
 Current accepted territory projection:
 {json.dumps(current_territory_projection, ensure_ascii=False, sort_keys=True)}
+
+Complete accepted-territory inventory grouped by destination:
+{json.dumps(territory_inventory if territory_inventory is not None else current_territory_projection, ensure_ascii=False, sort_keys=True)}
+
+Accepted-territory population summary:
+{json.dumps(territory_population_summary or {}, ensure_ascii=False, sort_keys=True)}
+
+Semantic-family summaries:
+{json.dumps(semantic_clusters or [], ensure_ascii=False, sort_keys=True)}
 
 Return JSON:
 {{
@@ -187,6 +201,8 @@ def build_architecture_synthesis_prompt(
     brief_projection: dict[str, Any],
     discovery_projection: dict[str, Any],
     territory_projection: list[dict[str, Any]],
+    territory_inventory: dict[str, list[str]] | None = None,
+    territory_population_summary: dict[str, Any] | None = None,
     semantic_clusters: list[dict[str, Any]],
     unresolved_high_severity_risk_ids: list[str],
     requested_views: list[str],
@@ -209,13 +225,24 @@ Published Product Discovery:
 Accepted and routed territory:
 {json.dumps(territory_projection, ensure_ascii=False, sort_keys=True)}
 
+Complete accepted-territory inventory grouped by destination:
+{json.dumps(territory_inventory if territory_inventory is not None else territory_projection, ensure_ascii=False, sort_keys=True)}
+
+Accepted-territory population summary:
+{json.dumps(territory_population_summary or {}, ensure_ascii=False, sort_keys=True)}
+
 Semantic clusters:
 {json.dumps(semantic_clusters, ensure_ascii=False, sort_keys=True)}
 
 Unresolved high-severity risk IDs:
 {json.dumps(unresolved_high_severity_risk_ids)}
 
-Every pillar must map to one or more exact territory candidate IDs. Return JSON:
+Every pillar must map to one or more exact territory candidate IDs from either the
+detailed projection or compact inventory. Keep rationales and descriptions concise;
+use no more than eight representative territory IDs in each pillar mapping. Set
+`significant_non_pillar_territory_ids` to an empty list: the application—not the
+model—will deterministically populate it with every accepted unmapped candidate.
+Return JSON:
 {{
   "architectures": [{{
     "kind": "coherent_core | expansive_differentiation | enterprise_completeness",

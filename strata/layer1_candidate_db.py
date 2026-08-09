@@ -461,10 +461,10 @@ class Layer1CandidateDatabaseMixin:
         results: list[TerritoryAssessment] = []
         for row in rows:
             payload = dict(row)
-            payload["closed_territory_violation_ids"] = self._load_json(
+            payload["closed_territory_violation_ids"] = self._load_json_list(
                 payload["closed_territory_violation_ids"]
             )
-            payload["anti_generic_pattern_ids"] = self._load_json(
+            payload["anti_generic_pattern_ids"] = self._load_json_list(
                 payload["anti_generic_pattern_ids"]
             )
             results.append(TerritoryAssessment.model_validate(payload))
@@ -550,10 +550,10 @@ class Layer1CandidateDatabaseMixin:
         results: list[AdversarialScenarioCandidate] = []
         for row in rows:
             payload = dict(row)
-            payload["insufficient_territory_ids"] = self._load_json(
+            payload["insufficient_territory_ids"] = self._load_json_list(
                 payload["insufficient_territory_ids"]
             )
-            payload["source_discovery_item_ids"] = self._load_json(
+            payload["source_discovery_item_ids"] = self._load_json_list(
                 payload["source_discovery_item_ids"]
             )
             results.append(AdversarialScenarioCandidate.model_validate(payload))
@@ -751,7 +751,7 @@ class Layer1CandidateDatabaseMixin:
         results: list[TerritoryCluster] = []
         for row in rows:
             payload = dict(row)
-            payload["candidate_ids"] = self._load_json(payload["candidate_ids"])
+            payload["candidate_ids"] = self._load_json_list(payload["candidate_ids"])
             payload["destination_summary"] = self._load_json(
                 payload["destination_summary"]
             )

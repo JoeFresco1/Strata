@@ -45,11 +45,49 @@ class Layer2EngineMixin(
         self._ensure_profile_loaded(runtime_profile, thinking_enabled=thinking_enabled)
         source_model = str(runtime_profile.get("label") or runtime_profile.get("model_name") or "local-model")
         selected_pillars = [self._approved_layer1_pillar(project_id, pillar_id) for pillar_id in pillar_ids]
+        application_ids = {
+            str(pillar.json_payload.get("architecture_application_id"))
+            for pillar in selected_pillars
+            if pillar.json_payload.get("architecture_application_id")
+        }
+        if len(application_ids) > 1:
+            raise ValueError("Layer 2 generation cannot mix pillars from different applied architectures.")
+        if application_ids and any(
+            not pillar.json_payload.get("architecture_application_id")
+            for pillar in selected_pillars
+        ):
+            raise ValueError(
+                "Layer 2 generation cannot mix applied-architecture pillars with manual or legacy pillars."
+            )
+        application_id = next(iter(application_ids), None)
+        source_territory_ids = {
+            str(candidate_id)
+            for pillar in selected_pillars
+            for candidate_id in pillar.json_payload.get("territory_candidate_ids", [])
+            if str(candidate_id).strip()
+        }
+        if application_id:
+            application = self.db.get_active_layer1_architecture_application(project_id)
+            if application is None or application.id != application_id:
+                raise ValueError("Selected pillars do not belong to the active Layer 1 architecture.")
+            freshness = self.db.freshness_for_artifact(
+                project_id,
+                "layer1_architecture_application",
+                application.id,
+                application.architecture_content_hash,
+            )
+            if freshness["freshness_state"] != "current":
+                raise ValueError(
+                    "The active Layer 1 architecture is stale. Run and apply a current exploration before Layer 2 generation."
+                )
+            source_territory_ids.update(application.retained_territory_candidate_ids)
         run = self.db.create_layer2_generation_run(
             project_id=project_id,
             source_pillar_ids=[pillar.id for pillar in selected_pillars],
             lenses=[name for name, _ in LAYER2_LENSES],
             source_model=source_model,
+            source_architecture_application_id=application_id,
+            source_territory_candidate_ids=sorted(source_territory_ids),
         )
         stats: dict[str, Any] = {
             "created_feature_ids": [],

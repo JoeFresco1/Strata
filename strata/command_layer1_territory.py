@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from strata.command_types import (
     AddAntiGenericPattern,
     AddClosedTerritory,
     ApplicationCommand,
+    ApplyLayer1ArchitectureCandidate,
     BuildLayer1SynthesisContext,
     CancelLayer1ExpansionRun,
     ClassifyTerritoryCandidate,
     CommandResult,
+    CommandConflictError,
+    CommandValidationError,
+    StaleSourceError,
     CreateHybridLayer1Architecture,
     DisableAntiGenericPattern,
     GenerateLayer1ArchitectureCandidates,
@@ -28,6 +33,7 @@ from strata.command_types import (
     StaleEffect,
     state_token,
 )
+from strata.dependency_db import pillar_revision_token
 from strata.layer1_territory_models import (
     ArchitectureKind,
     ArchitectureState,
@@ -234,8 +240,8 @@ class CommandLayer1TerritoryMixin:
                 run_id=command.run_id if command.run_id is not None else current["run_id"],
                 title=str(current["title"]),
                 description=str(current["description"]),
-                semantic_examples=self.db._load_json(current["semantic_examples"]),
-                source_family_ids=self.db._load_json(current["source_family_ids"]),
+                semantic_examples=self.db._load_json_list(current["semantic_examples"]),
+                source_family_ids=self.db._load_json_list(current["source_family_ids"]),
                 source="human",
                 scope=ClosedTerritoryScope(str(current["scope"])),
                 active=False,
@@ -303,8 +309,8 @@ class CommandLayer1TerritoryMixin:
                 logical_id=command.logical_id,
                 title=str(current["title"]),
                 description=str(current["description"]),
-                semantic_examples=self.db._load_json(current["semantic_examples"]),
-                source_run_ids=self.db._load_json(current["source_run_ids"]),
+                semantic_examples=self.db._load_json_list(current["semantic_examples"]),
+                source_run_ids=self.db._load_json_list(current["source_run_ids"]),
                 confidence=float(current["confidence"]),
                 scope=str(current["scope"]),
                 active=False,
@@ -448,7 +454,22 @@ class CommandLayer1TerritoryMixin:
         """Select one option without overwriting its siblings."""
         def operation() -> tuple[dict[str, Any], str, StaleEffect]:
             """Append the architecture selection event."""
-            self._require_territory_scope(command.project_id, command.run_id, command.run_id)
+            run = self._require_territory_scope(
+                command.project_id, command.run_id, command.run_id
+            )
+            brief_head = self.db.ensure_brief_revision_head(command.project_id)
+            discovery = self.db.discovery_snapshot(command.project_id).get("published")
+            if (
+                str(brief_head.get("current_published_revision_id") or "")
+                != run.source_brief_revision_id
+                or not isinstance(discovery, dict)
+                or str(discovery.get("id") or "") != run.source_discovery_revision_id
+            ):
+                raise StaleSourceError(
+                    "This architecture was synthesized from superseded Layer 0 or Product Discovery revisions. Start a current exploration before applying it.",
+                    artifact_id=command.architecture_candidate_id,
+                    recovery="start_current_exploration",
+                )
             event = self.db.select_layer1_architecture(
                 run_id=command.run_id,
                 architecture_candidate_id=command.architecture_candidate_id,
@@ -464,6 +485,281 @@ class CommandLayer1TerritoryMixin:
             target_type="layer1_architecture_candidate",
             target_id=command.architecture_candidate_id,
             operation=operation,
+        )
+
+    def _apply_layer1_architecture(
+        self,
+        command: ApplyLayer1ArchitectureCandidate,
+    ) -> CommandResult:
+        """Atomically replace the active map with one explicitly selected architecture."""
+        def operation() -> tuple[dict[str, Any], str, StaleEffect]:
+            """Create traced pillars, preserve superseded nodes, and stale descendants."""
+            run = self._require_territory_scope(
+                command.project_id, command.run_id, command.run_id
+            )
+            brief_head = self.db.ensure_brief_revision_head(command.project_id)
+            discovery = self.db.discovery_snapshot(command.project_id).get("published")
+            if (
+                str(brief_head.get("current_published_revision_id") or "")
+                != run.source_brief_revision_id
+                or not isinstance(discovery, dict)
+                or str(discovery.get("id") or "") != run.source_discovery_revision_id
+            ):
+                raise StaleSourceError(
+                    "This architecture was synthesized from superseded Layer 0 or Product Discovery revisions. Start a current exploration before applying it.",
+                    artifact_id=command.architecture_candidate_id,
+                    recovery="start_current_exploration",
+                )
+            if not command.confirm_replace:
+                raise CommandValidationError(
+                    "Applying an architecture requires explicit replacement confirmation."
+                )
+            architecture = self.db.get_layer1_architecture_candidate(
+                command.architecture_candidate_id
+            )
+            if architecture.run_id != command.run_id or architecture.project_id != command.project_id:
+                raise CommandValidationError("Architecture candidate does not belong to this run.")
+            selection = self.db.latest_layer1_architecture_selection(command.run_id)
+            if (
+                selection is None
+                or str(selection.get("state")) != ArchitectureState.SELECTED.value
+                or str(selection.get("architecture_candidate_id")) != architecture.id
+            ):
+                raise CommandValidationError(
+                    "Select this architecture in a separate human review action before applying it."
+                )
+            if architecture.unresolved_risk_ids and not command.acknowledge_unresolved_risks:
+                raise CommandValidationError(
+                    "Acknowledge the architecture's unresolved risks before applying it."
+                )
+            current = [
+                item
+                for item in self.db.list_nodes(
+                    command.project_id, parent_id=None, layer=1, node_type="pillar"
+                )
+                if item.status not in {"cut", "merged"}
+            ]
+            expected_ids = set(command.expected_current_pillar_tokens)
+            current_ids = {item.id for item in current}
+            if expected_ids != current_ids:
+                raise CommandConflictError(
+                    "The active Layer 1 map changed. Reload before applying the architecture."
+                )
+            for pillar in current:
+                actual = self.pillar_state_token(pillar)
+                if command.expected_current_pillar_tokens.get(pillar.id) != actual:
+                    raise CommandConflictError(
+                        "An active Layer 1 pillar changed. Reload before applying the architecture.",
+                        artifact_id=pillar.id,
+                        actual_revision=actual,
+                        recovery="reload",
+                    )
+            application_id = str(uuid.uuid4())
+            mappings = {item.pillar_id: item for item in architecture.mappings}
+            created = self._create_applied_architecture_pillars(
+                command, architecture, application_id, mappings
+            )
+            stale_effects = self._supersede_current_pillars(
+                command, current, application_id
+            )
+            previous_application = self.db.get_active_layer1_architecture_application(
+                command.project_id
+            )
+            application = self.db.apply_layer1_architecture(
+                application_id=application_id,
+                architecture=architecture,
+                selection_event_id=str(selection["id"]),
+                applied_pillar_ids=[item.id for item in created],
+                superseded_pillar_ids=[item.id for item in current],
+                actor=command.actor.actor_id,
+                command_id=self._active_command_id(),
+                note=command.note,
+            )
+            if previous_application is not None:
+                self.db.set_artifact_freshness(
+                    project_id=command.project_id,
+                    artifact_type="layer1_architecture_application",
+                    artifact_id=previous_application.id,
+                    artifact_revision_id=previous_application.architecture_content_hash,
+                    freshness_state="superseded",
+                    lineage_quality="exact",
+                )
+            self._register_applied_architecture_lineage(application, architecture, created)
+            data = {
+                "application": application.model_dump(mode="json"),
+                "pillars": [item.model_dump(mode="json") for item in created],
+            }
+            return data, state_token(data["application"]), self._combine_stale_effects(stale_effects)
+
+        return self._execute(
+            command,
+            target_type="layer1_architecture_application",
+            target_id=command.architecture_candidate_id,
+            operation=operation,
+        )
+
+    def _create_applied_architecture_pillars(
+        self,
+        command: ApplyLayer1ArchitectureCandidate,
+        architecture: Any,
+        application_id: str,
+        mappings: dict[str, Any],
+    ) -> list[Any]:
+        """Create kept Layer 1 nodes carrying exact synthesis and territory provenance."""
+        created = []
+        for ordinal, payload in enumerate(architecture.pillars):
+            logical_id = str(payload.get("id") or "").strip()
+            title = str(payload.get("title") or "").strip()
+            if not logical_id or not title:
+                raise CommandValidationError("Every applied architecture pillar needs an id and title.")
+            mapping = mappings.get(logical_id)
+            if mapping is None:
+                raise CommandValidationError("Every applied architecture pillar needs territory mappings.")
+            node = self.db.create_node(
+                project_id=command.project_id,
+                parent_id=None,
+                layer=1,
+                node_type="pillar",
+                title=title,
+                description=str(payload.get("description") or "").strip(),
+                status="kept",
+                priority=max(0, 10 - ordinal),
+                json_payload={
+                    "source": "divergent_architecture",
+                    "creation_mode": "applied_layer1_architecture",
+                    "architecture_application_id": application_id,
+                    "architecture_candidate_id": architecture.id,
+                    "architecture_content_hash": architecture.content_hash,
+                    "architecture_pillar_id": logical_id,
+                    "territory_candidate_ids": mapping.territory_candidate_ids,
+                    "source_discovery_item_ids": mapping.source_discovery_item_ids,
+                    "covered_actor_ids": mapping.covered_actor_ids,
+                    "covered_domain_ids": mapping.covered_domain_ids,
+                    "covered_enterprise_obligation_ids": mapping.covered_enterprise_obligation_ids,
+                    "covered_risk_ids": mapping.covered_risk_ids,
+                    "cross_cutting_concern_ids": mapping.cross_cutting_concern_ids,
+                    "subordinate_feature_family_ids": mapping.subordinate_feature_family_ids,
+                },
+            )
+            node = self.services.generation_service.refresh_pillar_semantic_metadata(node.id)
+            self._authority(
+                command,
+                "layer1_pillar",
+                node.id,
+                "architecture_apply_create",
+                {"architecture_application_id": application_id, "architecture_pillar_id": logical_id},
+            )
+            created.append(node)
+        return created
+
+    def _supersede_current_pillars(
+        self,
+        command: ApplyLayer1ArchitectureCandidate,
+        current: list[Any],
+        application_id: str,
+    ) -> list[StaleEffect]:
+        """Preserve prior pillars as cut records and stale their exact descendants."""
+        effects = []
+        for pillar in current:
+            payload = dict(pillar.json_payload or {})
+            payload["superseded_by_architecture_application_id"] = application_id
+            updated = self.db.update_node(pillar.id, status="cut", json_payload=payload)
+            self._authority(
+                command,
+                "layer1_pillar",
+                pillar.id,
+                "architecture_apply_supersede",
+                {"architecture_application_id": application_id},
+            )
+            effects.append(
+                self._propagate_content_change(
+                    command,
+                    artifact_type="layer1_pillar",
+                    artifact_id=pillar.id,
+                    previous_revision_id=pillar_revision_token(pillar),
+                    replacement_revision_id=pillar_revision_token(updated),
+                    reason_code="layer1_architecture_replaced",
+                )
+            )
+        return effects
+
+    def _register_applied_architecture_lineage(
+        self,
+        application: Any,
+        architecture: Any,
+        pillars: list[Any],
+    ) -> None:
+        """Register application and pillar dependencies for downstream stale propagation."""
+        self.db.set_artifact_freshness(
+            project_id=application.project_id,
+            artifact_type="layer1_architecture_candidate",
+            artifact_id=architecture.id,
+            artifact_revision_id=architecture.content_hash,
+            freshness_state="current",
+            lineage_quality="exact",
+        )
+        self.db.set_artifact_freshness(
+            project_id=application.project_id,
+            artifact_type="layer1_architecture_application",
+            artifact_id=application.id,
+            artifact_revision_id=architecture.content_hash,
+            freshness_state="current",
+            lineage_quality="exact",
+        )
+        self.db.add_artifact_dependency(
+            project_id=application.project_id,
+            dependent_artifact_type="layer1_architecture_application",
+            dependent_artifact_id=application.id,
+            dependent_revision_id=architecture.content_hash,
+            source_artifact_type="layer1_architecture_candidate",
+            source_artifact_id=architecture.id,
+            source_revision_id=architecture.content_hash,
+            lineage_quality="exact",
+        )
+        run = self.db.get_layer1_territory_run(application.run_id)
+        discovery = self.db.get_discovery_revision(run.source_discovery_revision_id)
+        self.db.add_artifact_dependency(
+            project_id=application.project_id,
+            dependent_artifact_type="layer1_architecture_candidate",
+            dependent_artifact_id=architecture.id,
+            dependent_revision_id=architecture.content_hash,
+            source_artifact_type="product_discovery_revision",
+            source_artifact_id=discovery.head_id,
+            source_revision_id=discovery.id,
+            dependency_kind="content",
+            lineage_quality="exact",
+        )
+        for pillar in pillars:
+            revision = pillar_revision_token(pillar)
+            self._register_pillar_lineage(pillar, revision)
+            self.db.add_artifact_dependency(
+                project_id=application.project_id,
+                dependent_artifact_type="layer1_pillar",
+                dependent_artifact_id=pillar.id,
+                dependent_revision_id=revision,
+                source_artifact_type="layer1_architecture_application",
+                source_artifact_id=application.id,
+                source_revision_id=architecture.content_hash,
+                dependency_kind="content",
+                lineage_quality="exact",
+            )
+
+    @staticmethod
+    def _combine_stale_effects(effects: list[StaleEffect]) -> StaleEffect:
+        """Combine per-pillar propagation reports into one command result."""
+        direct = tuple(dict.fromkeys(item for effect in effects for item in effect.directly_affected))
+        transitive = tuple(dict.fromkeys(item for effect in effects for item in effect.transitively_affected))
+        already = tuple(dict.fromkeys(item for effect in effects for item in effect.already_stale))
+        affected = direct + tuple(item for item in transitive if item not in direct)
+        return StaleEffect(
+            "marked" if affected else "none",
+            affected,
+            "layer1_architecture_replaced",
+            direct,
+            transitive,
+            already,
+            sum(effect.propagation_count for effect in effects),
+            all(effect.complete for effect in effects),
         )
 
     def _create_hybrid_layer1_architecture(

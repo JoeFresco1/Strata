@@ -508,6 +508,27 @@ class PillarArchitectureCandidate(BaseModel):
     created_at: datetime
 
 
+class Layer1ArchitectureApplication(BaseModel):
+    """Auditable application of one selected architecture to the live Layer 1 map."""
+
+    id: str
+    project_id: str
+    run_id: str
+    architecture_candidate_id: str
+    selection_event_id: str
+    sequence_number: int = Field(ge=1)
+    state: str
+    applied_pillar_ids: list[str] = Field(default_factory=list)
+    superseded_pillar_ids: list[str] = Field(default_factory=list)
+    retained_territory_candidate_ids: list[str] = Field(default_factory=list)
+    architecture_content_hash: str
+    actor: str
+    command_id: str
+    note: str = ""
+    created_at: datetime
+    superseded_at: datetime | None = None
+
+
 class Layer1SynthesisResult(BaseModel):
     """One synthesis invocation retaining multiple immutable options."""
 

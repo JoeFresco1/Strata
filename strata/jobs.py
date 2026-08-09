@@ -72,24 +72,10 @@ class PlatformJobService:
 
     def run_job(self, job_id: str) -> None:
         """Execute a queued job and persist terminal state."""
-        job = self.services.db.get_platform_job(job_id)
-        if job.status != "queued":
-            return
         with self._runner_gate:
-            job = self.services.db.get_platform_job(job_id)
-            if job.status != "queued":
+            job = self.services.db.claim_platform_job(job_id)
+            if job is None:
                 return
-            now = _utc_now()
-            job = self.services.db.update_platform_job(
-                job.id,
-                status="running",
-                progress=max(1, job.progress),
-                current_step="Starting",
-                started_at=now,
-                completed_at=None,
-                error_type=None,
-                error_message=None,
-            )
             try:
                 result = self._dispatch(job)
                 self.services.db.update_platform_job(
@@ -193,6 +179,11 @@ class PlatformJobService:
             role=str(payload.get("role") or "skeptical implementation consultant"),
             runtime_profile=profiles[0],
         )
+        if not bool(result.metrics.get("adversarial_complete")):
+            raise LLMError(
+                "Layer 1 adversarial review exhausted structured-output retries.",
+                error_type="structured_output_exhausted",
+            )
         self._checkpoint(job.id, "Checkpointed adversarial findings", 95)
         return result.model_dump(mode="json")
 
@@ -206,8 +197,20 @@ class PlatformJobService:
         profiles = self._resolve_layer1_profiles(
             [str(item) for item in payload.get("model_aliases", [])]
         )
+        run = self.services.db.get_layer1_territory_run(run_id)
+        requested_views = set(run.config.get("architecture_views") or [
+            "coherent_core",
+            "expansive_differentiation",
+        ])
+        existing = self.services.db.list_layer1_architecture_candidates(run_id)
+        existing_views = {item.kind.value for item in existing}
         architectures = (
-            self.services.generation_service.generate_layer1_architecture_candidates(
+            self.services.generation_service.review_existing_layer1_architecture_candidates(
+                run_id,
+                runtime_profile=profiles[0],
+            )
+            if requested_views <= existing_views
+            else self.services.generation_service.generate_layer1_architecture_candidates(
                 run_id,
                 runtime_profile=profiles[0],
             )

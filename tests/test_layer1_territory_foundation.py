@@ -1,22 +1,30 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from strata.db import Database
 from strata.generation import GenerationService
 from strata.command_service import CommandService
 from strata.command_types import (
     ActorType,
+    ApplyLayer1ArchitectureCandidate,
     ClassifyTerritoryCandidate,
     CommandActor,
     CommandOrigin,
     HumanAuthorityRequiredError,
+    PublishProductDiscoveryRevision,
     StartLayer1TerritoryExpansion,
+    StaleSourceError,
 )
+from strata.api_layer1 import register_layer1_routes
 from strata.layer1_territory_models import (
     ArchitectureKind,
     ArchitectureState,
@@ -26,6 +34,7 @@ from strata.layer1_territory_models import (
     ModelRuntimeProvenance,
     PolicyHumanState,
     TerritoryDestination,
+    TerritoryRunStage,
     TerritoryRunStatus,
 )
 from strata.layer1_territory_policy import (
@@ -33,9 +42,11 @@ from strata.layer1_territory_policy import (
     global_completion,
     next_temperature,
 )
+from strata.discovery_service import DiscoveryService
 from strata.layer1_territory_prompts import build_territory_divergence_prompt
 from strata.migrations import apply_migrations
 from strata.llm import LLMError, LLMResponse
+from strata.models import FeatureExpansionResponse
 
 
 def empty_discovery() -> dict[str, object]:
@@ -204,6 +215,63 @@ class Layer1TerritoryFoundationTests(unittest.TestCase):
                 budget={},
             )
 
+    def test_layer1_http_schedules_jobs_and_round_trips_lens_token(self) -> None:
+        """The review API schedules durable jobs and supplies required lens concurrency."""
+        lens = self.create_lens()
+        generation = GenerationService(self.db, SimpleNamespace())
+
+        class FakeJobService:
+            """Capture enqueued and background-executed jobs without invoking a model."""
+
+            def __init__(self) -> None:
+                self.enqueued: list[str] = []
+                self.executed: list[str] = []
+
+            def enqueue(self, **_kwargs: object) -> object:
+                job_id = f"job-{len(self.enqueued) + 1}"
+                self.enqueued.append(job_id)
+                return SimpleNamespace(
+                    id=job_id,
+                    model_dump=lambda **_options: {"id": job_id, "status": "queued"},
+                )
+
+            def run_job(self, job_id: str) -> None:
+                self.executed.append(job_id)
+
+        jobs = FakeJobService()
+        services = SimpleNamespace(
+            db=self.db,
+            generation_service=generation,
+            job_service=jobs,
+            brief_service=SimpleNamespace(
+                ensure_brief=lambda project_id: self.db.get_project_brief(project_id)
+            ),
+        )
+        services.command_service = CommandService(services)
+        app = FastAPI()
+        register_layer1_routes(app, services)
+
+        with TestClient(app) as client:
+            detail = client.get(
+                f"/api/projects/{self.project.id}/layer1/exploration-runs/{self.run.id}"
+            )
+            self.assertEqual(detail.status_code, 200)
+            lens_payload = next(
+                item for item in detail.json()["lenses"] if item["id"] == lens.id
+            )
+            self.assertTrue(lens_payload["state_token"])
+            response = client.post(
+                f"/api/projects/{self.project.id}/layer1/exploration-runs/{self.run.id}/lenses/{lens.id}",
+                json={
+                    "action": "run",
+                    "expected_state_token": lens_payload["state_token"],
+                    "request_id": "http-lens-run",
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(jobs.enqueued, ["job-1"])
+        self.assertEqual(jobs.executed, ["job-1"])
+
     def test_lens_order_uses_required_risk_relevance_missing_and_human_priority(self) -> None:
         """The application, rather than the model, owns deterministic lens order."""
         self.create_lens(source_lens_id="optional", required=False, risk=99)
@@ -225,6 +293,43 @@ class Layer1TerritoryFoundationTests(unittest.TestCase):
         self.assertEqual(completed.settings, attempt.settings)
         self.assertEqual(completed.source_projection, attempt.source_projection)
         self.assertEqual(completed.runtime_provenance, attempt.runtime_provenance)
+
+    def test_malformed_response_is_preserved_on_failed_attempt(self) -> None:
+        """A parse failure retains the exact raw model output on its checkpoint."""
+        attempt = self.create_attempt(self.create_lens())
+        service = GenerationService(self.db, SimpleNamespace())
+        raw = '{"candidates": [{"title": "truncated"}'
+
+        service._record_territory_attempt_failure(
+            attempt,
+            LLMError("Malformed JSON", raw_content=raw, error_type="parse_error"),
+        )
+
+        stored = self.db.get_layer1_lens_attempt(attempt.id)
+        self.assertEqual(stored.status, AttemptStatus.SCHEMA_FAILED)
+        self.assertEqual(stored.raw_response, raw)
+        self.assertEqual(stored.error_type, "parse_error")
+
+    def test_global_completion_preserves_adversarial_checkpoint_metrics(self) -> None:
+        """Coverage recomputation cannot erase a completed adversarial pass."""
+        self.db.update_layer1_territory_run(
+            self.run.id,
+            status=TerritoryRunStatus.RUNNING,
+            stage=TerritoryRunStage.ADVERSARIAL,
+            metrics={"adversarial_complete": True, "adversarial_role": "operator"},
+            incomplete_reason="",
+        )
+        service = GenerationService(self.db, SimpleNamespace())
+
+        service._finish_territory_divergence(
+            self.run.id,
+            model_calls=3,
+            hard_budget_exhausted=False,
+        )
+
+        stored = self.db.get_layer1_territory_run(self.run.id)
+        self.assertTrue(stored.metrics["adversarial_complete"])
+        self.assertEqual(stored.metrics["adversarial_role"], "operator")
 
     def test_raw_candidate_is_immutable_and_missing_attribution_is_flagged(self) -> None:
         """Raw model output remains recoverable and attribution gaps stay visible."""
@@ -668,6 +773,313 @@ class Layer1TerritoryFoundationTests(unittest.TestCase):
         )
         self.assertEqual(len(result.architecture_candidate_ids), 2)
 
+    def test_selected_architecture_requires_explicit_atomic_application(self) -> None:
+        """Selection alone is inert; apply preserves old pillars and creates exact lineage."""
+        candidate = self.create_candidate(self.create_attempt(self.create_lens()))
+        architecture = self.db.persist_layer1_architecture_candidate(
+            run_id=self.run.id,
+            kind=ArchitectureKind.COHERENT_CORE,
+            title="Applied core",
+            rationale="A reviewed replacement map.",
+            pillars=[{
+                "id": "authority-core",
+                "title": "Authority Core",
+                "description": "Governed decision authority.",
+            }],
+            mappings=[{
+                "pillar_id": "authority-core",
+                "territory_candidate_ids": [candidate.id],
+                "source_discovery_item_ids": ["actor-admin"],
+            }],
+            significant_non_pillar_territory_ids=[candidate.id],
+            unresolved_risk_ids=[],
+            runtime_provenance=self.runtime,
+        )
+        old = self.db.create_node(
+            project_id=self.project.id,
+            parent_id=None,
+            layer=1,
+            node_type="pillar",
+            title="Original Pillar",
+            description="Preserve this historical map entry.",
+            status="kept",
+        )
+        self.db.select_layer1_architecture(
+            run_id=self.run.id,
+            architecture_candidate_id=architecture.id,
+            state=ArchitectureState.SELECTED,
+            actor="user",
+            command_id="select-before-apply",
+        )
+        generation = GenerationService(self.db, SimpleNamespace())
+        services = SimpleNamespace(
+            db=self.db,
+            generation_service=generation,
+            brief_service=SimpleNamespace(
+                ensure_brief=lambda project_id: self.db.get_project_brief(project_id)
+            ),
+        )
+        commands = CommandService(services)
+        command = ApplyLayer1ArchitectureCandidate(
+            project_id=self.project.id,
+            actor=CommandActor.human_ui(),
+            idempotency_key="apply-selected-architecture",
+            run_id=self.run.id,
+            architecture_candidate_id=architecture.id,
+            expected_current_pillar_tokens={old.id: commands.pillar_state_token(old)},
+            confirm_replace=True,
+        )
+        result = commands.handle(command)
+        replay = commands.handle(command)
+        application = self.db.get_active_layer1_architecture_application(self.project.id)
+        self.assertTrue(replay.idempotent)
+        self.assertIsNotNone(application)
+        self.assertEqual(application.architecture_candidate_id, architecture.id)
+        self.assertEqual(application.superseded_pillar_ids, [old.id])
+        self.assertEqual(self.db.get_node(old.id).status, "cut")
+        created = self.db.get_node(result.data["pillars"][0]["id"])
+        self.assertEqual(created.status, "kept")
+        self.assertEqual(
+            created.json_payload["architecture_application_id"],
+            application.id,
+        )
+        dependencies = self.db._fetchall(
+            "SELECT source_artifact_type FROM artifact_dependencies WHERE dependent_artifact_id = ?",
+            (created.id,),
+        )
+        self.assertIn(
+            "layer1_architecture_application",
+            {str(item["source_artifact_type"]) for item in dependencies},
+        )
+        generation._project_llm_runtime = lambda *_args, **_kwargs: {  # type: ignore[method-assign]
+            "id": "stub",
+            "label": "Stub Model",
+        }
+        generation._ensure_profile_loaded = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        generation._run_layer2_lens_passes = lambda **_kwargs: None  # type: ignore[method-assign]
+        generation._layer2_graph_summary = lambda *_args, **_kwargs: {  # type: ignore[method-assign]
+            "created_feature_ids": [],
+            "raw_candidate_count": 0,
+        }
+        generation.generate_layer2_feature_graph(self.project.id, [created.id])
+        layer2_row = self.db._fetchone(
+            "SELECT id FROM layer2_generation_runs WHERE project_id = ? ORDER BY created_at DESC LIMIT 1",
+            (self.project.id,),
+        )
+        layer2_run = self.db.get_layer2_generation_run(str(layer2_row["id"]))
+        self.assertEqual(layer2_run.source_architecture_application_id, application.id)
+        self.assertEqual(layer2_run.source_territory_candidate_ids, [candidate.id])
+        raw_feature = self.db.insert_layer2_raw_candidate(
+            project_id=self.project.id,
+            generation_run_id=layer2_run.id,
+            source_pillar_id=created.id,
+            source_lens="workflow",
+            source_model="Stub Model",
+            generation_round=1,
+            raw_text="Governed routing",
+            payload={"canonical_name": "Governed routing"},
+        )
+        feature = self.db.create_layer2_feature(
+            project_id=self.project.id,
+            canonical_name="Governed routing",
+            description="Route decisions through bounded authority.",
+            feature_type="workflow",
+            owner_pillar_id=created.id,
+            candidate_source_ids=[raw_feature.id],
+            status="approved",
+        )
+        generation._prompt_catalog = lambda *_args, **_kwargs: {}  # type: ignore[method-assign]
+        generation._call_structured_json_pass = lambda **_kwargs: (  # type: ignore[method-assign]
+            SimpleNamespace(model_name="stub-model"),
+            FeatureExpansionResponse(expansion={
+                "feature_intent": "Route decisions through bounded authority.",
+                "expansion_groups": [{
+                    "name": "Authority modes",
+                    "options": [{
+                        "name": "Delegated route",
+                        "description": "Use a reviewed delegated decision path.",
+                    }],
+                }],
+            }),
+        )
+        expansion = generation.generate_feature_expansions(
+            self.project.id,
+            [feature.id],
+        )[0]
+        provenance = expansion["payload"]["provenance"]
+        self.assertEqual(
+            provenance["source_layer1_architecture_application_id"],
+            application.id,
+        )
+        self.assertEqual(
+            provenance["source_layer1_territory_candidate_ids"],
+            [candidate.id],
+        )
+        layer3_dependencies = self.db._fetchall(
+            "SELECT source_artifact_type FROM artifact_dependencies WHERE dependent_revision_id = ?",
+            (expansion["id"],),
+        )
+        self.assertIn(
+            "layer1_architecture_application",
+            {str(item["source_artifact_type"]) for item in layer3_dependencies},
+        )
+        evaluated = self.db.evaluate_artifact_freshness(
+            project_id=self.project.id,
+            artifact_type="layer3_revision",
+            artifact_id=str(expansion["logical_expansion_id"]),
+            artifact_revision_id=str(expansion["id"]),
+        )
+        self.assertEqual(evaluated["freshness_state"], "current")
+        replacement = self.db.create_discovery_revision(
+            project_id=self.project.id,
+            source_brief_revision_id=self.brief_revision_id,
+            competitor_research_mode="no_competitor_research",
+            payload=empty_discovery(),
+            command_id="replacement-discovery",
+        )
+        replacement = self.db.transition_discovery_revision(
+            revision_id=replacement.id,
+            target_state="approved",
+            command_id="approve-replacement-discovery",
+            actor="user",
+            origin="test",
+        )
+        services.discovery_service = DiscoveryService(services)
+        publish = commands.handle(PublishProductDiscoveryRevision(
+            project_id=self.project.id,
+            actor=CommandActor.human_ui(),
+            idempotency_key="publish-replacement-discovery",
+            revision_id=replacement.id,
+            expected_state_token=commands.discovery_state_token(replacement),
+        ))
+        self.assertEqual(publish.stale_effect.effect, "marked")
+        freshness = self.db.freshness_for_artifact(
+            self.project.id,
+            "layer1_architecture_application",
+            application.id,
+            application.architecture_content_hash,
+        )
+        self.assertEqual(freshness["freshness_state"], "stale")
+        with self.assertRaisesRegex(ValueError, "architecture is stale"):
+            generation.generate_layer2_feature_graph(self.project.id, [created.id])
+        with self.assertRaises(StaleSourceError):
+            commands.handle(ApplyLayer1ArchitectureCandidate(
+                project_id=self.project.id,
+                actor=CommandActor.human_ui(),
+                idempotency_key="reject-stale-architecture-apply",
+                run_id=self.run.id,
+                architecture_candidate_id=architecture.id,
+                expected_current_pillar_tokens={
+                    created.id: commands.pillar_state_token(self.db.get_node(created.id))
+                },
+                confirm_replace=True,
+            ))
+        archive = self.db.project_archive_payload(
+            self.project.id,
+            include_full_history=True,
+        )
+        self.assertEqual(len(archive["tables"]["layer1_architecture_applications"]), 1)
+        imported = self.db.import_project_archive_payload(
+            archive,
+            name_override="Imported applied architecture",
+        )["project"]
+        imported_application = self.db.get_active_layer1_architecture_application(
+            imported.id
+        )
+        self.assertIsNotNone(imported_application)
+        self.assertNotEqual(imported_application.id, application.id)
+        self.assertEqual(
+            imported_application.architecture_content_hash,
+            application.architecture_content_hash,
+        )
+        self.db._execute(
+            "UPDATE layer1_architecture_applications SET state = 'superseded' WHERE id = ?",
+            (application.id,),
+        )
+        with self.assertRaisesRegex(ValueError, "superseded Layer 1 architecture"):
+            generation.generate_feature_expansions(self.project.id, [feature.id])
+
+    def test_context_window_populates_territory_preflight_limit(self) -> None:
+        """Production profile naming must not silently disable Layer 1 token preflight."""
+        provenance = GenerationService._territory_runtime_provenance(
+            {"id": "local", "model_name": "model", "context_window": 16384},
+            temperature=0.65,
+            prompt_key="test",
+            prompt_version="1",
+        )
+        self.assertEqual(provenance.context_limit, 16384)
+
+    def test_bounded_model_context_preserves_inventory_and_destination_breadth(self) -> None:
+        """Compaction keeps every exact ID while bounding detailed model context."""
+        territory = [
+            {
+                "candidate_id": f"candidate-{index:03d}",
+                "title": f"Territory {index} " + ("x" * 200),
+                "description": "Detailed behavior " + ("y" * 800),
+                "destination": f"destination-{index % 10}",
+                "source_discovery_item_ids": [f"source-{index % 7}"],
+                "affected_actor_ids": [f"actor-{index % 4}"],
+                "affected_domain_ids": [f"domain-{index % 6}"],
+                "affected_enterprise_obligation_ids": [f"obligation-{index % 4}"],
+                "affected_coverage_risk_ids": [f"risk-{index % 4}"],
+                "lens_specific_mechanism": "Mechanism " + ("z" * 400),
+            }
+            for index in range(126)
+        ]
+        context = {
+            "brief": {"problem": "p" * 3000},
+            "discovery": {
+                "lenses": [
+                    {
+                        "id": f"lens-{index}",
+                        "title": f"Lens {index}",
+                        "description": "d" * 600,
+                        "required_discovery_item_ids": [f"source-{index}"],
+                    }
+                    for index in range(7)
+                ]
+            },
+            "territory": territory,
+            "semantic_clusters": [],
+        }
+
+        bounded = GenerationService._bounded_territory_model_context(context)
+
+        included_ids = {
+            candidate_id
+            for candidate_ids in bounded["territory_inventory"].values()
+            for candidate_id in candidate_ids
+        }
+        self.assertEqual(len(included_ids), 48)
+        self.assertLessEqual(included_ids, {item["candidate_id"] for item in territory})
+        self.assertEqual(
+            sum(item["total"] for item in bounded["territory_population_summary"].values()),
+            126,
+        )
+        self.assertEqual(len(bounded["territory"]), 10)
+        self.assertEqual(
+            len({item["destination"] for item in bounded["territory"]}),
+            10,
+        )
+        self.assertLess(len(json.dumps(bounded)), 40_000)
+
+    def test_unmapped_accepted_territory_is_retained_by_application(self) -> None:
+        """Architecture sampling cannot silently erase accepted territory."""
+        payload = {
+            "mappings": [{"territory_candidate_ids": ["candidate-a"]}],
+            "significant_non_pillar_territory_ids": ["candidate-b"],
+        }
+
+        retained = GenerationService._retain_unmapped_territory(
+            payload,
+            {"candidate-a", "candidate-b", "candidate-c"},
+        )
+
+        self.assertEqual(
+            retained["significant_non_pillar_territory_ids"],
+            ["candidate-b", "candidate-c"],
+        )
+
     def test_executable_engine_persists_raw_before_downstream_work(self) -> None:
         """One real service pass uses independent context and completes from durable rows."""
         class FakeLLM:
@@ -1006,16 +1418,16 @@ class Layer1TerritoryFoundationTests(unittest.TestCase):
                 )
 
         service = GenerationService(self.db, SynthesisThenFailure())
-        architectures = service.generate_layer1_architecture_candidates(
-            self.run.id,
-            runtime_profile={
-                "id": "fixture",
-                "label": "Fixture",
-                "model_name": "fixture-model",
-                "base_url": "http://fixture.invalid",
-            },
-        )
-        self.assertEqual(len(architectures), 2)
+        with self.assertRaisesRegex(LLMError, "Global critic timed out"):
+            service.generate_layer1_architecture_candidates(
+                self.run.id,
+                runtime_profile={
+                    "id": "fixture",
+                    "label": "Fixture",
+                    "model_name": "fixture-model",
+                    "base_url": "http://fixture.invalid",
+                },
+            )
         self.assertEqual(
             len(self.db.list_layer1_architecture_candidates(self.run.id)),
             2,
@@ -1025,6 +1437,34 @@ class Layer1TerritoryFoundationTests(unittest.TestCase):
             self.db.get_layer1_territory_run(self.run.id).status,
             TerritoryRunStatus.INCOMPLETE,
         )
+
+        class CriticSuccess:
+            def generate_json(self, **_: object) -> LLMResponse:
+                payload = {"ready_for_human_review": True}
+                return LLMResponse(
+                    content=str(payload),
+                    parsed_json=payload,
+                    model_name="fixture-model",
+                    raw_payload={},
+                )
+
+        resumed = GenerationService(self.db, CriticSuccess())
+        reviewed = resumed.review_existing_layer1_architecture_candidates(
+            self.run.id,
+            runtime_profile={
+                "id": "fixture",
+                "label": "Fixture",
+                "model_name": "fixture-model",
+                "base_url": "http://fixture.invalid",
+            },
+        )
+        self.assertEqual(len(reviewed), 2)
+        completed = self.db._fetchone(
+            "SELECT COUNT(*) AS count FROM layer1_synthesis_results "
+            "WHERE run_id = ? AND status = 'completed'",
+            (self.run.id,),
+        )
+        self.assertEqual(int(completed["count"]), 1)
 
     def test_no_new_pillar_can_complete_lens_with_subordinate_territory(self) -> None:
         """Useful below-pillar territory counts as lens coverage without pillar inflation."""

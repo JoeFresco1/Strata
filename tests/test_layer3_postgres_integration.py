@@ -233,8 +233,8 @@ class Layer3PostgresIntegrationTests(unittest.TestCase):
         """Run migration, lifecycle, integrity, concurrency, and restart checks end to end."""
         fixtures = self._seed_pre_v2_projects()
         db = Database(POSTGRES_TARGET_URL, postgres_admin_url=POSTGRES_ADMIN_URL)
-        self.assertEqual(apply_migrations(db), [2, 3, 4, 5, 6])
-        self.assertEqual(migration_status(db)["current_version"], 6)
+        self.assertEqual(apply_migrations(db), [2, 3, 4, 5, 6, 7, 8, 9, 10])
+        self.assertEqual(migration_status(db)["current_version"], 10)
 
         expected_tables = {
             "layer3_expansion_heads",
@@ -560,7 +560,7 @@ class Layer3PostgresIntegrationTests(unittest.TestCase):
                 cursor.execute("DROP TABLE IF EXISTS critic_findings, artifact_authority_actions CASCADE")
                 cursor.execute("DELETE FROM schema_migrations WHERE version = 4")
         self.assertEqual(apply_migrations(db), [4])
-        self.assertEqual(migration_status(db)["current_version"], 6)
+        self.assertEqual(migration_status(db)["current_version"], 10)
 
         project = db.create_project("Critic authority PG", "Protect decisions")
         pillar = db.create_node(
@@ -661,7 +661,7 @@ class Layer3PostgresIntegrationTests(unittest.TestCase):
                 cursor.execute("DROP TABLE IF EXISTS command_executions CASCADE")
                 cursor.execute("DELETE FROM schema_migrations WHERE version = 5")
         self.assertEqual(apply_migrations(db), [5])
-        self.assertEqual(migration_status(db)["current_version"], 6)
+        self.assertEqual(migration_status(db)["current_version"], 10)
         self.assertIn("command_executions", db._table_names())
 
     def test_zzzz_postgresql_command_concurrency_rollback_idempotency_and_lifecycle(self) -> None:
@@ -748,7 +748,7 @@ class Layer3PostgresIntegrationTests(unittest.TestCase):
                 cursor.execute("DROP TABLE IF EXISTS artifact_stale_transitions, artifact_dependencies, artifact_freshness_states, brief_revisions, brief_heads CASCADE")
                 cursor.execute("DELETE FROM schema_migrations WHERE version = 6")
         self.assertEqual(apply_migrations(db), [6])
-        self.assertEqual(migration_status(db)["current_version"], 6)
+        self.assertEqual(migration_status(db)["current_version"], 10)
         head = db.get_brief_head(legacy.id)
         self.assertTrue(head["current_published_revision_id"])
         self.assertEqual(db.lineage_counts(legacy.id), {"exact": 0, "inferred": 1, "unknown": 0})

@@ -28,6 +28,17 @@ class Layer2PipelineMixin:
     ) -> list[str]:
         """Persist raw candidates, apply semantic veto, run critics, and create graph features."""
         raw_pairs: list[tuple[Any, Layer2Candidate]] = []
+        architecture_provenance = {
+            "source_architecture_application_id": scope_contract.source_architecture_application_id,
+            "mapped_territory_candidate_ids": [
+                str(item.get("id")) for item in scope_contract.mapped_territory if item.get("id")
+            ],
+            "retained_non_pillar_territory_candidate_ids": [
+                str(item.get("id"))
+                for item in scope_contract.retained_non_pillar_territory
+                if item.get("id")
+            ],
+        }
         for candidate in candidates[:max_new_features] if max_new_features is not None else candidates:
             stats["raw_candidate_count"] += 1
             veto = self._layer2_semantic_negative_cache_veto(project_id, candidate)
@@ -41,7 +52,7 @@ class Layer2PipelineMixin:
                     source_model=source_model,
                     generation_round=generation_round,
                     raw_text=candidate.model_dump_json(),
-                    payload={**candidate.model_dump(mode="json"), "negative_cache_veto": veto},
+                    payload={**candidate.model_dump(mode="json"), "negative_cache_veto": veto, **architecture_provenance},
                     negative_cache_match=True,
                     negative_cache_reason=f"Auto-rejected repeat of '{veto['rejected_name']}' at similarity {veto['similarity']}.",
                 )
@@ -58,6 +69,7 @@ class Layer2PipelineMixin:
                     **candidate.model_dump(mode="json"),
                     "is_potential_negative_cache_repeat": bool(veto),
                     "negative_cache_context": veto or {},
+                    **architecture_provenance,
                 },
                 negative_cache_match=bool(veto),
                 negative_cache_reason=(
@@ -112,6 +124,7 @@ class Layer2PipelineMixin:
                     "ambiguity_score": ambiguity_score,
                     "ambiguity_flag": ambiguity_score >= 0.55,
                     "scope_drift_flag": drift_flag,
+                    **architecture_provenance,
                 }
             )
             if granularity == FeatureGranularity.SHARED_CONCERN:

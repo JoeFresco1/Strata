@@ -252,6 +252,15 @@ class DependencyDatabaseMixin:
                 (project_id, artifact_id, revision_id),
             )
             return row is not None
+        if artifact_type == "product_discovery_revision":
+            row = self._fetchone(
+                f"""
+                SELECT 1 FROM product_discovery_revisions
+                WHERE project_id = {self.param} AND head_id = {self.param} AND id = {self.param}
+                """,
+                (project_id, artifact_id, revision_id),
+            )
+            return row is not None
         if artifact_type == "layer1_pillar":
             row = self._fetchone(f"SELECT project_id FROM nodes WHERE id = {self.param}", (artifact_id,))
             return row is not None and str(row["project_id"]) == project_id
@@ -423,22 +432,11 @@ class DependencyDatabaseMixin:
             source_type = str(dependency["source_artifact_type"])
             source_id = str(dependency["source_artifact_id"])
             expected = str(dependency["source_revision_id"])
-            current = ""
-            if source_type == "brief":
-                head = self.get_brief_head(project_id)
-                current = str(head.get("current_published_revision_id") or "") if head else ""
-            elif source_type == "layer1_pillar":
-                try:
-                    pillar = self.get_node(source_id)
-                    current = pillar_revision_token(pillar) if pillar.project_id == project_id else ""
-                except ValueError:
-                    current = ""
-            elif source_type == "layer2_feature":
-                try:
-                    feature = self.get_layer2_feature(source_id)
-                    current = feature_revision_token(feature) if feature.project_id == project_id else ""
-                except ValueError:
-                    current = ""
+            current = self._current_dependency_source_revision(
+                project_id,
+                source_type,
+                source_id,
+            )
             if current != expected:
                 mismatches.append({
                     "source_artifact_type": source_type, "source_artifact_id": source_id,
@@ -453,6 +451,71 @@ class DependencyDatabaseMixin:
             artifact_revision_id=artifact_revision_id, freshness_state=state, lineage_quality=quality,
         )
         return {"freshness_state": state, "lineage_quality": quality, "mismatches": mismatches}
+
+    def _current_dependency_source_revision(
+        self,
+        project_id: str,
+        source_type: str,
+        source_id: str,
+    ) -> str:
+        """Resolve current source identity, including immutable architecture lineage."""
+        if source_type == "brief":
+            head = self.get_brief_head(project_id)
+            return str(head.get("current_published_revision_id") or "") if head else ""
+        if source_type == "product_discovery_revision":
+            row = self._fetchone(
+                f"SELECT current_published_revision_id FROM product_discovery_heads "
+                f"WHERE project_id = {self.param} AND id = {self.param}",
+                (project_id, source_id),
+            )
+            return str(row["current_published_revision_id"] or "") if row else ""
+        if source_type == "layer1_pillar":
+            try:
+                pillar = self.get_node(source_id)
+                return pillar_revision_token(pillar) if pillar.project_id == project_id else ""
+            except ValueError:
+                return ""
+        if source_type == "layer2_feature":
+            try:
+                feature = self.get_layer2_feature(source_id)
+                return feature_revision_token(feature) if feature.project_id == project_id else ""
+            except ValueError:
+                return ""
+        if source_type == "layer1_architecture_candidate":
+            row = self._fetchone(
+                f"SELECT content_hash FROM layer1_architecture_candidates "
+                f"WHERE project_id = {self.param} AND id = {self.param}",
+                (project_id, source_id),
+            )
+            return self._fresh_derived_revision(
+                project_id, source_type, source_id, str(row["content_hash"])
+            ) if row else ""
+        if source_type == "layer1_architecture_application":
+            row = self._fetchone(
+                f"SELECT architecture_content_hash FROM layer1_architecture_applications "
+                f"WHERE project_id = {self.param} AND id = {self.param} AND state = 'active'",
+                (project_id, source_id),
+            )
+            return self._fresh_derived_revision(
+                project_id, source_type, source_id, str(row["architecture_content_hash"])
+            ) if row else ""
+        return ""
+
+    def _fresh_derived_revision(
+        self,
+        project_id: str,
+        artifact_type: str,
+        artifact_id: str,
+        revision_id: str,
+    ) -> str:
+        """Return a derived revision only while its durable freshness state is current."""
+        row = self._fetchone(
+            f"SELECT freshness_state FROM artifact_freshness_states "
+            f"WHERE project_id = {self.param} AND artifact_type = {self.param} "
+            f"AND artifact_id = {self.param} AND artifact_revision_id = {self.param}",
+            (project_id, artifact_type, artifact_id, revision_id),
+        )
+        return revision_id if row and str(row["freshness_state"]) == "current" else ""
 
     def lineage_counts(self, project_id: str) -> dict[str, int]:
         """Count exact, inferred, and unknown dependencies for diagnostics and tests."""

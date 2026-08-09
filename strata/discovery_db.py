@@ -633,7 +633,11 @@ class DiscoveryDatabaseMixin:
             "model_authored_fields", "human_owned_fields", "review_findings",
             "runtime_provenance", "audit_history", "dependency_metadata",
         ):
-            row[key] = self._load_json(row[key])
+            row[key] = (
+                self._load_json_list(row[key])
+                if key in {"review_findings", "runtime_provenance", "audit_history"}
+                else self._load_json(row[key])
+            )
         return row
 
     def _projection_payload(self, row: dict[str, Any]) -> dict[str, Any]:

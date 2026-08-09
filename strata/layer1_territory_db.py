@@ -224,7 +224,7 @@ class Layer1TerritoryDatabaseMixin:
         if row is None:
             raise ValueError(f"Layer 1 lens work item not found: {lens_execution_id}")
         payload = dict(row)
-        payload["source_discovery_item_ids"] = self._load_json(payload["source_discovery_item_ids"])
+        payload["source_discovery_item_ids"] = self._load_json_list(payload["source_discovery_item_ids"])
         return Layer1LensExecution.model_validate(payload)
 
     def list_layer1_lens_work_items(self, run_id: str) -> list[Layer1LensExecution]:
@@ -244,7 +244,7 @@ class Layer1TerritoryDatabaseMixin:
         results: list[Layer1LensExecution] = []
         for row in rows:
             payload = dict(row)
-            payload["source_discovery_item_ids"] = self._load_json(payload["source_discovery_item_ids"])
+            payload["source_discovery_item_ids"] = self._load_json_list(payload["source_discovery_item_ids"])
             results.append(Layer1LensExecution.model_validate(payload))
         return results
 
@@ -330,14 +330,10 @@ class Layer1TerritoryDatabaseMixin:
         if row is None:
             raise ValueError(f"Layer 1 lens attempt not found: {attempt_id}")
         payload = dict(row)
-        for field in (
-            "settings",
-            "source_projection",
-            "closed_territory_revision_ids",
-            "anti_generic_pattern_revision_ids",
-            "runtime_provenance",
-        ):
+        for field in ("settings", "source_projection", "runtime_provenance"):
             payload[field] = self._load_json(payload[field])
+        for field in ("closed_territory_revision_ids", "anti_generic_pattern_revision_ids"):
+            payload[field] = self._load_json_list(payload[field])
         return Layer1LensAttempt.model_validate(payload)
 
     def list_layer1_lens_attempts(
@@ -509,8 +505,8 @@ class Layer1TerritoryDatabaseMixin:
         if row is None:
             raise ValueError(f"Closed territory revision not found: {revision_id}")
         payload = dict(row)
-        payload["semantic_examples"] = self._load_json(payload["semantic_examples"])
-        payload["source_family_ids"] = self._load_json(payload["source_family_ids"])
+        payload["semantic_examples"] = self._load_json_list(payload["semantic_examples"])
+        payload["source_family_ids"] = self._load_json_list(payload["source_family_ids"])
         return ClosedTerritory.model_validate(payload)
 
     def list_active_closed_territories(
@@ -608,8 +604,8 @@ class Layer1TerritoryDatabaseMixin:
         if row is None:
             raise ValueError(f"Anti-generic pattern revision not found: {revision_id}")
         payload = dict(row)
-        payload["semantic_examples"] = self._load_json(payload["semantic_examples"])
-        payload["source_run_ids"] = self._load_json(payload["source_run_ids"])
+        payload["semantic_examples"] = self._load_json_list(payload["semantic_examples"])
+        payload["source_run_ids"] = self._load_json_list(payload["source_run_ids"])
         return AntiGenericPattern.model_validate(payload)
 
     def list_active_anti_generic_patterns(

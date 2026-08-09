@@ -2,6 +2,31 @@
 
 Date: 2026-07-28
 
+> Historical evaluation note: this interim recommendation was superseded by a
+> completed isolated-clone real-project comparison. The durable summary below
+> records the decision without publishing raw project/model transcripts.
+
+## Final real-project decision
+
+Adopt divergent exploration as the canonical generated Layer 1 workflow while
+retaining explicit human architecture selection and application gates.
+
+| Metric | Existing Gemma | Divergent Gemma | Divergent Qwen |
+| --- | ---: | ---: | ---: |
+| Raw candidates | 75 | 229 | 257 |
+| Unique semantic families | 14 | 219 | 238 |
+| Generic repetition | 56.0% | 24.6% | 24.4% |
+| Candidate usefulness | 4.0% | 93.4% | 93.8% |
+| Operational capabilities | 0 | 44 | 50 |
+| Retained non-pillar territories | 0 | 212 | 226 |
+
+Both divergent runs completed every required Product Discovery lens, the
+adversarial pass, and multiple unselected architecture options. The comparison
+therefore attributes the material quality gain to the breadth-first workflow,
+not candidate count or model size alone. Raw responses, local paths, database
+dumps, and runtime logs remain local evaluation artifacts and are intentionally
+excluded from the public repository.
+
 ## Decision
 
 Keep the new exploration workflow as an explicit experimental Layer 1 mode.

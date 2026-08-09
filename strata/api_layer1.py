@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 
 from strata.api_models import (
     Layer1AdversarialRequest,
     Layer1AntiGenericPatternRequest,
     Layer1ArchitectureSelectionRequest,
+    Layer1ArchitectureApplicationRequest,
     Layer1BulkActionRequest,
     Layer1ClosedTerritoryRequest,
     Layer1HybridArchitectureRequest,
@@ -19,6 +20,7 @@ from strata.api_models import (
 from strata.api_support import AppServices, _command_http_error, _project_snapshot
 from strata.command_types import (
     AddAntiGenericPattern,
+    ApplyLayer1ArchitectureCandidate,
     AddClosedTerritory,
     BulkSetPillarState,
     CancelLayer1ExpansionRun,
@@ -38,6 +40,7 @@ from strata.command_types import (
     RunLayer1LensAttempt,
     SelectLayer1ArchitectureCandidate,
     StartLayer1TerritoryExpansion,
+    state_token,
 )
 
 
@@ -74,6 +77,7 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
     def start_territory_run(
         project_id: str,
         request: Layer1TerritoryStartRequest,
+        background_tasks: BackgroundTasks,
     ) -> dict[str, object]:
         """Start the canonical divergent territory workflow."""
         result = _handle_layer1_command(
@@ -85,6 +89,7 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
                 config=request.config,
                 budget=request.budget,
             ),
+            background_tasks,
         )
         return result
 
@@ -108,7 +113,10 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
         return {
             "run": run.model_dump(mode="json"),
             "lenses": [
-                item.model_dump(mode="json")
+                {
+                    **item.model_dump(mode="json"),
+                    "state_token": state_token(item.model_dump(mode="json")),
+                }
                 for item in services.db.list_layer1_lens_work_items(run_id)
             ],
             "attempts": [
@@ -154,6 +162,18 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
                 item.model_dump(mode="json")
                 for item in services.db.list_layer1_architecture_candidates(run_id)
             ],
+            "latest_architecture_selection": services.db.latest_layer1_architecture_selection(
+                run_id
+            ),
+            "active_architecture_application": (
+                application.model_dump(mode="json")
+                if (
+                    application := services.db.get_active_layer1_architecture_application(
+                        project_id
+                    )
+                )
+                else None
+            ),
             "global_architecture_assessments": [
                 item.model_dump(mode="json")
                 for item in services.db.list_layer1_global_architecture_assessments(run_id)
@@ -169,6 +189,7 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
         run_id: str,
         lens_id: str,
         request: Layer1LensActionRequest,
+        background_tasks: BackgroundTasks,
     ) -> dict[str, object]:
         """Run, retry, complete, or reopen one durable lens."""
         common = {
@@ -177,6 +198,7 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
             "idempotency_key": request.request_id or str(uuid.uuid4()),
             "run_id": run_id,
             "lens_execution_id": lens_id,
+            "expected_state_token": request.expected_state_token,
         }
         if request.action == "run":
             command = RunLayer1LensAttempt(**common)
@@ -200,7 +222,7 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
             command = ReopenLayer1Lens(**common)
         else:
             raise HTTPException(status_code=422, detail="Unknown Layer 1 lens action.")
-        return _handle_layer1_command(services, command)
+        return _handle_layer1_command(services, command, background_tasks)
 
     @app.post("/api/projects/{project_id}/layer1/territories/{candidate_id}/classification")
     def classify_territory(
@@ -292,6 +314,7 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
         project_id: str,
         run_id: str,
         request: Layer1AdversarialRequest,
+        background_tasks: BackgroundTasks,
     ) -> dict[str, object]:
         """Queue a scenario-specific blind-spot pass."""
         return _handle_layer1_command(
@@ -303,10 +326,15 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
                 run_id=run_id,
                 role=request.role,
             ),
+            background_tasks,
         )
 
     @app.post("/api/projects/{project_id}/layer1/exploration-runs/{run_id}/synthesis")
-    def generate_architectures(project_id: str, run_id: str) -> dict[str, object]:
+    def generate_architectures(
+        project_id: str,
+        run_id: str,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, object]:
         """Queue mapped post-exploration architecture synthesis."""
         return _handle_layer1_command(
             services,
@@ -315,6 +343,7 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
                 actor=CommandActor.human_ui(),
                 run_id=run_id,
             ),
+            background_tasks,
         )
 
     @app.post("/api/projects/{project_id}/layer1/exploration-runs/{run_id}/selection")
@@ -332,6 +361,28 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
                 idempotency_key=request.request_id or str(uuid.uuid4()),
                 run_id=run_id,
                 architecture_candidate_id=request.architecture_candidate_id,
+                note=request.note,
+            ),
+        )
+
+    @app.post("/api/projects/{project_id}/layer1/exploration-runs/{run_id}/application")
+    def apply_architecture(
+        project_id: str,
+        run_id: str,
+        request: Layer1ArchitectureApplicationRequest,
+    ) -> dict[str, object]:
+        """Apply a selected option only after explicit replacement confirmation."""
+        return _handle_layer1_command(
+            services,
+            ApplyLayer1ArchitectureCandidate(
+                project_id=project_id,
+                actor=CommandActor.human_ui(),
+                idempotency_key=request.request_id or str(uuid.uuid4()),
+                run_id=run_id,
+                architecture_candidate_id=request.architecture_candidate_id,
+                expected_current_pillar_tokens=request.expected_current_pillar_tokens,
+                confirm_replace=request.confirm_replace,
+                acknowledge_unresolved_risks=request.acknowledge_unresolved_risks,
                 note=request.note,
             ),
         )
@@ -374,12 +425,19 @@ def register_layer1_routes(app: FastAPI, services: AppServices) -> None:
         )
 
 
-def _handle_layer1_command(services: AppServices, command: object) -> dict[str, object]:
-    """Translate canonical command errors and return portable result data."""
+def _handle_layer1_command(
+    services: AppServices,
+    command: object,
+    background_tasks: BackgroundTasks | None = None,
+) -> dict[str, object]:
+    """Translate command errors and schedule any durable jobs returned by the command."""
     try:
         result = services.command_service.handle(command)
     except CommandError as exc:
         raise _command_http_error(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if background_tasks is not None:
+        for job_id in result.data.get("job_ids", []):
+            background_tasks.add_task(services.job_service.run_job, str(job_id))
     return result.data

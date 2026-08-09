@@ -179,13 +179,121 @@ class DiscoveryService:
             if not isinstance(items, list):
                 items = []
             normalized[section] = [
-                self._stable_item(project_id, item_type, item, index)
+                self._normalize_generated_item(
+                    section,
+                    self._stable_item(project_id, item_type, item, index),
+                )
                 for index, item in enumerate(items)
                 if isinstance(item, dict)
             ]
         normalized["lenses"] = self._merge_baseline_lenses(project_id, normalized["lenses"])
+        normalized["lenses"] = self._attach_required_lens_sources(normalized)
         normalized["summary"] = self._summary(normalized)
         return ProductDiscovery.model_validate(normalized)
+
+    @staticmethod
+    def _normalize_generated_item(section: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Coerce near-miss model labels to conservative schema values without dropping content."""
+        item = dict(payload)
+        list_fields = {
+            "archetypes": ("brief_evidence", "product_design_implications", "related_lens_ids", "related_actor_ids", "related_obligation_ids"),
+            "lenses": ("questions", "expected_product_territory", "applicable_actor_ids", "required_discovery_item_ids", "related_lens_ids", "omission_risks", "supporting_competitor_ids", "evidence_ids"),
+            "actors": ("goals", "responsibilities", "workflows", "decisions", "information_needed", "risks", "relevant_lens_ids", "likely_product_areas", "lifecycle_stage_ids", "competitor_expectations"),
+            "lifecycle_stages": ("actor_ids", "workflows", "decisions", "failure_modes", "administration_needs", "data_requirements", "likely_capabilities", "competitor_maturity_signals", "unresolved_coverage_risk_ids"),
+            "enterprise_obligations": ("affected_actor_ids", "competitor_evidence_ids"),
+            "domains": ("actor_ids", "workflows", "dependencies", "risks", "related_lens_ids", "candidate_capabilities", "brief_evidence", "competitor_evidence_ids", "downstream_classifications"),
+            "cross_domain_opportunities": ("affected_domain_ids", "required_data", "risks", "evidence_or_provenance"),
+            "coverage_risks": ("evidence", "affected_actor_ids", "affected_lens_ids", "competitor_evidence_ids"),
+            "open_questions": ("affected_domain_ids", "affected_actor_ids", "affected_lens_ids", "competitor_evidence_ids"),
+        }
+        for field in list_fields.get(section, ()):
+            value = item.get(field)
+            if isinstance(value, list):
+                continue
+            item[field] = [] if value is None or value == "" else [value]
+        if section == "lenses":
+            layers = item.get("applicable_downstream_layers")
+            if not isinstance(layers, list):
+                layers = [] if layers is None else [layers]
+            parsed_layers: list[int] = []
+            for value in layers:
+                try:
+                    layer = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if layer in {1, 2, 3} and layer not in parsed_layers:
+                    parsed_layers.append(layer)
+            item["applicable_downstream_layers"] = parsed_layers or [1, 2, 3]
+        allowed_source = {"baseline", "model_discovered", "competitor_research", "human_added"}
+        if item.get("source") not in allowed_source:
+            item["source"] = "model_discovered"
+        if item.get("downstream_state") not in {"required", "optional", "excluded"}:
+            item["downstream_state"] = "optional"
+        enum_defaults = {
+            "lenses": ("recommendation", {"required", "recommended", "optional", "rejected"}, "optional"),
+            "enterprise_obligations": (
+                "strategic_classification",
+                {"table_stakes", "market_standard", "emerging", "differentiating", "optional", "out_of_scope"},
+                "optional",
+            ),
+            "cross_domain_opportunities": (
+                "speculation_level",
+                {"concrete", "speculative", "superficial_metaphor", "unusual_but_defensible", "requires_human_review"},
+                "requires_human_review",
+            ),
+            "coverage_risks": ("severity", {"low", "medium", "high", "critical"}, "medium"),
+            "open_questions": (
+                "disposition",
+                {"requires_human_answer_before_layer1", "useful_but_non_blocking", "safe_for_model_assumption", "intentionally_open"},
+                "useful_but_non_blocking",
+            ),
+        }
+        rule = enum_defaults.get(section)
+        if rule is not None and item.get(rule[0]) not in rule[1]:
+            item[rule[0]] = rule[2]
+        for field in ("confidence", "relevance_score"):
+            if field in item:
+                try:
+                    item[field] = min(1.0, max(0.0, float(item[field])))
+                except (TypeError, ValueError):
+                    item[field] = 0.5
+        return item
+
+    @staticmethod
+    def _attach_required_lens_sources(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Link each baseline lens to durable discovery items after stable IDs exist."""
+        ids = {
+            section: [str(item["id"]) for item in payload.get(section, [])]
+            for section in (
+                "actors", "lifecycle_stages", "enterprise_obligations", "domains",
+                "coverage_risks", "cross_domain_opportunities", "open_questions",
+            )
+        }
+        sources_by_title = {
+            "Actors and users": ids["actors"],
+            "Workflows and lifecycle": [*ids["lifecycle_stages"], *ids["actors"]],
+            "Data and integrations": [*ids["domains"], *ids["cross_domain_opportunities"]],
+            "Administration and operations": [*ids["enterprise_obligations"], *ids["actors"]],
+            "Trust, security, privacy, and governance": [
+                *ids["enterprise_obligations"], *ids["coverage_risks"],
+            ],
+            "Failure modes and recovery": [*ids["lifecycle_stages"], *ids["coverage_risks"]],
+            "Commercial and platform obligations": [
+                *ids["enterprise_obligations"], *ids["open_questions"],
+            ],
+        }
+        lenses: list[dict[str, Any]] = []
+        valid_ids = {item_id for section_ids in ids.values() for item_id in section_ids}
+        for lens in payload.get("lenses", []):
+            item = dict(lens)
+            explicit = [
+                str(value) for value in item.get("required_discovery_item_ids", [])
+                if str(value) in valid_ids
+            ]
+            inferred = sources_by_title.get(str(item.get("title") or ""), [])
+            item["required_discovery_item_ids"] = list(dict.fromkeys([*explicit, *inferred]))
+            lenses.append(item)
+        return lenses
 
     def review_discovery(self, discovery: ProductDiscovery) -> list[DiscoveryReviewFinding]:
         """Retain every generated item while assigning an explainable disposition."""

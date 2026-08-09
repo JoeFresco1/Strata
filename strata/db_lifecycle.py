@@ -85,6 +85,7 @@ DIRECT_PROJECT_TABLES = [
     "layer1_synthesis_results",
     "layer1_global_architecture_assessments",
     "layer1_architecture_selection_events",
+    "layer1_architecture_applications",
 ]
 
 DEPENDENT_TABLES = {
@@ -449,6 +450,7 @@ class ProjectLifecycleDatabaseMixin:
             "layer1_synthesis_results",
             "layer1_global_architecture_assessments",
             "layer1_architecture_selection_events",
+            "layer1_architecture_applications",
             "brief_conversations",
             "nodes",
             "generations",

@@ -102,13 +102,16 @@ class NodeUpdateRequest(BaseModel):
 
 
 class Layer1GenerateRequest(BaseModel):
+    """Canonical divergent Layer 1 launch controls; legacy names remain API-compatible."""
+
     model_aliases: list[str] = Field(default_factory=list)
     thinking_enabled: bool = False
-    max_rounds: int = 6
-    target_per_round: int = 12
+    max_rounds: int = 4
+    target_per_round: int = 18
     total_cap: int | None = Field(default=None, ge=1)
     min_new_items_per_round: int = 2
     stale_rounds_to_stop: int = 2
+    enable_adversarial_pass: bool = True
     request_id: str | None = None
 
 
@@ -155,6 +158,7 @@ class Layer1LensActionRequest(BaseModel):
     ]
     temperature: float | None = Field(default=None, ge=0, le=2)
     terminal_state: str | None = None
+    expected_state_token: str | None = None
     request_id: str | None = None
 
 
@@ -201,6 +205,17 @@ class Layer1ArchitectureSelectionRequest(BaseModel):
     """Human selection that does not overwrite other architecture options."""
 
     architecture_candidate_id: str
+    note: str = ""
+    request_id: str | None = None
+
+
+class Layer1ArchitectureApplicationRequest(BaseModel):
+    """Explicit second gate that applies a previously selected architecture."""
+
+    architecture_candidate_id: str
+    expected_current_pillar_tokens: dict[str, str] = Field(default_factory=dict)
+    confirm_replace: bool = False
+    acknowledge_unresolved_risks: bool = False
     note: str = ""
     request_id: str | None = None
 
@@ -621,6 +636,7 @@ class AppSnapshotResponse(BaseModel):
     overlap: dict[str, Any] = Field(default_factory=dict)
     layer3: dict[str, Any] = Field(default_factory=dict)
     product_discovery: dict[str, Any] = Field(default_factory=dict)
+    layer1_architecture_application: dict[str, Any] | None = None
 
 
 class ModelProfileResponse(BaseModel):

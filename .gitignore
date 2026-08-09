@@ -1,5 +1,6 @@
 .venv/
 .runtime/
+ab-results/
 .local/
 .codex/
 .tmp-playwright/

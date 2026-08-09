@@ -10,13 +10,14 @@ Strata works as one bounded, layered architecture rather than one freeform auton
 
 1. Layer 0 creates the canonical product brief.
 2. Layer 0 research adds cited market context to that brief.
-3. Layer 1 broadens from the published brief into major product pillars.
-4. Human review decides which pillars are worth keeping and descending into.
-5. Layer 2 turns approved pillars into a graph of concrete product capabilities.
-6. Layer 2 research adds cited competitor evidence to active features.
-7. Layer 3 expands approved Layer 2 features into product-level Feature Expansions.
-8. Human review includes, excludes, edits, and approves expansion options for downstream export.
-9. The assistant operates across the project as a bounded reader, synthesizer, and action proposer rather than as a separate layer owner.
+3. Product Discovery turns the published brief into the required actor, lifecycle, domain, obligation, risk, and exploration lenses.
+4. Layer 1 explores those lenses independently, retains useful non-pillar territory, and synthesizes multiple candidate pillar architectures.
+5. Human review separately selects and explicitly applies one architecture before descending into Layer 2.
+6. Layer 2 turns the applied pillars and their retained territory into a graph of concrete product capabilities.
+7. Layer 2 research adds cited competitor evidence to active features.
+8. Layer 3 expands approved Layer 2 features into product-level Feature Expansions while preserving their architecture lineage.
+9. Human review includes, excludes, edits, and approves expansion options for downstream export.
+10. The assistant operates across the project as a bounded reader, synthesizer, and action proposer rather than as a separate layer owner.
 
 The important architecture rule is that each layer narrows uncertainty differently:
 
@@ -106,21 +107,23 @@ Memory is bounded by:
 
 ### What Layer 1 does
 
-Layer 1 discovers major product pillars. These are strategic product areas, not screens, tasks, endpoints, or subfeatures.
+Layer 1 first discovers product territory, then synthesizes major product-pillar architectures. Territory can be pillar-shaped, cross-cutting, operational, governance-oriented, actor-specific, or suitable for a later layer; it is never forced into a pillar simply to survive.
 
-Layer 1 exists to answer: "What are the main capability buckets this product needs?"
+Layer 1 exists to answer both: "What meaningful product territory exists?" and "Which coherent pillar architecture should organize it?"
 
 ### Overall agentic process
 
-Layer 1 is a bounded breadth-first discovery loop.
+Layer 1 is a resumable, breadth-first exploration and synthesis loop.
 
-1. Start from the published Layer 0 brief.
-2. Run generation passes through multiple lenses.
-3. Normalize raw ideas back into true pillar-shaped concepts.
-4. Assess quality, distinctiveness, and overlap.
-5. Cluster similar ideas into canonical families.
-6. Stop when novelty drops, saturation is reached, or the configured budget is exhausted.
-7. Present the result for human review before any descent into Layer 2.
+1. Start from the exact published Layer 0 brief and exact published Product Discovery revision.
+2. Run every required Discovery lens independently with bounded context, contrastive exclusions, source attribution, and configured retries.
+3. Persist every raw response, attempt, candidate, disposition, runtime setting, and model provenance before later judgment.
+4. Normalize and assess candidates without deleting or collapsing the raw record.
+5. Cluster semantic families, track lens coverage, and retain useful territory at typed destinations beyond pillars.
+6. Run an adversarial pass and apply explicit stopping rules; budget exhaustion never masquerades as saturation.
+7. Synthesize at least two immutable, mapped architecture options and critique them globally.
+8. Let a human select an option without changing the project map.
+9. Apply the selected option only through a second explicit confirmation with optimistic concurrency and risk acknowledgment.
 
 ### How users can interact
 
@@ -128,8 +131,11 @@ Users interact with Layer 1 as a review and steering surface rather than a hidde
 
 They can:
 
-- trigger or rerun Layer 1 generation
-- review generated pillars
+- generate, approve, and publish Product Discovery before exploration
+- start or safely resume a checkpointed territory run
+- review raw candidates, destinations, coverage, adversarial findings, and architecture options
+- select an architecture as a non-mutating decision
+- explicitly apply the selected architecture to the project map
 - cut, keep, merge, rename, and prioritize pillars
 - inspect provenance such as source lens, source model, overlap, and quality signals
 - review cited Layer 1 competitor coverage tied to specific pillars
@@ -141,18 +147,19 @@ Layer 1 competitive intelligence is surfaced directly in pillar review. Each pil
 - cited evidence snippets and whitespace notes
 - stale-research warnings after a pillar is edited
 
-The user decides which pillars are real and which are noise. That decision becomes the descent boundary for Layer 2.
+Applying an architecture preserves the prior pillars as cut historical nodes, creates the new kept pillars atomically, marks descendants of superseded pillars stale, and records the exact application, selection, mappings, retained territory, actor, and command. The applied architecture becomes the descent boundary for Layer 2.
 
 ### How it is generated
 
-Layer 1 uses a multi-pass generation pipeline rather than one prompt.
+Layer 1 uses independent typed passes rather than one pillar prompt.
 
-- Generation passes broaden the space through bounded discovery lenses.
-- Optional model sequencing lets one model explore and later models challenge blind spots.
-- Normalization converts raw candidate text into stable pillar candidates.
-- Assessment scores candidate quality and strategic fit.
-- Clustering and overlap analysis reduce rediscovery and surface canonical families.
-- Stop conditions prevent endless looping once the space is saturated.
+- Product Discovery defines the complete required lens queue and attributable source inventory.
+- Each lens call receives only its bounded projection, prior exclusions, and the territory schema.
+- Valid candidates are checkpointed immediately; malformed or timed-out attempts remain inspectable and retryable.
+- Normalization and assessment create append-only projections over immutable raw candidates.
+- Clustering, coverage, and adversarial analysis expose gaps without erasing dissenting territory.
+- Architecture synthesis maps territory into multiple options while retaining significant non-pillar territory.
+- Selection and application remain separate human commands.
 
 The architecture is intentionally breadth-first. Layer 1 should exhaust meaningful pillar families before going deeper.
 
@@ -193,12 +200,17 @@ Layer 1 memory is source-typed and compressed.
 
 It includes:
 
+- exact published brief and Product Discovery revision lineage
+- immutable raw responses, attempts, candidates, and model-file provenance
+- complete current and historical candidate dispositions
 - persisted pillar memory
 - canonical family and overlap memory
 - quality and assessment signals
 - rejected or quarantined candidates
 - coverage summaries and saturation state
 - research evidence attached to pillars
+- architecture options, critic findings, selection events, and application history
+- retained non-pillar territory passed to downstream layers
 
 The system should not replay every prior generation round into the model. Instead it should pass bounded memory packets such as:
 
@@ -225,8 +237,8 @@ Layer 2 exists to answer: "What concrete product capabilities make each approved
 
 Layer 2 is a controlled graph-native descent.
 
-1. Start only from kept or prioritized Layer 1 pillars.
-2. Establish scope contracts and coverage families for each pillar.
+1. Start only from kept or prioritized Layer 1 pillars; pillars from different architecture applications cannot be mixed in one generation run.
+2. Establish scope contracts and coverage families using the pillar's mapped territory plus retained non-pillar territory from its active architecture application.
 3. Run bounded lens passes to create raw feature candidates.
 4. Apply integrity, overlap, graph, ambiguity, and negative-cache critics.
 5. Persist canonical features, aliases, affinities, relationships, and review signals in graph-native tables.
@@ -264,7 +276,8 @@ The user is the final authority on graph shape. Automated critics surface eviden
 
 Layer 2 generation is graph-aware and review-aware.
 
-- A scope-discovery step defines the pillar boundary and coverage families.
+- Every generation run records its source architecture application and the full exact set of mapped and retained Layer 1 territory IDs.
+- A scope-discovery step receives bounded detailed projections of that territory and defines the pillar boundary and coverage families.
 - Feature-generation passes create raw candidates under those constraints.
 - Critic passes check scope, granularity, ownership, overlap, ambiguity, shared concerns, and graph consistency.
 - Canonicalization persists one feature graph with aliases and cross-pillar relationships instead of disconnected trees.
@@ -327,6 +340,8 @@ It includes:
 
 Prompt context should stay bounded to the current pillar, current feature family, or current review task. The database stores the full graph history, but model calls should receive only the local slice needed for the next pass.
 
+The full territory lineage remains durable on the generation run even when prompt projections are compacted. This separates lossless audit storage from bounded inference context.
+
 This is what keeps Layer 2 from collapsing into repeated rediscovery or unfocused graph sprawl.
 
 ## Layer 3
@@ -342,12 +357,13 @@ Layer 3 does not generate target-product APIs, database schemas, components, reg
 ### Overall agentic process
 
 1. Load only approved Layer 2 features.
-2. Generate a draft expansion from bounded Layer 0, parent-pillar, sibling-feature, and graph-edge context.
-3. Group the next-level possibilities into options such as response type, validation rules, limits, display behavior, admin controls, integrations, or workflow variants.
-4. Default options to undecided so the user can explicitly include, exclude, edit, add, or remove them.
-5. Let the user mark option overlap with active Layer 2 features.
-6. Let the user approve, reject, or return an expansion to review.
-7. Export approved expansions with full Layer 0/1/2 lineage.
+2. Resolve the feature's Layer 2 generation run and active Layer 1 architecture application.
+3. Generate a draft expansion from bounded Layer 0, mapped Layer 1 territory, parent-pillar, sibling-feature, and graph-edge context.
+4. Group the next-level possibilities into options such as response type, validation rules, limits, display behavior, admin controls, integrations, or workflow variants.
+5. Default options to undecided so the user can explicitly include, exclude, edit, add, or remove them.
+6. Let the user mark option overlap with active Layer 2 features.
+7. Let the user approve, reject, or return an expansion to review.
+8. Export approved expansions with full Layer 0/1/2 lineage.
 
 ### How users can interact
 
@@ -368,11 +384,14 @@ Feature expansions, option state, review actions, and provenance are canonical d
 Generation context is bounded to:
 
 - compact Layer 0 brief context
+- the active Layer 1 architecture application and mapped territory projection
 - the parent Layer 1 pillar
 - the selected approved Layer 2 feature
 - approved sibling features
 - relevant Layer 2 graph relationships
 - the current card only when regenerating selected sections
+
+The expansion provenance stores the exact architecture application, its content hash, the source Layer 2 generation run, and the full Layer 1 territory ID set. An application dependency lets later upstream changes mark the expansion stale without deleting its history.
 
 ## Cross-layer assistant
 

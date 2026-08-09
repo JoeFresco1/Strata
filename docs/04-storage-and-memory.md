@@ -11,6 +11,10 @@ Strata keeps PostgreSQL as the production source of truth and uses bounded memor
 - Core project records include projects, lifecycle state, briefs, conversations,
   Layer 1 nodes, generations, research, platform jobs, telemetry, diagnostics,
   ownership settings, archives, and project memory.
+- Platform workers claim queued jobs with one database compare-and-set transition,
+  so separate API worker processes cannot dispatch the same job concurrently.
+- Importing `strata.api` is storage-free. The explicit `serve_api` ASGI entrypoint
+  constructs the application and initializes the configured database at startup.
 - Layer 2 uses dedicated graph, provenance, coverage, review, rejection-memory, and competitor-evidence tables.
 - Layer 3 uses dedicated card, relationship, open-decision, and review-action tables; readiness, optional competitive analysis, and provenance live on the card rather than in raw chat history.
 - The project assistant persists conversations, messages, runs, specialist runs, documents, and action proposals.

@@ -47,7 +47,8 @@ class Layer2CriticMixin:
         )
         if existing:
             try:
-                return PillarScopeContract.model_validate(existing.content)
+                contract = PillarScopeContract.model_validate(existing.content)
+                return self._attach_architecture_scope_context(pillar, contract)
             except ValidationError:
                 pass
         project_pillars = [
@@ -94,6 +95,7 @@ class Layer2CriticMixin:
             explicit_out_of_bounds=out_of_bounds,
             discovered_coverage_families=families,
         )
+        contract = self._attach_architecture_scope_context(pillar, contract)
         self.db.upsert_project_memory(
             project_id=project_id,
             scope="layer2",
@@ -102,6 +104,52 @@ class Layer2CriticMixin:
             content=contract.model_dump(mode="json"),
         )
         return contract
+
+    def _attach_architecture_scope_context(
+        self,
+        pillar: Node,
+        contract: PillarScopeContract,
+    ) -> PillarScopeContract:
+        """Attach bounded territory detail while preserving every source id in run provenance."""
+        application_id = str(
+            pillar.json_payload.get("architecture_application_id") or ""
+        ).strip()
+        if not application_id:
+            return contract
+        application = self.db.get_active_layer1_architecture_application(pillar.project_id)
+        if application is None or application.id != application_id:
+            raise ValueError("Pillar architecture provenance is not active for this project.")
+        candidates = {
+            item.id: item
+            for item in self.db.list_layer1_raw_candidates(application.run_id)
+        }
+        mapped_ids = [
+            str(item)
+            for item in pillar.json_payload.get("territory_candidate_ids", [])
+        ]
+        retained_ids = application.retained_territory_candidate_ids
+
+        def project(candidate_ids: list[str], limit: int) -> list[dict[str, Any]]:
+            """Project enough product detail for inference without copying the raw reservoir."""
+            return [
+                {
+                    "id": candidate.id,
+                    "title": candidate.title,
+                    "description": candidate.description,
+                    "destination": candidate.proposed_destination.value,
+                    "source_discovery_item_ids": candidate.source_discovery_item_ids,
+                }
+                for candidate_id in candidate_ids[:limit]
+                if (candidate := candidates.get(candidate_id)) is not None
+            ]
+
+        return contract.model_copy(
+            update={
+                "source_architecture_application_id": application.id,
+                "mapped_territory": project(mapped_ids, 16),
+                "retained_non_pillar_territory": project(retained_ids, 32),
+            }
+        )
 
     def _initialize_layer2_coverage_matrix(self, project_id: str, pillar_id: str, families: list[str]) -> None:
         """Ensure each discovered family starts with a durable missing-state matrix row."""

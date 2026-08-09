@@ -1,12 +1,11 @@
 # Layer 1 territory exploration
 
-Layer 1 now has an experimental breadth-first workflow alongside the existing
-pillar generator. It consumes the exact published Layer 0 and Product Discovery
+Layer 1 now uses the breadth-first workflow as its canonical generated path,
+while preserving manual pillar authoring and backward-compatible requests. It consumes the exact published Layer 0 and Product Discovery
 revisions, runs each discovery lens independently, preserves every raw candidate,
 and delays pillar synthesis until exploration is complete.
 
-The existing generator remains the default while the required controlled
-three-lens comparison is running. The new workspace is available under
+The workspace is available under
 **Layer 1 → Territory exploration**.
 
 ## Workflow
@@ -26,6 +25,10 @@ three-lens comparison is running. The new workspace is available under
    two immutable, mapped architecture options.
 7. Run the global architecture critic separately. Human selection is an
    append-only event and does not overwrite other options or existing pillars.
+8. Apply the selected option through a separate, explicit human command. The
+   application validates exact current pillar state tokens, preserves replaced
+   pillars as cut history, and records retained non-pillar territory for Layers
+   2 and 3.
 
 Hard call, elapsed-time, and candidate budgets produce an `incomplete` or
 `budget_exhausted` result. They never imply saturation.
@@ -58,7 +61,19 @@ candidates, full disposition history, clusters, lens/global coverage, policy
 history, adversarial findings, architecture options, global critic results,
 runtime provenance, and metrics.
 
-Project archive, clone, purge, and restore include the new canonical tables.
+Commands that enqueue territory, adversarial, or synthesis work schedule the
+durable job immediately after the command transaction succeeds. Lens actions
+round-trip their optimistic-concurrency state token through the HTTP API.
+
+Architecture selection, application, and downstream Layer 2/3 generation require
+the exact current brief, Product Discovery, and active architecture application.
+Superseded applications remain auditable but cannot receive new descendants.
+Local runtime preflight uses provider tokenizer routes when available and a
+conservative bounded estimate for OpenAI-compatible providers such as LM Studio
+or Ollama that do not expose llama.cpp tokenizer endpoints.
+
+Project archive, clone, purge, and restore include the new canonical tables,
+including architecture applications and their downstream lineage.
 
 ## Controlled evaluation
 

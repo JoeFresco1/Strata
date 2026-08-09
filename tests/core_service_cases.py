@@ -47,7 +47,7 @@ from strata.prompts import (
 from strata.brief import BriefService
 from strata.research import ResearchService
 from strata.research import ExtractedPage
-from requests.exceptions import SSLError
+from requests.exceptions import HTTPError, RequestException, SSLError
 
 
 class ProjectSettingsTests(unittest.TestCase):
@@ -171,6 +171,228 @@ class LLMClientTests(unittest.TestCase):
         cleaned = LlamaCppClient._strip_reasoning_wrappers('```json\n{"ok": true}\n```')
 
         self.assertEqual(cleaned, '{"ok": true}')
+
+    def test_parse_json_response_repairs_only_safe_near_misses(self) -> None:
+        parsed = LlamaCppClient._parse_json_response(
+            'result: {"items": [{"id": "one",}],}'
+        )
+
+        self.assertEqual(parsed, {"items": [{"id": "one"}]})
+        with self.assertRaises(LLMError) as caught:
+            LlamaCppClient._parse_json_response('{"items": [{"id": "truncated"}')
+        self.assertEqual(caught.exception.raw_content, '{"items": [{"id": "truncated"}')
+        self.assertEqual(caught.exception.error_type, "parse_error")
+
+    @patch("strata.llm.time.sleep", return_value=None)
+    @patch("strata.llm.requests.post")
+    def test_generate_json_retries_truncated_and_malformed_outputs(
+        self,
+        mock_post: MagicMock,
+        _mock_sleep: MagicMock,
+    ) -> None:
+        truncated = MagicMock()
+        truncated.raise_for_status.return_value = None
+        truncated.json.return_value = {
+            "choices": [{
+                "finish_reason": "length",
+                "message": {"content": '{"items": ['},
+            }],
+        }
+        malformed = MagicMock()
+        malformed.raise_for_status.return_value = None
+        malformed.json.return_value = {
+            "choices": [{"message": {"content": '{"items": ['}}],
+        }
+        complete = MagicMock()
+        complete.raise_for_status.return_value = None
+        complete.json.return_value = {
+            "choices": [{"finish_reason": "stop", "message": {"content": '{"items": []}'}}],
+        }
+        mock_post.side_effect = [truncated, malformed, complete]
+
+        result = LlamaCppClient(AppConfig()).generate_json(
+            system_prompt="system",
+            user_prompt="user",
+            base_url="https://models.example.com",
+            max_attempts=4,
+        )
+
+        self.assertEqual(result.parsed_json, {"items": []})
+        self.assertEqual(mock_post.call_count, 3)
+        self.assertEqual(mock_post.call_args_list[0].kwargs["json"]["max_tokens"], 2500)
+        self.assertEqual(mock_post.call_args_list[1].kwargs["json"]["max_tokens"], 3750)
+        self.assertEqual(mock_post.call_args_list[2].kwargs["json"]["temperature"], 0.2)
+
+    @patch("strata.llm.time.sleep", return_value=None)
+    @patch("strata.llm.requests.post")
+    def test_generate_json_reports_exhausted_raw_output(
+        self,
+        mock_post: MagicMock,
+        _mock_sleep: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{"message": {"content": '{"items": ['}}],
+        }
+        mock_post.return_value = response
+
+        with self.assertRaises(LLMError) as caught:
+            LlamaCppClient(AppConfig()).generate_json(
+                system_prompt="system",
+                user_prompt="user",
+                base_url="https://models.example.com",
+                max_attempts=3,
+            )
+
+        self.assertEqual(caught.exception.error_type, "parse_error")
+        self.assertEqual(caught.exception.raw_content, '{"items": [')
+        self.assertEqual(mock_post.call_count, 3)
+
+    @patch("strata.llm.time.sleep", return_value=None)
+    @patch("strata.llm.requests.post")
+    def test_generate_json_retries_invalid_provider_shape(
+        self,
+        mock_post: MagicMock,
+        _mock_sleep: MagicMock,
+    ) -> None:
+        invalid = MagicMock()
+        invalid.raise_for_status.return_value = None
+        invalid.json.return_value = {"choices": [{"message": {"content": None}}]}
+        valid = MagicMock()
+        valid.raise_for_status.return_value = None
+        valid.json.return_value = {
+            "choices": [{"message": {"content": '{"ok": true}'}}],
+        }
+        mock_post.side_effect = [invalid, valid]
+
+        result = LlamaCppClient(AppConfig()).generate_json(
+            system_prompt="system",
+            user_prompt="user",
+            base_url="https://models.example.com",
+        )
+
+        self.assertTrue(result.parsed_json["ok"])
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch("strata.llm.time.sleep", return_value=None)
+    @patch("strata.llm.requests.post")
+    def test_generate_json_does_not_retry_permanent_http_rejection(
+        self,
+        mock_post: MagicMock,
+        _mock_sleep: MagicMock,
+    ) -> None:
+        response = MagicMock(status_code=401)
+        response.raise_for_status.side_effect = HTTPError(
+            "401 unauthorized",
+            response=response,
+        )
+        mock_post.return_value = response
+
+        with self.assertRaises(LLMError) as caught:
+            LlamaCppClient(AppConfig()).generate_json(
+                system_prompt="system",
+                user_prompt="user",
+                base_url="https://models.example.com",
+            )
+
+        self.assertEqual(caught.exception.error_type, "request_rejected")
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("strata.llm.requests.post")
+    def test_local_context_preflight_clamps_completion_before_overflow(
+        self,
+        mock_post: MagicMock,
+    ) -> None:
+        template = MagicMock()
+        template.raise_for_status.return_value = None
+        template.json.return_value = {"prompt": "rendered"}
+        tokens = MagicMock()
+        tokens.raise_for_status.return_value = None
+        tokens.json.return_value = {"tokens": list(range(9000))}
+        completion = MagicMock()
+        completion.raise_for_status.return_value = None
+        completion.json.return_value = {
+            "model": "local-model",
+            "choices": [{"message": {"content": '{"ok": true}'}}],
+        }
+        mock_post.side_effect = [template, tokens, completion]
+        client = LlamaCppClient(AppConfig())
+
+        result = client.generate_json(
+            system_prompt="system",
+            user_prompt="user",
+            context_limit=16384,
+            max_tokens=16000,
+        )
+
+        self.assertTrue(result.parsed_json["ok"])
+        completion_payload = mock_post.call_args_list[2].kwargs["json"]
+        self.assertEqual(completion_payload["response_format"], {"type": "json_object"})
+        self.assertEqual(completion_payload["max_tokens"], 6616)
+
+    @patch("strata.llm.requests.post")
+    def test_local_context_preflight_falls_back_for_non_llamacpp_provider(
+        self,
+        mock_post: MagicMock,
+    ) -> None:
+        """Local OpenAI-compatible providers need not expose llama.cpp tokenizer routes."""
+        unsupported = MagicMock()
+        unsupported.raise_for_status.side_effect = RequestException("unsupported route")
+        completion = MagicMock()
+        completion.raise_for_status.return_value = None
+        completion.json.return_value = {
+            "model": "lm-studio-model",
+            "choices": [{"message": {"content": '{"ok": true}'}}],
+        }
+        mock_post.side_effect = [unsupported, completion]
+        store = MagicMock()
+        client = LlamaCppClient(AppConfig(), telemetry_store=store)
+
+        result = client.generate_json(
+            system_prompt="system",
+            user_prompt="user",
+            base_url="http://127.0.0.1:1234",
+            context_limit=16384,
+            max_tokens=4000,
+            telemetry={"project_id": "project", "workflow": "layer1"},
+        )
+
+        self.assertTrue(result.parsed_json["ok"])
+        completion_payload = mock_post.call_args_list[1].kwargs["json"]
+        self.assertEqual(completion_payload["response_format"], {"type": "json_object"})
+        recorded = store.record_model_call.call_args.args[0]
+        self.assertEqual(recorded["metadata"]["preflight_mode"], "conservative_estimate")
+
+    @patch("strata.llm.requests.post")
+    def test_local_preflight_reserves_space_for_json_completion(
+        self,
+        mock_post: MagicMock,
+    ) -> None:
+        template = MagicMock()
+        template.raise_for_status.return_value = None
+        template.json.return_value = {"prompt": "rendered"}
+        tokens = MagicMock()
+        tokens.raise_for_status.return_value = None
+        tokens.json.return_value = {"tokens": list(range(7500))}
+        completion = MagicMock()
+        completion.raise_for_status.return_value = None
+        completion.json.return_value = {
+            "choices": [{"message": {"content": '{"ok": true}'}}],
+        }
+        mock_post.side_effect = [template, tokens, completion]
+
+        client = LlamaCppClient(AppConfig())
+        client.generate_json(
+            system_prompt="system",
+            user_prompt="user",
+            context_limit=16384,
+            max_tokens=2000,
+        )
+
+        completion_payload = mock_post.call_args_list[2].kwargs["json"]
+        self.assertEqual(completion_payload["response_format"], {"type": "json_object"})
+        self.assertEqual(completion_payload["max_tokens"], 2000)
 
 
 class ProviderValidatorTests(unittest.TestCase):

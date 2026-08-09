@@ -335,6 +335,16 @@ class SelectLayer1ArchitectureCandidate(ApplicationCommand):
 
 
 @dataclass(frozen=True, kw_only=True)
+class ApplyLayer1ArchitectureCandidate(ApplicationCommand):
+    run_id: str
+    architecture_candidate_id: str
+    expected_current_pillar_tokens: dict[str, str] = field(default_factory=dict)
+    confirm_replace: bool = False
+    acknowledge_unresolved_risks: bool = False
+    note: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
 class CreateHybridLayer1Architecture(ApplicationCommand):
     run_id: str
     title: str

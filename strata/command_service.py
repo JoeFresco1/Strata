@@ -18,6 +18,7 @@ from strata.command_types import (
     AppendBriefPlanTurn,
     ActorType,
     ApplicationCommand,
+    ApplyLayer1ArchitectureCandidate,
     ApproveFeature,
     ApproveCompetitorResearchRevision,
     ApproveProductDiscoveryRevision,
@@ -115,6 +116,7 @@ from strata.dependency_db import feature_revision_token, pillar_revision_token
 from strata.db import utc_now
 from strata.layer3_db import Layer3RevisionConflict
 from strata.layer3_service import validate_product_level_content
+from strata.layer1_territory_policy import DivergencePolicy, ExplorationBudget
 HUMAN_ONLY_COMMANDS = (
     UpdateBriefDraft, AppendBriefPlanTurn, PublishBrief, CreatePillar, EditPillar, KeepPillar, CutPillar,
     PrioritizePillar, RenamePillar, MergePillars, BulkSetPillarState, CreateFeature, EditFeature,
@@ -134,6 +136,7 @@ HUMAN_ONLY_COMMANDS = (
     ClassifyTerritoryCandidate, ReclassifyTerritoryCandidate,
     PromoteTerritoryToPillarCandidate, RouteTerritoryToLayer2,
     SelectLayer1ArchitectureCandidate, CreateHybridLayer1Architecture,
+    ApplyLayer1ArchitectureCandidate,
     CancelLayer1ExpansionRun,
 )
 
@@ -180,6 +183,7 @@ class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0
             BuildLayer1SynthesisContext: self._build_layer1_synthesis_context,
             GenerateLayer1ArchitectureCandidates: self._generate_layer1_architectures,
             SelectLayer1ArchitectureCandidate: self._select_layer1_architecture,
+            ApplyLayer1ArchitectureCandidate: self._apply_layer1_architecture,
             CreateHybridLayer1Architecture: self._create_hybrid_layer1_architecture,
             CancelLayer1ExpansionRun: self._cancel_layer1_expansion,
             StartCompetitorResearch: self._start_competitor_research,
@@ -1027,6 +1031,7 @@ class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0
         return {"job": job.model_dump(mode="json"), "job_ids": [job.id]}, job.id, StaleEffect()
 
     def _request_layer1_generation(self, command: RequestLayer1Generation) -> CommandResult:
+        """Start canonical divergent exploration from the published Discovery revision."""
         def operation():
             brief = self.services.brief_service.ensure_brief(command.project_id)
             if brief.status != "published":
@@ -1036,8 +1041,46 @@ class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0
                 self.services.job_service._resolve_layer1_profiles(aliases)
             except ValueError as exc:
                 raise CommandValidationError(str(exc)) from exc
-            return self._request_job(command, kind="generation", workflow="layer1_generation", scope="layer1", scope_id=None, payload=command.payload, dedupe_key=f"generation:layer1:{command.project_id}:{state_token(command.payload)}")
-        return self._execute(command, target_type="workflow_request", target_id="layer1_generation", operation=operation)
+            config = {
+                "target_raw_candidates": max(
+                    12, min(30, int(command.payload.get("target_per_round") or 18))
+                ),
+                "max_attempts_per_lens": max(
+                    1, min(4, int(command.payload.get("max_rounds") or 4))
+                ),
+                "enable_adversarial_pass": bool(
+                    command.payload.get("enable_adversarial_pass", True)
+                ),
+            }
+            budget: dict[str, Any] = {}
+            if command.payload.get("total_cap") is not None:
+                budget["max_total_candidates"] = int(command.payload["total_cap"])
+            run = self.services.generation_service.start_layer1_territory_expansion(
+                command.project_id,
+                policy=DivergencePolicy(**config),
+                budget=ExplorationBudget(**budget),
+            )
+            job = self.services.job_service.enqueue(
+                project_id=command.project_id,
+                kind="generation",
+                workflow="layer1_territory_expansion",
+                scope="layer1_territory",
+                scope_id=run.id,
+                request_payload={"run_id": run.id, "model_aliases": aliases},
+                dedupe_key=f"layer1-territory:{run.id}",
+            )
+            data = {
+                "run": run.model_dump(mode="json"),
+                "job": job.model_dump(mode="json"),
+                "job_ids": [job.id],
+            }
+            return data, state_token(data["run"]), StaleEffect()
+        return self._execute(
+            command,
+            target_type="layer1_territory_run",
+            target_id="new",
+            operation=operation,
+        )
 
     def _request_layer2_generation(self, command: RequestLayer2Generation) -> CommandResult:
         def operation():

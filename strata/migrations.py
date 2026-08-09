@@ -9,6 +9,7 @@ from strata.db import Database, utc_now
 from strata.dependency_db import canonical_content_hash, feature_revision_token, pillar_revision_token
 from strata.storage import build_database
 from strata.layer1_territory_migration import add_layer1_territory_exploration
+from strata.layer1_architecture_migration import add_layer1_architecture_application
 
 
 @dataclass(frozen=True)
@@ -661,6 +662,8 @@ def _product_discovery_revisions(db: Database) -> None:
         "CREATE INDEX IF NOT EXISTS idx_competitor_revisions_project ON competitor_research_revisions(project_id, revision_number)",
         "CREATE INDEX IF NOT EXISTS idx_competitor_revisions_brief ON competitor_research_revisions(project_id, source_brief_revision_id)",
         "CREATE INDEX IF NOT EXISTS idx_discovery_projections_source ON discovery_context_projections(project_id, source_discovery_revision_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_discovery_revision_head_identity ON product_discovery_revisions(head_id, id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_competitor_revision_head_identity ON competitor_research_revisions(head_id, id)",
     ):
         db._execute(statement)
     if db.is_postgres:
@@ -860,6 +863,7 @@ MIGRATIONS = [
     Migration(7, "product_discovery_and_competitor_research", _product_discovery_revisions),
     Migration(8, "layer1_stateful_discovery_expansion", _layer1_stateful_expansion),
     Migration(9, "layer1_divergent_territory_exploration", add_layer1_territory_exploration),
+    Migration(10, "layer1_architecture_application_and_downstream_lineage", add_layer1_architecture_application),
 ]
 
 

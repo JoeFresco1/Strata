@@ -277,6 +277,8 @@ class Layer2GenerationRun(BaseModel):
     id: str
     project_id: str
     source_pillar_ids: list[str] = Field(default_factory=list)
+    source_architecture_application_id: str | None = None
+    source_territory_candidate_ids: list[str] = Field(default_factory=list)
     lenses: list[str] = Field(default_factory=list)
     source_model: str
     status: str
@@ -365,6 +367,9 @@ class PillarScopeContract(BaseModel):
     allowed_core_domains: list[str] = Field(default_factory=list)
     explicit_out_of_bounds: list[str] = Field(default_factory=list)
     discovered_coverage_families: list[str] = Field(default_factory=list)
+    source_architecture_application_id: str | None = None
+    mapped_territory: list[dict[str, Any]] = Field(default_factory=list)
+    retained_non_pillar_territory: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Layer2CoverageMatrixRow(BaseModel):

@@ -432,6 +432,13 @@ export default function App() {
     }
   }
 
+  async function handleArchitectureApplied() {
+    // Refresh the authoritative map only after the explicit application command succeeds.
+    const refreshed = await apiFetch(`/projects/${activeProjectId}`, { force: true });
+    applySnapshot(refreshed);
+    setStatusMessage("Selected Layer 1 architecture applied. Review stale downstream work before continuing.");
+  }
+
   // Run graph-native Layer 2 generation for the selected kept pillars.
   async function handleGenerateLayer2(pillarIds = []) {
     setError("");
@@ -1101,6 +1108,7 @@ export default function App() {
                   handleBriefSave={handleBriefSave}
                   handleExport={handleExport}
                   handleGenerateLayer1={handleGenerateLayer1}
+                  handleArchitectureApplied={handleArchitectureApplied}
                   handleGenerateLayer2={handleGenerateLayer2}
                   handleGenerateLayer3={handleGenerateLayer3}
                   handleLayer1OverlapCritic={handleLayer1OverlapCritic}

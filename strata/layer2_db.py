@@ -36,20 +36,26 @@ class Layer2DatabaseMixin(Layer2WorkbenchDatabaseMixin):
         source_pillar_ids: list[str],
         lenses: list[str],
         source_model: str,
+        source_architecture_application_id: str | None = None,
+        source_territory_candidate_ids: list[str] | None = None,
     ) -> Layer2GenerationRun:
         """Start a durable Layer 2 generation run for provenance and replay."""
         run_id = str(uuid.uuid4())
         self._execute(
             f"""
             INSERT INTO layer2_generation_runs (
-                id, project_id, source_pillar_ids, lenses, source_model, status, summary, created_at, completed_at
+                id, project_id, source_pillar_ids, source_architecture_application_id,
+                source_territory_candidate_ids, lenses, source_model, status, summary,
+                created_at, completed_at
             )
-            VALUES ({self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param}, {self.param})
+            VALUES ({', '.join([self.param] * 11)})
             """,
             (
                 run_id,
                 project_id,
                 self._dump_json(source_pillar_ids),
+                source_architecture_application_id,
+                self._dump_json(source_territory_candidate_ids or []),
                 self._dump_json(lenses),
                 source_model,
                 "running",
@@ -730,6 +736,14 @@ class Layer2DatabaseMixin(Layer2WorkbenchDatabaseMixin):
             id=row["id"],
             project_id=row["project_id"],
             source_pillar_ids=self._load_json_list(row["source_pillar_ids"]),
+            source_architecture_application_id=(
+                str(row["source_architecture_application_id"])
+                if row["source_architecture_application_id"]
+                else None
+            ),
+            source_territory_candidate_ids=self._load_json_list(
+                row["source_territory_candidate_ids"]
+            ),
             lenses=self._load_json_list(row["lenses"]),
             source_model=row["source_model"],
             status=row["status"],

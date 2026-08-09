@@ -287,33 +287,34 @@ class Layer1TerritoryEngineMixin:
                 prompt=prompt,
                 provenance=provenance,
             )
-            self._persist_adversarial_scenarios(
-                attempt_id=attempt.id,
-                role=role,
-                scenarios=scenarios,
-                provenance=exact_provenance,
-            )
-            self.db.checkpoint_layer1_lens_attempt(
-                attempt.id,
-                status=AttemptStatus.COMPLETED,
-                parsed_candidate_count=len(scenarios),
-            )
-            self.db.update_layer1_lens_state(
-                lens.id,
-                state=LensTerminalState.SATURATED,
-                attempt_count=attempt.attempt_number,
-            )
-            self.db.update_layer1_territory_run(
-                run.id,
-                status=TerritoryRunStatus.RUNNING,
-                stage=TerritoryRunStage.ADVERSARIAL,
-                metrics={
-                    **run.metrics,
-                    "adversarial_complete": True,
-                    "adversarial_role": role,
-                },
-            )
-        except (LLMError, ValueError, TypeError) as exc:
+            with self.db.unit_of_work():
+                self._persist_adversarial_scenarios(
+                    attempt_id=attempt.id,
+                    role=role,
+                    scenarios=scenarios,
+                    provenance=exact_provenance,
+                )
+                self.db.checkpoint_layer1_lens_attempt(
+                    attempt.id,
+                    status=AttemptStatus.COMPLETED,
+                    parsed_candidate_count=len(scenarios),
+                )
+                self.db.update_layer1_lens_state(
+                    lens.id,
+                    state=LensTerminalState.SATURATED,
+                    attempt_count=attempt.attempt_number,
+                )
+                self.db.update_layer1_territory_run(
+                    run.id,
+                    status=TerritoryRunStatus.RUNNING,
+                    stage=TerritoryRunStage.ADVERSARIAL,
+                    metrics={
+                        **run.metrics,
+                        "adversarial_complete": True,
+                        "adversarial_role": role,
+                    },
+                )
+        except Exception as exc:  # durable attempt boundary includes persistence failures
             self._record_adversarial_failure(lens, attempt, exc)
         return self._finish_territory_divergence(
             run.id,
@@ -335,6 +336,9 @@ class Layer1TerritoryEngineMixin:
             brief_projection=source["brief"],
             discovery_projection=source["discovery"],
             current_territory_projection=source["territory"],
+            territory_inventory=source["territory_inventory"],
+            territory_population_summary=source["territory_population_summary"],
+            semantic_clusters=source["semantic_clusters"],
         )
         lens = self._ensure_adversarial_lens(run, role)
         provenance = self._territory_runtime_provenance(
@@ -343,7 +347,7 @@ class Layer1TerritoryEngineMixin:
             prompt_key="layer1_adversarial_territory",
             prompt_version="1",
             timeout_seconds=self._territory_policy(run.config).model_call_timeout_seconds,
-            output_limit=5000,
+            output_limit=2000,
         )
         attempt = self.db.create_layer1_lens_attempt(
             lens_execution_id=lens.id,
@@ -380,6 +384,7 @@ class Layer1TerritoryEngineMixin:
             max_tokens=int(provenance.output_limit or 5000),
             temperature=0.75,
             timeout_seconds=provenance.timeout_seconds,
+            context_limit=provenance.context_limit,
             telemetry=model_call_context(
                 project_id=run.project_id,
                 layer="layer1",
@@ -399,6 +404,8 @@ class Layer1TerritoryEngineMixin:
         scenarios = response.parsed_json.get("scenarios")
         if not isinstance(scenarios, list):
             raise LLMError("Adversarial response must contain a scenarios list.")
+        if not scenarios or any(not isinstance(item, dict) for item in scenarios):
+            raise LLMError("Adversarial scenarios must be a non-empty list of objects.")
         return (
             [item for item in scenarios if isinstance(item, dict)],
             provenance.model_copy(
@@ -416,7 +423,8 @@ class Layer1TerritoryEngineMixin:
         self.db.checkpoint_layer1_lens_attempt(
             attempt.id,
             status=status,
-            error_type=status.value,
+            raw_response=str(getattr(error, "raw_content", "")) or None,
+            error_type=str(getattr(error, "error_type", status.value)),
             error_message=str(error),
         )
         self.db.update_layer1_lens_state(
@@ -430,17 +438,33 @@ class Layer1TerritoryEngineMixin:
         run_id: str,
         *,
         runtime_profile: dict[str, Any] | None = None,
+        allow_unresolved_risks_for_evaluation: bool = False,
     ) -> list[Any]:
-        """Generate mapped immutable architecture options from accepted territory only."""
+        """Generate mapped immutable architecture options from accepted territory only.
+
+        The evaluation override permits option generation when unresolved risks are
+        the only gate. Those risks remain explicit in the prompt and no architecture
+        is selected or applied.
+        """
         run = self.db.get_layer1_territory_run(run_id)
         if run.status == TerritoryRunStatus.CANCELLED:
             raise ValueError("Cancelled Layer 1 runs cannot generate architectures.")
         coverage = self.db.get_latest_layer1_coverage_state(run_id)
-        if coverage is None or not coverage.ready_for_synthesis:
+        risk_retaining_evaluation = bool(
+            coverage
+            and allow_unresolved_risks_for_evaluation
+            and coverage.unresolved_high_severity_item_ids
+            and set(coverage.incomplete_reasons)
+            == {"High-severity discovery risks remain unresolved."}
+        )
+        if coverage is None or (
+            not coverage.ready_for_synthesis and not risk_retaining_evaluation
+        ):
             raise ValueError("Layer 1 exploration is not ready for architecture synthesis.")
         profile = runtime_profile or self._resolve_layer1_profiles(run.project_id, None)[0]
         self._ensure_profile_loaded(profile)
         context = self.build_layer1_synthesis_context(run_id)
+        model_context = self._bounded_territory_model_context(context)
         requested_views = list(run.config.get("architecture_views") or [
             ArchitectureKind.COHERENT_CORE.value,
             ArchitectureKind.EXPANSIVE_DIFFERENTIATION.value,
@@ -448,10 +472,12 @@ class Layer1TerritoryEngineMixin:
         if len(requested_views) < 2:
             raise ValueError("Layer 1 synthesis requires at least two configured views.")
         prompt = build_architecture_synthesis_prompt(
-            brief_projection=context["brief"],
-            discovery_projection=context["discovery"],
-            territory_projection=context["territory"],
-            semantic_clusters=context["semantic_clusters"],
+            brief_projection=model_context["brief"],
+            discovery_projection=model_context["discovery"],
+            territory_projection=model_context["territory"],
+            territory_inventory=model_context["territory_inventory"],
+            territory_population_summary=model_context["territory_population_summary"],
+            semantic_clusters=model_context["semantic_clusters"],
             unresolved_high_severity_risk_ids=coverage.unresolved_high_severity_item_ids,
             requested_views=requested_views,
         )
@@ -461,6 +487,7 @@ class Layer1TerritoryEngineMixin:
             prompt_key="layer1_architecture_synthesis",
             prompt_version="1",
             timeout_seconds=self._territory_policy(run.config).model_call_timeout_seconds,
+            output_limit=4000,
         )
         try:
             architectures = self._call_architecture_synthesis(
@@ -495,7 +522,7 @@ class Layer1TerritoryEngineMixin:
                 global_assessment=global_assessment,
             )
             return architectures
-        except (LLMError, ValueError) as exc:
+        except Exception as exc:  # preserve the phase checkpoint for any failed write/parse
             self._record_architecture_synthesis_failure(
                 run=run,
                 coverage=coverage,
@@ -523,6 +550,7 @@ class Layer1TerritoryEngineMixin:
             max_tokens=int(provenance.output_limit or 7000),
             temperature=0.35,
             timeout_seconds=provenance.timeout_seconds,
+            context_limit=provenance.context_limit,
             telemetry=model_call_context(
                 project_id=run.project_id,
                 layer="layer1",
@@ -540,19 +568,65 @@ class Layer1TerritoryEngineMixin:
         exact_provenance = provenance.model_copy(
             update={"exact_model_identifier": str(response.model_name or "")}
         )
-        architectures = [
-            self._persist_architecture_payload(
-                run_id=run.id,
-                payload=item,
-                provenance=exact_provenance,
-            )
+        accepted_ids = {
+            str(item.get("candidate_id") or "")
+            for item in self.build_layer1_synthesis_context(run.id)["territory"]
+        }
+        normalized_payloads = [
+            self._retain_unmapped_territory(item, accepted_ids)
             for item in raw_architectures
             if isinstance(item, dict)
         ]
-        missing = set(requested_views) - {item.kind.value for item in architectures}
+        returned_kinds: set[str] = set()
+        for payload in normalized_payloads:
+            try:
+                kind = ArchitectureKind(str(payload.get("kind") or ""))
+            except ValueError as exc:
+                raise LLMError(f"Unknown architecture kind: {payload.get('kind')}") from exc
+            pillars = payload.get("pillars")
+            mappings = payload.get("mappings")
+            if not isinstance(pillars, list) or not isinstance(mappings, list):
+                raise LLMError("Architecture pillars and mappings must be lists.")
+            if any(not isinstance(item, dict) for item in [*pillars, *mappings]):
+                raise LLMError("Architecture pillars and mappings must contain objects only.")
+            self.db._validate_architecture_mappings(run.id, pillars, mappings)
+            returned_kinds.add(kind.value)
+        missing = set(requested_views) - returned_kinds
         if missing:
             raise LLMError(f"Synthesis omitted configured architecture views: {sorted(missing)}")
+        with self.db.unit_of_work():
+            architectures = [
+                self._persist_architecture_payload(
+                    run_id=run.id,
+                    payload=payload,
+                    provenance=exact_provenance,
+                )
+                for payload in normalized_payloads
+            ]
         return architectures
+
+    @classmethod
+    def _retain_unmapped_territory(
+        cls,
+        payload: dict[str, Any],
+        accepted_ids: set[str],
+    ) -> dict[str, Any]:
+        """Keep every accepted candidate visible when the model maps only a sample."""
+        mapped_ids = {
+            candidate_id
+            for mapping in payload.get("mappings", [])
+            if isinstance(mapping, dict)
+            for candidate_id in cls._string_values(mapping.get("territory_candidate_ids"))
+        }
+        model_retained = cls._string_values(
+            payload.get("significant_non_pillar_territory_ids")
+        )
+        return {
+            **payload,
+            "significant_non_pillar_territory_ids": sorted(
+                set(model_retained) | (accepted_ids - mapped_ids)
+            ),
+        }
 
     def _finalize_architecture_synthesis(
         self,
@@ -602,6 +676,63 @@ class Layer1TerritoryEngineMixin:
             ),
         )
 
+    def review_existing_layer1_architecture_candidates(
+        self,
+        run_id: str,
+        *,
+        runtime_profile: dict[str, Any],
+    ) -> list[Any]:
+        """Resume after synthesis persistence without generating duplicate options."""
+        run = self.db.get_layer1_territory_run(run_id)
+        coverage = self.db.get_latest_layer1_coverage_state(run_id)
+        requested_views = set(run.config.get("architecture_views") or [
+            ArchitectureKind.COHERENT_CORE.value,
+            ArchitectureKind.EXPANSIVE_DIFFERENTIATION.value,
+        ])
+        latest_by_kind: dict[str, Any] = {}
+        for item in self.db.list_layer1_architecture_candidates(run_id):
+            current = latest_by_kind.get(item.kind.value)
+            if current is None or item.version > current.version:
+                latest_by_kind[item.kind.value] = item
+        architectures = [latest_by_kind[kind] for kind in sorted(requested_views) if kind in latest_by_kind]
+        if coverage is None or not requested_views <= set(latest_by_kind):
+            raise ValueError("Persisted architecture options are not ready for review.")
+        architecture_ids = {item.id for item in architectures}
+        assessments = [
+            item
+            for item in self.db.list_layer1_global_architecture_assessments(run_id)
+            if set(item.architecture_candidate_ids) == architecture_ids
+        ]
+        global_assessment = assessments[-1] if assessments else self._run_global_architecture_critic(
+            run=run,
+            coverage=coverage,
+            architectures=architectures,
+            runtime_profile=runtime_profile,
+        )
+        if not any(
+            item.status == "completed"
+            and set(item.architecture_candidate_ids) == architecture_ids
+            for item in self.db.list_layer1_synthesis_results(run.id)
+        ):
+            self.db.persist_layer1_synthesis_result(
+                run_id=run.id,
+                source_coverage_state_id=coverage.id,
+                architecture_candidate_ids=[item.id for item in architectures],
+                retained_non_pillar_territory_ids=sorted({
+                    territory_id
+                    for item in architectures
+                    for territory_id in item.significant_non_pillar_territory_ids
+                }),
+                runtime_provenance=architectures[0].runtime_provenance,
+            )
+        self._finalize_architecture_synthesis(
+            run=run,
+            coverage=coverage,
+            architectures=architectures,
+            global_assessment=global_assessment,
+        )
+        return architectures
+
     def _record_architecture_synthesis_failure(
         self,
         *,
@@ -618,7 +749,7 @@ class Layer1TerritoryEngineMixin:
             retained_non_pillar_territory_ids=[],
             runtime_provenance=provenance,
             status="failed",
-            error_type="schema_failed",
+            error_type=str(getattr(error, "error_type", error.__class__.__name__)),
             error_message=str(error),
         )
         self.db.update_layer1_territory_run(
@@ -650,7 +781,10 @@ class Layer1TerritoryEngineMixin:
                         mapping.model_dump(mode="json") for mapping in item.mappings
                     ],
                     "significant_non_pillar_territory_ids":
-                        item.significant_non_pillar_territory_ids,
+                        item.significant_non_pillar_territory_ids[:48],
+                    "significant_non_pillar_territory_count": len(
+                        item.significant_non_pillar_territory_ids
+                    ),
                     "unresolved_risk_ids": item.unresolved_risk_ids,
                 }
                 for item in architectures
@@ -663,17 +797,17 @@ class Layer1TerritoryEngineMixin:
             prompt_key="layer1_global_architecture_critic",
             prompt_version="1",
             timeout_seconds=self._territory_policy(run.config).model_call_timeout_seconds,
-            output_limit=3500,
+            output_limit=2500,
         )
-        try:
-            response = self.llm_client.generate_json(
+        response = self.llm_client.generate_json(
                 system_prompt=self._system_prompt(run.project_id),
                 user_prompt=prompt,
                 model_name=self._runtime_model_name(runtime_profile),
                 base_url=self._runtime_base_url(runtime_profile),
-                max_tokens=3500,
+                max_tokens=2500,
                 temperature=0.2,
                 timeout_seconds=provenance.timeout_seconds,
+                context_limit=provenance.context_limit,
                 telemetry=model_call_context(
                     project_id=run.project_id,
                     layer="layer1",
@@ -687,8 +821,6 @@ class Layer1TerritoryEngineMixin:
                     },
                 ),
             )
-        except LLMError:
-            return None
         return self.db.persist_layer1_global_architecture_assessment(
             run_id=run.id,
             architecture_candidate_ids=[item.id for item in architectures],
@@ -786,17 +918,18 @@ class Layer1TerritoryEngineMixin:
                 runtime_profile=runtime_profile,
                 provenance=provenance,
             )
-            self._persist_territory_attempt_candidates(
-                attempt_id=attempt.id,
-                candidates=candidates,
-                runtime_provenance=exact_provenance,
-            )
-            self.db.checkpoint_layer1_lens_attempt(
-                attempt.id,
-                status=AttemptStatus.COMPLETED,
-                parsed_candidate_count=len(candidates),
-            )
-        except (LLMError, ValueError, TypeError) as exc:
+            with self.db.unit_of_work():
+                self._persist_territory_attempt_candidates(
+                    attempt_id=attempt.id,
+                    candidates=candidates,
+                    runtime_provenance=exact_provenance,
+                )
+                self.db.checkpoint_layer1_lens_attempt(
+                    attempt.id,
+                    status=AttemptStatus.COMPLETED,
+                    parsed_candidate_count=len(candidates),
+                )
+        except Exception as exc:  # durable attempt boundary includes persistence failures
             self._record_territory_attempt_failure(attempt, exc)
             return self._failed_attempt_coverage(lens, attempt_number, str(exc))
         return self._deterministic_lens_coverage(lens, attempt_number)
@@ -892,6 +1025,7 @@ class Layer1TerritoryEngineMixin:
             max_tokens=int(provenance.output_limit or policy.divergence_max_output_tokens),
             temperature=temperature,
             timeout_seconds=provenance.timeout_seconds,
+            context_limit=provenance.context_limit,
             telemetry=model_call_context(
                 project_id=run.project_id,
                 layer="layer1",
@@ -929,7 +1063,8 @@ class Layer1TerritoryEngineMixin:
         self.db.checkpoint_layer1_lens_attempt(
             attempt.id,
             status=status,
-            error_type=status.value,
+            raw_response=str(getattr(error, "raw_content", "")) or None,
+            error_type=str(getattr(error, "error_type", status.value)),
             error_message=str(error),
         )
 
@@ -957,11 +1092,205 @@ class Layer1TerritoryEngineMixin:
     def _territory_adversarial_context(self, run: Any) -> dict[str, Any]:
         """Build bounded adversarial input without raw transcripts or rejected nonsense."""
         synthesis = self.build_layer1_synthesis_context(run.id)
-        return {
-            "brief": synthesis["brief"],
-            "discovery": synthesis["discovery"],
-            "territory": synthesis["territory"],
+        return self._bounded_territory_model_context(synthesis)
+
+    @classmethod
+    def _bounded_territory_model_context(
+        cls,
+        context: dict[str, Any],
+        *,
+        detailed_candidate_limit: int = 10,
+        inventory_candidate_limit: int = 48,
+    ) -> dict[str, Any]:
+        """Compact synthesis inputs while preserving every accepted candidate ID.
+
+        Local 16k-context models need output headroom. The complete inventory remains
+        lossless for identity and routing, while a destination-diverse subset carries
+        richer attribution and mechanism detail.
+        """
+        brief = {
+            key: cls._compact_context_value(value, text_limit=150, list_limit=6)
+            for key, value in dict(context.get("brief") or {}).items()
         }
+        discovery: dict[str, list[dict[str, Any]]] = {}
+        for section, raw_items in dict(context.get("discovery") or {}).items():
+            discovery[section] = [
+                cls._compact_discovery_item(item, section=section)
+                for item in raw_items
+                if isinstance(item, dict)
+            ]
+
+        territory = [
+            item for item in context.get("territory", []) if isinstance(item, dict)
+        ]
+        by_destination: dict[str, list[dict[str, Any]]] = {}
+        for item in territory:
+            by_destination.setdefault(str(item.get("destination") or "unspecified"), []).append(item)
+        representatives: list[dict[str, Any]] = []
+        territory_by_id = {
+            str(item.get("candidate_id") or ""): item for item in territory
+        }
+        for cluster in context.get("semantic_clusters", []):
+            if not isinstance(cluster, dict):
+                continue
+            representative = next(
+                (
+                    territory_by_id.get(candidate_id)
+                    for candidate_id in cls._string_values(cluster.get("candidate_ids"))
+                    if territory_by_id.get(candidate_id) not in representatives
+                ),
+                None,
+            )
+            if representative is not None:
+                representatives.append(representative)
+            if len(representatives) >= detailed_candidate_limit:
+                break
+        ordered_destinations = sorted(by_destination)
+        while len(representatives) < detailed_candidate_limit:
+            added = False
+            for destination in ordered_destinations:
+                bucket = by_destination[destination]
+                index = sum(
+                    1
+                    for chosen in representatives
+                    if str(chosen.get("destination") or "unspecified") == destination
+                )
+                remaining = [item for item in bucket if item not in representatives]
+                if remaining:
+                    representatives.append(remaining[0])
+                    added = True
+                    if len(representatives) >= detailed_candidate_limit:
+                        break
+            if not added:
+                break
+
+        detailed = [cls._compact_territory_item(item) for item in representatives]
+        inventory_items: list[dict[str, Any]] = list(representatives)
+        inventory_index = 0
+        while len(inventory_items) < min(inventory_candidate_limit, len(territory)):
+            added = False
+            for destination in ordered_destinations:
+                bucket = by_destination[destination]
+                if inventory_index < len(bucket):
+                    item = bucket[inventory_index]
+                    if item not in inventory_items:
+                        inventory_items.append(item)
+                        added = True
+                        if len(inventory_items) >= inventory_candidate_limit:
+                            break
+            if not added and inventory_index >= max((len(items) for items in by_destination.values()), default=0):
+                break
+            inventory_index += 1
+        inventory: dict[str, list[str]] = {}
+        for item in inventory_items:
+            destination = str(item.get("destination") or "unspecified")
+            inventory.setdefault(destination, []).append(
+                str(item.get("candidate_id") or "")
+            )
+        clusters = [
+            {
+                "id": str(item.get("id") or ""),
+                "title": cls._truncate_context_text(item.get("title"), 72),
+                "semantic_family": cls._truncate_context_text(
+                    item.get("semantic_family"), 72
+                ),
+                "destination_summary": item.get("destination_summary") or {},
+            }
+            for item in context.get("semantic_clusters", [])
+            if isinstance(item, dict)
+        ]
+        return {
+            "brief": brief,
+            "discovery": discovery,
+            "territory": detailed,
+            "territory_inventory": inventory,
+            "territory_population_summary": {
+                destination: {
+                    "total": len(items),
+                    "included": len(inventory.get(destination, [])),
+                }
+                for destination, items in sorted(by_destination.items())
+            },
+            "semantic_clusters": clusters,
+        }
+
+    @classmethod
+    def _compact_discovery_item(
+        cls,
+        item: dict[str, Any],
+        *,
+        section: str = "",
+    ) -> dict[str, Any]:
+        """Retain discovery identity, routing, and concise semantics."""
+        compact: dict[str, Any] = {}
+        prose_keys = {"title", "name", "label", "description", "risk", "obligation"}
+        scalar_keys = {
+            "id", "severity", "recommendation", "downstream_state", "category",
+            "relevance_score", "required",
+        }
+        for key, value in item.items():
+            if key in prose_keys:
+                limit = 72 if key in {"title", "name", "label"} else 64
+                compact[key] = cls._truncate_context_text(value, limit)
+            elif key in scalar_keys and not isinstance(value, (dict, list)):
+                compact[key] = value
+            elif (
+                section == "lenses"
+                and key == "required_discovery_item_ids"
+                and isinstance(value, list)
+            ):
+                compact[key] = cls._string_values(value)
+        return compact
+
+    @classmethod
+    def _compact_territory_item(cls, item: dict[str, Any]) -> dict[str, Any]:
+        """Keep concise details for a destination-diverse territory sample."""
+        return {
+            "candidate_id": str(item.get("candidate_id") or ""),
+            "title": cls._truncate_context_text(item.get("title"), 72),
+            "description": cls._truncate_context_text(item.get("description"), 120),
+            "destination": str(item.get("destination") or "unspecified"),
+            "source_discovery_item_ids": cls._string_values(
+                item.get("source_discovery_item_ids")
+            ),
+            "affected_actor_ids": cls._string_values(item.get("affected_actor_ids")),
+            "affected_domain_ids": cls._string_values(item.get("affected_domain_ids")),
+            "affected_enterprise_obligation_ids": cls._string_values(
+                item.get("affected_enterprise_obligation_ids")
+            ),
+            "affected_coverage_risk_ids": cls._string_values(
+                item.get("affected_coverage_risk_ids")
+            ),
+            "lens_specific_mechanism": cls._truncate_context_text(
+                item.get("lens_specific_mechanism"), 80
+            ),
+        }
+
+    @classmethod
+    def _compact_context_value(
+        cls,
+        value: Any,
+        *,
+        text_limit: int,
+        list_limit: int,
+    ) -> Any:
+        """Bound user-authored brief fields without changing their ordering."""
+        if isinstance(value, str):
+            return cls._truncate_context_text(value, text_limit)
+        if isinstance(value, list):
+            return [
+                cls._truncate_context_text(item, text_limit)
+                for item in value[:list_limit]
+            ]
+        return value
+
+    @staticmethod
+    def _truncate_context_text(value: Any, limit: int) -> str:
+        """Truncate deterministically and visibly for model-only projections."""
+        text = " ".join(str(value or "").split())
+        if len(text) <= limit:
+            return text
+        return f"{text[: max(0, limit - 1)].rstrip()}…"
 
     def _persist_adversarial_scenarios(
         self,
@@ -1042,6 +1371,21 @@ class Layer1TerritoryEngineMixin:
         )
 
     def _persist_territory_attempt_candidates(
+        self,
+        *,
+        attempt_id: str,
+        candidates: list[dict[str, Any]],
+        runtime_provenance: ModelRuntimeProvenance,
+    ) -> None:
+        """Persist a complete attempt atomically so retries never see torn state."""
+        with self.db.unit_of_work():
+            self._persist_territory_attempt_candidates_in_unit(
+                attempt_id=attempt_id,
+                candidates=candidates,
+                runtime_provenance=runtime_provenance,
+            )
+
+    def _persist_territory_attempt_candidates_in_unit(
         self,
         *,
         attempt_id: str,
@@ -1405,6 +1749,7 @@ class Layer1TerritoryEngineMixin:
             hard_budget_exhausted=hard_budget_exhausted,
         )
         metrics = {
+            **run.metrics,
             "candidate_integrity": candidate_metrics,
             "required_lenses": sum(1 for lens in lenses if lens.required),
             "completed_required_lenses": sum(
@@ -1658,7 +2003,17 @@ class Layer1TerritoryEngineMixin:
         candidates = payload.get("candidates")
         if not isinstance(candidates, list):
             raise LLMError("Territory response must contain a candidates list.")
+        if not candidates:
+            raise LLMError("Territory response returned no candidates.")
+        if any(not isinstance(item, dict) for item in candidates):
+            raise LLMError("Territory candidates must contain objects only.")
         valid = [item for item in candidates if isinstance(item, dict)]
+        if any(
+            not str(item.get("title") or "").strip()
+            or not str(item.get("description") or "").strip()
+            for item in valid
+        ):
+            raise LLMError("Every territory candidate requires a title and description.")
         if len(valid) > policy.maximum_raw_candidates:
             valid = valid[: policy.maximum_raw_candidates]
         return valid
@@ -1687,7 +2042,10 @@ class Layer1TerritoryEngineMixin:
             prompt_version=prompt_version,
             effective_temperature=temperature,
             seed=profile.get("seed"),
-            context_limit=profile.get("context_limit"),
+            context_limit=(
+                int(profile.get("context_limit") or profile.get("context_window") or 0)
+                or None
+            ),
             output_limit=output_limit,
             timeout_seconds=(
                 timeout_seconds
