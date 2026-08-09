@@ -112,13 +112,16 @@ class NodeUpdateRequest(BaseModel):
 
 
 class Layer1GenerateRequest(BaseModel):
+    """Canonical divergent Layer 1 launch controls; legacy names remain API-compatible."""
+
     model_aliases: list[str] = Field(default_factory=list)
     thinking_enabled: bool = False
-    max_rounds: int = 6
-    target_per_round: int = 12
+    max_rounds: int = 4
+    target_per_round: int = 18
     total_cap: int | None = Field(default=None, ge=1)
     min_new_items_per_round: int = 2
     stale_rounds_to_stop: int = 2
+    enable_adversarial_pass: bool = True
     request_id: str | None = None
 
 
@@ -142,6 +145,100 @@ class Layer1BulkActionRequest(BaseModel):
     pillar_ids: list[str] = Field(default_factory=list)
     status: Literal["kept", "cut", "prioritized"]
     expected_state_tokens: dict[str, str] = Field(default_factory=dict)
+    request_id: str | None = None
+
+
+class Layer1TerritoryStartRequest(BaseModel):
+    """Configurable divergent-run controls with conservative defaults."""
+
+    config: dict[str, Any] = Field(default_factory=dict)
+    budget: dict[str, Any] = Field(default_factory=dict)
+    request_id: str | None = None
+
+
+class Layer1LensActionRequest(BaseModel):
+    """Human or queued action targeting one durable lens."""
+
+    action: Literal[
+        "run",
+        "retry_temperature",
+        "retry_stronger_exclusions",
+        "complete",
+        "reopen",
+    ]
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    terminal_state: str | None = None
+    expected_state_token: str | None = None
+    request_id: str | None = None
+
+
+class Layer1TerritoryClassificationRequest(BaseModel):
+    """Human override for exactly one candidate destination."""
+
+    destination: str
+    reason: str = ""
+    request_id: str | None = None
+
+
+class Layer1ClosedTerritoryRequest(BaseModel):
+    """Human-authored semantic exclusion."""
+
+    run_id: str | None = None
+    title: str
+    description: str = ""
+    semantic_examples: list[str] = Field(default_factory=list)
+    scope: Literal["run", "project"] = "run"
+    reason: str = ""
+    request_id: str | None = None
+
+
+class Layer1AntiGenericPatternRequest(BaseModel):
+    """Human-approved pattern used by divergent prompts."""
+
+    title: str
+    description: str = ""
+    semantic_examples: list[str] = Field(default_factory=list)
+    source_run_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.5, ge=0, le=1)
+    scope: str = "project"
+    request_id: str | None = None
+
+
+class Layer1AdversarialRequest(BaseModel):
+    """Role used for a separate blind-spot pass."""
+
+    role: str = "skeptical implementation consultant"
+    request_id: str | None = None
+
+
+class Layer1ArchitectureSelectionRequest(BaseModel):
+    """Human selection that does not overwrite other architecture options."""
+
+    architecture_candidate_id: str
+    note: str = ""
+    request_id: str | None = None
+
+
+class Layer1ArchitectureApplicationRequest(BaseModel):
+    """Explicit second gate that applies a previously selected architecture."""
+
+    architecture_candidate_id: str
+    expected_current_pillar_tokens: dict[str, str] = Field(default_factory=dict)
+    confirm_replace: bool = False
+    acknowledge_unresolved_risks: bool = False
+    note: str = ""
+    request_id: str | None = None
+
+
+class Layer1HybridArchitectureRequest(BaseModel):
+    """Human-authored hybrid architecture with explicit mappings."""
+
+    title: str
+    rationale: str = ""
+    pillars: list[dict[str, Any]] = Field(default_factory=list)
+    mappings: list[dict[str, Any]] = Field(default_factory=list)
+    significant_non_pillar_territory_ids: list[str] = Field(default_factory=list)
+    unresolved_risk_ids: list[str] = Field(default_factory=list)
     request_id: str | None = None
 
 
@@ -567,6 +664,7 @@ class AppSnapshotResponse(BaseModel):
     overlap: dict[str, Any] = Field(default_factory=dict)
     layer3: dict[str, Any] = Field(default_factory=dict)
     product_discovery: dict[str, Any] = Field(default_factory=dict)
+    layer1_architecture_application: dict[str, Any] | None = None
 
 
 class ModelProfileResponse(BaseModel):

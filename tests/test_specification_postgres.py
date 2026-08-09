@@ -18,7 +18,7 @@ from strata.command_types import (
 )
 from strata.config import AppConfig
 from strata.dependency_db import feature_revision_token, pillar_revision_token
-from strata.migrations import apply_migrations, migration_status
+from strata.migrations import MIGRATIONS, apply_migrations, migration_status
 
 
 POSTGRES_TARGET_URL = os.getenv("STRATA_POSTGRES_TEST_DATABASE_URL", "")
@@ -122,7 +122,10 @@ class SpecificationPostgresTests(unittest.TestCase):
                 cursor.execute("DELETE FROM schema_migrations WHERE version = 7")
         self.assertEqual(apply_migrations(self.db), [7])
         self.assertEqual(apply_migrations(self.db), [])
-        self.assertEqual(migration_status(self.db)["current_version"], 7)
+        self.assertEqual(
+            migration_status(self.db)["current_version"],
+            max(migration.version for migration in MIGRATIONS),
+        )
 
     def test_jsonb_constraints_ownership_uniqueness_and_immutability(self) -> None:
         self._seed()

@@ -665,7 +665,7 @@ def create_app() -> FastAPI:
         request: Layer1GenerateRequest,
         background_tasks: BackgroundTasks,
     ) -> dict[str, object]:
-        """Run Layer 1 pillar broadening with the selected model sequence."""
+        """Start canonical divergent Layer 1 exploration from published Discovery."""
         try:
             _resolve_layer1_profiles(services.config, request.model_aliases)
             result = services.command_service.handle(RequestLayer1Generation(
@@ -975,5 +975,4 @@ def create_app() -> FastAPI:
         app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
     return app
 
-
-app = create_app()
+__all__ = ["create_app"]

@@ -15,7 +15,18 @@ from strata.config import AppConfig
 
 
 class LLMError(RuntimeError):
-    pass
+    """Typed provider failure that can retain an unusable raw model response."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_content: str = "",
+        error_type: str = "llm_error",
+    ) -> None:
+        super().__init__(message)
+        self.raw_content = raw_content
+        self.error_type = error_type
 
 
 @dataclass(slots=True)
@@ -107,6 +118,156 @@ class LlamaCppClient:
                     return content[start : index + 1].strip()
         return None
 
+    @staticmethod
+    def _remove_trailing_json_commas(content: str) -> str:
+        """Remove only commas followed by a closing container outside strings."""
+        output: list[str] = []
+        in_string = False
+        escaped = False
+        index = 0
+        while index < len(content):
+            char = content[index]
+            if in_string:
+                output.append(char)
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                index += 1
+                continue
+            if char == '"':
+                in_string = True
+                output.append(char)
+                index += 1
+                continue
+            if char == ",":
+                cursor = index + 1
+                while cursor < len(content) and content[cursor].isspace():
+                    cursor += 1
+                if cursor < len(content) and content[cursor] in "}]":
+                    index += 1
+                    continue
+            output.append(char)
+            index += 1
+        return "".join(output)
+
+    @classmethod
+    def _parse_json_response(cls, raw_content: str) -> dict[str, Any]:
+        """Parse common harmless JSON near-misses without inventing missing content."""
+        cleaned = cls._strip_reasoning_wrappers(raw_content)
+        candidates = [
+            cleaned,
+            cls._remove_trailing_json_commas(cleaned),
+        ]
+        last_error: json.JSONDecodeError | None = None
+        for candidate in dict.fromkeys(candidates):
+            for strict in (True, False):
+                try:
+                    parsed = json.loads(candidate, strict=strict)
+                except json.JSONDecodeError as exc:
+                    last_error = exc
+                    continue
+                if not isinstance(parsed, dict):
+                    raise LLMError(
+                        "Model returned JSON with a non-object root.",
+                        raw_content=raw_content,
+                        error_type="parse_error",
+                    )
+                return parsed
+        raise LLMError(
+            f"Model returned non-JSON content: {raw_content}",
+            raw_content=raw_content,
+            error_type="parse_error",
+        ) from last_error
+
+    def _local_json_preflight(
+        self,
+        *,
+        target_base_url: str,
+        messages: list[dict[str, str]],
+        context_limit: int,
+        requested_max_tokens: int,
+        headers: dict[str, str] | None,
+    ) -> dict[str, Any]:
+        """Measure the rendered local prompt and choose a context-safe JSON mode."""
+        preflight_mode = "provider_tokenizer"
+        try:
+            template_response = requests.post(
+                f"{target_base_url}/apply-template",
+                json={"messages": messages},
+                timeout=15,
+                headers=headers,
+            )
+            template_response.raise_for_status()
+            rendered_prompt = str(template_response.json()["prompt"])
+            token_response = requests.post(
+                f"{target_base_url}/tokenize",
+                json={"content": rendered_prompt},
+                timeout=30,
+                headers=headers,
+            )
+            token_response.raise_for_status()
+            prompt_tokens = len(token_response.json()["tokens"])
+        except (requests.RequestException, KeyError, TypeError, ValueError):
+            # LM Studio, Ollama, and other localhost OpenAI-compatible providers do
+            # not expose llama.cpp's tokenizer routes. A deliberately conservative
+            # byte estimate preserves output headroom without rejecting the provider.
+            serialized = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
+            prompt_tokens = max(1, (len(serialized.encode("utf-8")) + 1) // 2)
+            preflight_mode = "conservative_estimate"
+        safety_tokens = 512
+        if prompt_tokens + safety_tokens >= context_limit:
+            raise LLMError(
+                "Rendered prompt exceeds the configured context before inference: "
+                f"prompt={prompt_tokens}, context={context_limit}.",
+                error_type="context_preflight",
+            )
+        # Keep a small measured safety reserve for structured-output bookkeeping.
+        # The rendered prompt and completion are the dominant context consumers.
+        json_grammar_reserve = 256
+        required_completion_tokens = min(
+            requested_max_tokens,
+            max(1024, min(4096, requested_max_tokens // 2)),
+        )
+        use_json_object_mode = (
+            prompt_tokens
+            + json_grammar_reserve
+            + required_completion_tokens
+            + safety_tokens
+            <= context_limit
+        )
+        active_grammar_reserve = json_grammar_reserve if use_json_object_mode else 0
+        available_completion_tokens = (
+            context_limit
+            - prompt_tokens
+            - active_grammar_reserve
+            - safety_tokens
+        )
+        if available_completion_tokens < required_completion_tokens:
+            raise LLMError(
+                "Rendered prompt leaves too little room for a complete structured response: "
+                f"prompt={prompt_tokens}, required_completion={required_completion_tokens}, "
+                f"available_completion={max(0, available_completion_tokens)}, "
+                f"context={context_limit}.",
+                error_type="context_preflight",
+            )
+        return {
+            "prompt_tokens": prompt_tokens,
+            "preflight_mode": preflight_mode,
+            "context_limit": context_limit,
+            "json_grammar_reserve": json_grammar_reserve,
+            "required_completion_tokens": required_completion_tokens,
+            "structured_output_mode": (
+                "json_object" if use_json_object_mode else "prompt_only"
+            ),
+            "available_completion_tokens": max(
+                256,
+                available_completion_tokens,
+            ),
+        }
+
     def healthcheck(self) -> tuple[bool, str]:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
         for path in ("/v1/models", "/health"):
@@ -140,66 +301,214 @@ class LlamaCppClient:
         temperature: float | None = None,
         top_p: float | None = None,
         max_tokens: int = 2500,
+        timeout_seconds: int | None = None,
         telemetry: dict[str, Any] | None = None,
+        context_limit: int | None = None,
+        max_attempts: int = 4,
     ) -> LLMResponse:
+        """Generate one JSON object with bounded retries for recoverable failures."""
+        attempts = max(1, int(max_attempts))
+        last_error: LLMError | None = None
+        attempt_max_tokens = max_tokens
+        attempt_temperature = temperature
+        for attempt_number in range(1, attempts + 1):
+            attempt_telemetry = dict(telemetry or {})
+            attempt_telemetry["retry_count"] = (
+                int(attempt_telemetry.get("retry_count") or 0) + attempt_number - 1
+            )
+            attempt_telemetry["metadata"] = {
+                **dict(attempt_telemetry.get("metadata") or {}),
+                "structured_attempt": attempt_number,
+                "structured_max_attempts": attempts,
+                "structured_retry_max_tokens": attempt_max_tokens,
+                "structured_retry_temperature": attempt_temperature,
+            }
+            try:
+                return self._generate_json_once(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    model_name=model_name,
+                    base_url=base_url,
+                    temperature=attempt_temperature,
+                    top_p=top_p,
+                    max_tokens=attempt_max_tokens,
+                    timeout_seconds=timeout_seconds,
+                    telemetry=attempt_telemetry,
+                    context_limit=context_limit,
+                )
+            except LLMError as exc:
+                last_error = exc
+                if (
+                    attempt_number >= attempts
+                    or exc.error_type in {
+                        "context_preflight",
+                        "configuration_error",
+                        "request_rejected",
+                    }
+                ):
+                    raise
+                if exc.error_type == "output_truncated":
+                    attempt_max_tokens = min(
+                        max(16_000, max_tokens),
+                        max(attempt_max_tokens + 512, int(attempt_max_tokens * 1.5)),
+                    )
+                elif exc.error_type in {"parse_error", "response_shape"}:
+                    baseline = (
+                        self.default_temperature
+                        if attempt_temperature is None
+                        else attempt_temperature
+                    )
+                    attempt_temperature = min(float(baseline), 0.2)
+                time.sleep(min(2.0, 0.25 * (2 ** (attempt_number - 1))))
+        assert last_error is not None
+        raise last_error
+
+    def _generate_json_once(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        model_name: str | None = None,
+        base_url: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int = 2500,
+        timeout_seconds: int | None = None,
+        telemetry: dict[str, Any] | None = None,
+        context_limit: int | None = None,
+    ) -> LLMResponse:
+        """Perform one OpenAI-compatible structured-output request."""
         target_base_url = (base_url or self.base_url).rstrip("/")
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
         payload = {
             "model": model_name or self.model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            "messages": messages,
             "temperature": temperature if temperature is not None else self.default_temperature,
             "top_p": top_p if top_p is not None else self.default_top_p,
             "max_tokens": max_tokens,
             "stream": False,
-            "response_format": {"type": "json_object"},
         }
         started_at = datetime.now(timezone.utc)
         started = time.perf_counter()
         response_body: dict[str, Any] = {}
         raw_content = ""
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
+        effective_telemetry = dict(telemetry or {})
+        if context_limit and self._provider_kind(target_base_url) == "local":
+            try:
+                preflight = self._local_json_preflight(
+                    target_base_url=target_base_url,
+                    messages=messages,
+                    context_limit=context_limit,
+                    requested_max_tokens=max_tokens,
+                    headers=headers,
+                )
+            except LLMError as exc:
+                self._record_telemetry(
+                    effective_telemetry, payload, target_base_url, started_at, started,
+                    status="failed", body={}, content="",
+                    error_type=exc.error_type, error_message=str(exc),
+                )
+                raise
+            payload["max_tokens"] = min(
+                max_tokens,
+                int(preflight["available_completion_tokens"]),
+            )
+            if preflight["structured_output_mode"] == "json_object":
+                payload["response_format"] = {"type": "json_object"}
+            effective_telemetry["metadata"] = {
+                **dict(effective_telemetry.get("metadata", {})),
+                **preflight,
+                "requested_max_tokens": max_tokens,
+                "effective_max_tokens": payload["max_tokens"],
+            }
+        else:
+            payload["response_format"] = {"type": "json_object"}
         try:
-            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
             response = requests.post(
                 f"{target_base_url}/v1/chat/completions",
                 json=payload,
-                timeout=self.timeout,
+                timeout=timeout_seconds or self.timeout,
                 headers=headers,
             )
             response.raise_for_status()
             response_body = response.json()
+            if not isinstance(response_body, dict):
+                raise LLMError(
+                    f"Provider returned a non-object response envelope: {response_body!r}",
+                    error_type="response_shape",
+                )
+            choices = response_body.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise LLMError(
+                    f"Provider response did not contain a usable choices list: {response_body}",
+                    error_type="response_shape",
+                )
+            message = choices[0].get("message")
+            if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+                raise LLMError(
+                    f"Provider response did not contain string message content: {response_body}",
+                    error_type="response_shape",
+                )
+            raw_content = message["content"]
+            finish_reason = str(choices[0].get("finish_reason") or "")
+            if finish_reason in {"length", "max_tokens"}:
+                raise LLMError(
+                    "Model structured response was truncated by its output-token limit.",
+                    raw_content=raw_content,
+                    error_type="output_truncated",
+                )
             try:
-                raw_content = response_body["choices"][0]["message"]["content"]
-            except (KeyError, IndexError) as exc:
-                raise LLMError(f"Unexpected llama.cpp response shape: {response_body}") from exc
-            try:
-                parsed = json.loads(self._strip_reasoning_wrappers(raw_content))
-            except json.JSONDecodeError as exc:
-                raise LLMError(f"Model returned non-JSON content: {raw_content}") from exc
+                parsed = self._parse_json_response(raw_content)
+            except LLMError:
+                raise
         except requests.Timeout as exc:
             self._record_telemetry(
-                telemetry, payload, target_base_url, started_at, started,
+                effective_telemetry, payload, target_base_url, started_at, started,
                 status="failed", body=response_body, content=raw_content,
                 error_type="timeout", error_message=str(exc),
             )
-            raise LLMError(f"llama.cpp request timed out: {exc}") from exc
+            raise LLMError(
+                f"llama.cpp request timed out: {exc}",
+                raw_content=raw_content,
+                error_type="timeout",
+            ) from exc
         except requests.RequestException as exc:
-            self._record_telemetry(
-                telemetry, payload, target_base_url, started_at, started,
-                status="failed", body=response_body, content=raw_content,
-                error_type="request_error", error_message=str(exc),
+            error_response = getattr(exc, "response", None)
+            status_code = getattr(error_response, "status_code", None)
+            failure_content = raw_content
+            if not failure_content and error_response is not None:
+                response_text = getattr(error_response, "text", "")
+                if isinstance(response_text, str):
+                    failure_content = response_text[:20_000]
+            permanent_rejection = (
+                isinstance(status_code, int)
+                and 400 <= status_code < 500
+                and status_code not in {408, 409, 425, 429}
             )
-            raise LLMError(f"llama.cpp request failed: {exc}") from exc
+            error_type = "request_rejected" if permanent_rejection else "request_error"
+            self._record_telemetry(
+                effective_telemetry, payload, target_base_url, started_at, started,
+                status="failed", body=response_body, content=failure_content,
+                error_type=error_type, error_message=str(exc),
+            )
+            raise LLMError(
+                f"llama.cpp request failed: {exc}",
+                raw_content=failure_content,
+                error_type=error_type,
+            ) from exc
         except LLMError as exc:
             self._record_telemetry(
-                telemetry, payload, target_base_url, started_at, started,
-                status="failed", body=response_body, content=raw_content,
-                error_type="parse_error", error_message=str(exc),
+                effective_telemetry, payload, target_base_url, started_at, started,
+                status="failed", body=response_body, content=exc.raw_content or raw_content,
+                error_type=exc.error_type, error_message=str(exc),
             )
             raise
         self._record_telemetry(
-            telemetry, payload, target_base_url, started_at, started,
+            effective_telemetry, payload, target_base_url, started_at, started,
             status="completed", body=response_body, content=raw_content, parsed=parsed,
         )
         return LLMResponse(

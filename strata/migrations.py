@@ -8,6 +8,8 @@ from strata.config import AppConfig
 from strata.db import Database, utc_now
 from strata.dependency_db import canonical_content_hash, feature_revision_token, pillar_revision_token
 from strata.storage import build_database
+from strata.layer1_territory_migration import add_layer1_territory_exploration
+from strata.layer1_architecture_migration import add_layer1_architecture_application
 
 
 @dataclass(frozen=True)
@@ -624,8 +626,6 @@ def _canonical_specification_manifests(db: Database) -> None:
                 f"CREATE TRIGGER IF NOT EXISTS protect_{table}_update BEFORE UPDATE ON {table} "
                 "BEGIN SELECT RAISE(ABORT, 'Compiled specification records are immutable'); END"
             )
-
-
 def _product_discovery_revisions(db: Database) -> None:
     """Add independent immutable revision stores for discovery, research, and projections."""
     json_type = "JSONB" if db.is_postgres else "TEXT"
@@ -900,6 +900,83 @@ def _product_discovery_revisions(db: Database) -> None:
         )
 
 
+def _layer1_stateful_expansion(db: Database) -> None:
+    """Add durable lens state and a lossless candidate disposition ledger."""
+    json_type = "JSONB" if db.is_postgres else "TEXT"
+    timestamp_type = "TIMESTAMPTZ" if db.is_postgres else "TEXT"
+    boolean_type = "BOOLEAN" if db.is_postgres else "INTEGER"
+    db._execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS layer1_expansion_runs (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            source_discovery_revision_id TEXT,
+            algorithm TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
+            max_rounds INTEGER NOT NULL,
+            target_per_round INTEGER NOT NULL,
+            stop_reason TEXT NOT NULL,
+            created_at {timestamp_type} NOT NULL,
+            completed_at {timestamp_type}
+        )
+        """
+    )
+    db._execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS layer1_expansion_lenses (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES layer1_expansion_runs(id) ON DELETE CASCADE,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            source_type TEXT NOT NULL,
+            source_item_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            instruction TEXT NOT NULL,
+            required {boolean_type} NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'exhausted', 'budget_exhausted', 'blocked')),
+            attempts INTEGER NOT NULL,
+            stale_rounds INTEGER NOT NULL,
+            created_count INTEGER NOT NULL,
+            last_critic {json_type} NOT NULL,
+            created_at {timestamp_type} NOT NULL,
+            updated_at {timestamp_type} NOT NULL,
+            UNIQUE(run_id, ordinal)
+        )
+        """
+    )
+    db._execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS layer1_candidate_dispositions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES layer1_expansion_runs(id) ON DELETE CASCADE,
+            lens_id TEXT NOT NULL REFERENCES layer1_expansion_lenses(id) ON DELETE CASCADE,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            round_index INTEGER NOT NULL,
+            ordinal INTEGER NOT NULL,
+            raw_payload {json_type} NOT NULL,
+            normalized_payload {json_type} NOT NULL,
+            assessment_payload {json_type} NOT NULL,
+            disposition TEXT NOT NULL CHECK (disposition IN (
+                'generated', 'accepted', 'duplicate', 'rejected_quality',
+                'off_layer', 'normalization_dropped', 'budget_deferred'
+            )),
+            disposition_reason TEXT NOT NULL,
+            target_node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+            duplicate_of_node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+            created_at {timestamp_type} NOT NULL,
+            updated_at {timestamp_type} NOT NULL,
+            UNIQUE(run_id, round_index, ordinal)
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_layer1_expansion_runs_project ON layer1_expansion_runs(project_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_layer1_expansion_lenses_run ON layer1_expansion_lenses(run_id, ordinal)",
+        "CREATE INDEX IF NOT EXISTS idx_layer1_candidate_run ON layer1_candidate_dispositions(run_id, disposition)",
+    ):
+        db._execute(statement)
+
+
 MIGRATIONS = [
     Migration(1, "self_hosted_v0_1_baseline", _baseline),
     Migration(2, "layer3_immutable_candidate_revisions", _layer3_immutable_revisions),
@@ -909,6 +986,9 @@ MIGRATIONS = [
     Migration(6, "immutable_briefs_and_dependency_freshness", _immutable_briefs_and_dependencies),
     Migration(7, "canonical_specification_manifests", _canonical_specification_manifests),
     Migration(8, "product_discovery_and_competitor_research", _product_discovery_revisions),
+    Migration(9, "layer1_stateful_discovery_expansion", _layer1_stateful_expansion),
+    Migration(10, "layer1_divergent_territory_exploration", add_layer1_territory_exploration),
+    Migration(11, "layer1_architecture_application_and_downstream_lineage", add_layer1_architecture_application),
 ]
 
 

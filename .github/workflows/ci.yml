@@ -25,6 +25,8 @@ jobs:
       STRATA_DB_BACKEND: postgres
       STRATA_DATABASE_URL: postgresql://strata:strata@127.0.0.1:5432/strata
       STRATA_POSTGRES_ADMIN_URL: postgresql://strata:strata@127.0.0.1:5432/postgres
+      STRATA_POSTGRES_TEST_DATABASE_URL: postgresql://strata:strata@127.0.0.1:5432/strata_l3_revision_test_ci
+      STRATA_POSTGRES_TEST_ADMIN_URL: postgresql://strata:strata@127.0.0.1:5432/postgres
       STRATA_EMBEDDINGS_ENABLED: "false"
     steps:
       - uses: actions/checkout@v5
@@ -41,7 +43,7 @@ jobs:
       - run: npm ci
         working-directory: frontend
       - run: python -m strata.migrations upgrade
-      - run: python -m pytest tests/test_core.py -q
+      - run: python -m pytest tests -q
       - run: python -m compileall strata
       - run: python -m strata.migrations status
       - run: npm run test:cache

@@ -150,6 +150,101 @@ class ProductDiscoveryTests(unittest.TestCase):
         admin = next(item for item in first.lenses if item.title == "Administration and operations")
         self.assertIn("super-administration", admin.description)
 
+    def test_normalization_links_baseline_lenses_to_stable_discovery_items(self) -> None:
+        """Generated discovery records become valid required sources for Layer 1 lenses."""
+        discovery = self.service().normalize_discovery(
+            self.project.id,
+            empty_discovery(
+                actors=[{"id": "model-actor", "title": "Tenant administrator"}],
+                lifecycle_stages=[{"id": "model-lifecycle", "title": "Operate"}],
+                enterprise_obligations=[{"id": "model-obligation", "title": "Auditability"}],
+                domains=[{"id": "model-domain", "title": "Evidence integration"}],
+                coverage_risks=[{"id": "model-risk", "title": "Silent data loss"}],
+                open_questions=[{
+                    "id": "model-question",
+                    "title": "Packaging boundary",
+                    "question": "How should usage be metered?",
+                }],
+            ),
+        )
+        known_ids = {
+            item.id
+            for collection in (
+                discovery.actors,
+                discovery.lifecycle_stages,
+                discovery.enterprise_obligations,
+                discovery.domains,
+                discovery.coverage_risks,
+                discovery.open_questions,
+            )
+            for item in collection
+        }
+        self.assertTrue(all(lens.required_discovery_item_ids for lens in discovery.lenses))
+        self.assertTrue(all(
+            set(lens.required_discovery_item_ids) <= known_ids
+            for lens in discovery.lenses
+        ))
+
+    def test_normalization_preserves_near_miss_enum_content_with_safe_defaults(self) -> None:
+        """Human-readable model labels do not discard an otherwise useful discovery response."""
+        discovery = self.service().normalize_discovery(
+            self.project.id,
+            empty_discovery(
+                cross_domain_opportunities=[{
+                    "title": "Portfolio balancing",
+                    "source": "Generated",
+                    "downstream_state": "Review",
+                    "speculation_level": "Medium",
+                }],
+                coverage_risks=[{"title": "Silent exclusion", "severity": "Severe"}],
+                open_questions=[{
+                    "title": "Policy boundary",
+                    "question": "Who approves individual-level use?",
+                    "disposition": "Research Required",
+                }],
+            ),
+        )
+        opportunity = discovery.cross_domain_opportunities[0]
+        self.assertEqual(opportunity.source, "model_discovered")
+        self.assertEqual(opportunity.downstream_state, "optional")
+        self.assertEqual(opportunity.speculation_level, "requires_human_review")
+        self.assertEqual(discovery.coverage_risks[0].severity, "medium")
+        self.assertEqual(discovery.open_questions[0].disposition, "useful_but_non_blocking")
+
+    def test_normalization_coerces_scalar_collection_fields_and_named_layers(self) -> None:
+        """Useful structured output survives scalar arrays and human-readable layer labels."""
+        discovery = self.service().normalize_discovery(
+            self.project.id,
+            empty_discovery(
+                actors=[{
+                    "title": "People scientist",
+                    "goals": "Validate measurement quality.",
+                    "workflows": "Design -> simulate -> review",
+                }],
+                lenses=[{
+                    "title": "Measurement integrity",
+                    "expected_product_territory": "Sampling and bias controls.",
+                    "applicable_downstream_layers": ["Analytics", "Layer 2", 3],
+                    "omission_risks": "Invalid organizational conclusions.",
+                }],
+                cross_domain_opportunities=[{
+                    "title": "Portfolio balancing",
+                    "risks": "Overfitting allocation rules.",
+                    "evidence_or_provenance": "Published brief.",
+                }],
+            ),
+        )
+        actor = discovery.actors[0]
+        self.assertEqual(actor.goals, ["Validate measurement quality."])
+        self.assertEqual(actor.workflows, ["Design -> simulate -> review"])
+        extra_lens = next(item for item in discovery.lenses if item.title == "Measurement integrity")
+        self.assertEqual(extra_lens.expected_product_territory, ["Sampling and bias controls."])
+        self.assertEqual(extra_lens.applicable_downstream_layers, [3])
+        self.assertEqual(extra_lens.omission_risks, ["Invalid organizational conclusions."])
+        opportunity = discovery.cross_domain_opportunities[0]
+        self.assertEqual(opportunity.risks, ["Overfitting allocation rules."])
+        self.assertEqual(opportunity.evidence_or_provenance, ["Published brief."])
+
     def test_revision_lifecycle_is_versioned_and_published_content_is_immutable(self) -> None:
         """Approval/publication preserve history and database guards published content."""
         revision = self.create_revision(human_owned_fields={"notes": "human"})

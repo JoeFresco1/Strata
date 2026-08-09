@@ -20,6 +20,7 @@ from strata.embeddings import EmbeddingService
 from strata.export import export_layer2_markdown, export_layer3_feature_expansions
 from strata.generation import LAYER2_EXHAUSTION_FAMILIES, LAYER2_LENSES, LAYER2_SURVEY_BUILDER_FAMILIES, GenerationService
 from strata.llm import LLMError, LlamaCppClient
+from strata.migrations import apply_migrations
 from strata.layer2_research import Layer2CompetitorSeed, Layer2ResearchMixin
 from strata.layer3_service import validate_product_level_content
 from strata.models import (
@@ -207,6 +208,7 @@ class GenerationHelperTests(unittest.TestCase):
     def test_layer1_generation_honors_optional_total_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "specforge.db")
+            apply_migrations(db)
             project = db.create_project("Test", "A useful product")
             db.upsert_project_brief(
                 project_id=project.id,

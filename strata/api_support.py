@@ -294,6 +294,11 @@ def _project_snapshot(services: AppServices, project_id: str) -> AppSnapshotResp
         overlap=overlap,
         layer3=layer3,
         product_discovery=services.db.discovery_snapshot(project_id),
+        layer1_architecture_application=(
+            application.model_dump(mode="json")
+            if (application := services.db.get_active_layer1_architecture_application(project_id))
+            else None
+        ),
     )
 
 

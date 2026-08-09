@@ -291,6 +291,8 @@ class DatabaseSchemaMixin(PostgresSchemaMixin):
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
                     source_pillar_ids TEXT NOT NULL,
+                    source_architecture_application_id TEXT,
+                    source_territory_candidate_ids TEXT NOT NULL DEFAULT '[]',
                     lenses TEXT NOT NULL,
                     source_model TEXT NOT NULL,
                     status TEXT NOT NULL,

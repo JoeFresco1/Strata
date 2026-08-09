@@ -22,10 +22,12 @@ function jobMatches(workflowNames, scope) {
 
 export default function ProductTreeTab({
   activeProjectId,
+  apiFetch,
   brief,
   conversation,
   handleBriefSave,
   handleGenerateLayer1,
+  handleArchitectureApplied,
   handleGenerateLayer2,
   handleGenerateLayer3,
   handleLayer1OverlapCritic,
@@ -116,7 +118,7 @@ export default function ProductTreeTab({
   const layer0ResearchJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer0"], "layer0"));
   const discoveryJob = getLayerJobState(snapshotWithJobs, jobMatches(["product_discovery_generation"], "product_discovery"));
   const competitorResearchJob = getLayerJobState(snapshotWithJobs, jobMatches(["competitor_research"], "product_discovery"));
-  const layer1GenerationJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer1_generation", "generate_layer1"], null));
+  const layer1GenerationJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer1_territory_expansion", "layer1_generation", "generate_layer1"], null));
   const layer1ResearchJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer1_pillar_competitors"], null));
   const layer1OverlapJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer1_overlap_critic"], null));
   const layer2GenerationJob = getLayerJobState(snapshotWithJobs, jobMatches(["layer2_generation", "generate_layer2"], null));
@@ -154,6 +156,8 @@ export default function ProductTreeTab({
     if (activeWorkspaceTab === "layer1") {
       return (
         <Layer1View
+          projectId={activeProjectId}
+          apiFetch={apiFetch}
           snapshot={snapshotWithJobs}
           onGenerate={handleGenerateLayer1}
           onCreatePillar={handleLayer1PillarCreate}
@@ -166,6 +170,7 @@ export default function ProductTreeTab({
           overlapJobState={layer1OverlapJob}
           onCancelJob={handleCancelJob}
           competitiveIntelligenceEnabled={competitiveIntelligenceEnabled}
+          onArchitectureApplied={handleArchitectureApplied}
         />
       );
     }

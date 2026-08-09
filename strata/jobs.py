@@ -37,6 +37,9 @@ class PlatformJobService:
         "assistant_message",
         "product_discovery_generation",
         "competitor_research",
+        "layer1_territory_expansion",
+        "layer1_territory_adversarial",
+        "layer1_architecture_synthesis",
     }
 
     def __init__(self, services: Any):
@@ -69,24 +72,10 @@ class PlatformJobService:
 
     def run_job(self, job_id: str) -> None:
         """Execute a queued job and persist terminal state."""
-        job = self.services.db.get_platform_job(job_id)
-        if job.status != "queued":
-            return
         with self._runner_gate:
-            job = self.services.db.get_platform_job(job_id)
-            if job.status != "queued":
+            job = self.services.db.claim_platform_job(job_id)
+            if job is None:
                 return
-            now = _utc_now()
-            job = self.services.db.update_platform_job(
-                job.id,
-                status="running",
-                progress=max(1, job.progress),
-                current_step="Starting",
-                started_at=now,
-                completed_at=None,
-                error_type=None,
-                error_message=None,
-            )
             try:
                 result = self._dispatch(job)
                 self.services.db.update_platform_job(
@@ -138,11 +127,101 @@ class PlatformJobService:
             "assistant_message": self._run_assistant_message,
             "product_discovery_generation": self._run_product_discovery,
             "competitor_research": self._run_competitor_research,
+            "layer1_territory_expansion": self._run_layer1_territory_expansion,
+            "layer1_territory_adversarial": self._run_layer1_territory_adversarial,
+            "layer1_architecture_synthesis": self._run_layer1_architecture_synthesis,
         }
         handler = handlers.get(job.workflow)
         if handler is None:
             raise ValueError(f"Unsupported platform job workflow: {job.workflow}")
         return handler(job)
+
+    def _run_layer1_territory_expansion(self, job: PlatformJob) -> dict[str, Any]:
+        """Resume independent lens divergence from its durable run checkpoint."""
+        payload = job.request_payload
+        run_id = str(payload.get("run_id") or "")
+        if not run_id:
+            raise ValueError("Layer 1 territory jobs require a run_id.")
+        self._checkpoint(job.id, "Running independent discovery lenses", 10)
+        profiles = self._resolve_layer1_profiles(
+            [str(item) for item in payload.get("model_aliases", [])]
+        )
+        result = self.services.generation_service.run_layer1_territory_expansion(
+            run_id,
+            runtime_profile=profiles[0],
+            lens_execution_id=(
+                str(payload["lens_execution_id"])
+                if payload.get("lens_execution_id")
+                else None
+            ),
+            temperature_override=(
+                float(payload["temperature_override"])
+                if payload.get("temperature_override") is not None
+                else None
+            ),
+            stronger_exclusions=bool(payload.get("stronger_exclusions", False)),
+        )
+        self._checkpoint(job.id, "Checkpointed territory ledger and coverage", 95)
+        return result.model_dump(mode="json")
+
+    def _run_layer1_territory_adversarial(self, job: PlatformJob) -> dict[str, Any]:
+        """Run a separate failure-scenario pass after normal divergence."""
+        payload = job.request_payload
+        run_id = str(payload.get("run_id") or "")
+        if not run_id:
+            raise ValueError("Layer 1 adversarial jobs require a run_id.")
+        self._checkpoint(job.id, "Testing the territory map against failure scenarios", 15)
+        profiles = self._resolve_layer1_profiles(
+            [str(item) for item in payload.get("model_aliases", [])]
+        )
+        result = self.services.generation_service.run_layer1_adversarial_pass(
+            run_id,
+            role=str(payload.get("role") or "skeptical implementation consultant"),
+            runtime_profile=profiles[0],
+        )
+        if not bool(result.metrics.get("adversarial_complete")):
+            raise LLMError(
+                "Layer 1 adversarial review exhausted structured-output retries.",
+                error_type="structured_output_exhausted",
+            )
+        self._checkpoint(job.id, "Checkpointed adversarial findings", 95)
+        return result.model_dump(mode="json")
+
+    def _run_layer1_architecture_synthesis(self, job: PlatformJob) -> dict[str, Any]:
+        """Generate immutable mapped architecture options after exploration."""
+        payload = job.request_payload
+        run_id = str(payload.get("run_id") or "")
+        if not run_id:
+            raise ValueError("Layer 1 synthesis jobs require a run_id.")
+        self._checkpoint(job.id, "Building bounded synthesis context", 15)
+        profiles = self._resolve_layer1_profiles(
+            [str(item) for item in payload.get("model_aliases", [])]
+        )
+        run = self.services.db.get_layer1_territory_run(run_id)
+        requested_views = set(run.config.get("architecture_views") or [
+            "coherent_core",
+            "expansive_differentiation",
+        ])
+        existing = self.services.db.list_layer1_architecture_candidates(run_id)
+        existing_views = {item.kind.value for item in existing}
+        architectures = (
+            self.services.generation_service.review_existing_layer1_architecture_candidates(
+                run_id,
+                runtime_profile=profiles[0],
+            )
+            if requested_views <= existing_views
+            else self.services.generation_service.generate_layer1_architecture_candidates(
+                run_id,
+                runtime_profile=profiles[0],
+            )
+        )
+        self._checkpoint(job.id, "Checkpointed architecture candidates", 95)
+        return {
+            "run_id": run_id,
+            "architecture_candidates": [
+                item.model_dump(mode="json") for item in architectures
+            ],
+        }
 
     def _checkpoint(self, job_id: str, step: str, progress: int) -> PlatformJob:
         job = self.services.db.get_platform_job(job_id)

@@ -325,9 +325,9 @@ class DatabaseTests(unittest.TestCase):
     def test_schema_migrations_are_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "specforge.db")
-            self.assertEqual(apply_migrations(db), [1, 2, 3, 4, 5, 6, 7, 8])
+            self.assertEqual(apply_migrations(db), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
             self.assertEqual(apply_migrations(db), [])
-            self.assertEqual(migration_status(db)["current_version"], 8)
+            self.assertEqual(migration_status(db)["current_version"], 11)
 
     def test_telemetry_aggregates_usage_and_honors_body_retention(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

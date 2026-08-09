@@ -8,14 +8,18 @@ from strata.command_freshness import CommandFreshnessMixin
 from strata.command_discovery import CommandDiscoveryMixin
 from strata.command_layer0 import CommandLayer0Mixin
 from strata.command_specification import CommandSpecificationMixin
+from strata.command_layer1_territory import CommandLayer1TerritoryMixin
 from strata.command_tokens import CommandTokenMixin
 from strata.command_types import (
     AcceptLayer3Candidate,
+    AddAntiGenericPattern,
+    AddClosedTerritory,
     AddCompetitor,
     AddHumanDiscoveryLens,
     AppendBriefPlanTurn,
     ActorType,
     ApplicationCommand,
+    ApplyLayer1ArchitectureCandidate,
     ApproveFeature,
     ApproveCompetitorResearchRevision,
     ApproveProductDiscoveryRevision,
@@ -24,6 +28,8 @@ from strata.command_types import (
     BulkResolveFeatureReview,
     BulkSetPillarState,
     BuildLayer1DiscoveryContextProjection,
+    BuildLayer1SynthesisContext,
+    CancelLayer1ExpansionRun,
     CancelCompetitorResearch,
     CommandConflictError,
     CommandError,
@@ -31,13 +37,16 @@ from strata.command_types import (
     CommandResult,
     CommandValidationError,
     CompileSpecificationManifest,
+    ClassifyTerritoryCandidate,
     CreateFeature,
+    CreateHybridLayer1Architecture,
     CreateOrUpdateFeatureRelationship,
     CreatePillar,
     CutFeature,
     CutPillar,
     DetachCompetitorResearchFromDiscovery,
     DismissCriticFinding,
+    DisableAntiGenericPattern,
     EditFeature,
     EditLayer3ActiveRevision,
     EditPillar,
@@ -45,12 +54,14 @@ from strata.command_types import (
     ExcludeDiscoveryLens,
     GenerateProductDiscovery,
     GenerateLayer3Candidate,
+    GenerateLayer1ArchitectureCandidates,
     HumanAuthorityRequiredError,
     IdempotencyConflictError,
     ImportProjectArchive,
     InvalidTransitionError,
     KeepFeature,
     MarkFeatureNeedsReview,
+    MarkLayer1LensComplete,
     KeepPillar,
     IncludeCompetitorFinding,
     MarkCompetitorFindingStale,
@@ -61,6 +72,7 @@ from strata.command_types import (
     PublishProductDiscoveryRevision,
     PublishBrief,
     ReopenCriticFinding,
+    ReopenLayer1Lens,
     ReviewLayer3ActiveRevision,
     RejectLayer3Candidate,
     RemoveFeatureRelationship,
@@ -71,6 +83,7 @@ from strata.command_types import (
     RequestLayer2Generation,
     RequestLayer3Generation,
     RequestOverlapReview,
+    ReclassifyTerritoryCandidate,
     RequestResearch,
     RebuildCompetitiveContextProjection,
     RefreshCompetitorResearch,
@@ -86,6 +99,15 @@ from strata.command_types import (
     StaleSourceError,
     UnarchiveProject,
     RemoveCompetitor,
+    RemoveClosedTerritory,
+    RetryLayer1LensWithStrongerExclusions,
+    RetryLayer1LensWithTemperature,
+    RouteTerritoryToLayer2,
+    RunLayer1AdversarialPass,
+    RunLayer1LensAttempt,
+    SelectLayer1ArchitectureCandidate,
+    StartLayer1TerritoryExpansion,
+    PromoteTerritoryToPillarCandidate,
     StartCompetitorResearch,
     UpdateDiscoveryHumanFields,
     UpdateProjectMetadata,
@@ -97,6 +119,7 @@ from strata.dependency_db import feature_revision_token, pillar_revision_token
 from strata.db import utc_now
 from strata.layer3_db import Layer3RevisionConflict
 from strata.layer3_service import validate_product_level_content
+from strata.layer1_territory_policy import DivergencePolicy, ExplorationBudget
 HUMAN_ONLY_COMMANDS = (
     UpdateBriefDraft, AppendBriefPlanTurn, PublishBrief, CreatePillar, EditPillar, KeepPillar, CutPillar,
     PrioritizePillar, RenamePillar, MergePillars, BulkSetPillarState, CreateFeature, EditFeature,
@@ -111,10 +134,17 @@ HUMAN_ONLY_COMMANDS = (
     DetachCompetitorResearchFromDiscovery, ExcludeCompetitorFinding, IncludeCompetitorFinding,
     MarkCompetitorFindingStale,
     AddCompetitor, RemoveCompetitor, CancelCompetitorResearch,
+    MarkLayer1LensComplete, ReopenLayer1Lens, AddClosedTerritory,
+    RemoveClosedTerritory, AddAntiGenericPattern, DisableAntiGenericPattern,
+    ClassifyTerritoryCandidate, ReclassifyTerritoryCandidate,
+    PromoteTerritoryToPillarCandidate, RouteTerritoryToLayer2,
+    SelectLayer1ArchitectureCandidate, CreateHybridLayer1Architecture,
+    ApplyLayer1ArchitectureCandidate,
+    CancelLayer1ExpansionRun,
 )
 
 
-class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0Mixin, CommandDiscoveryMixin, CommandSpecificationMixin, CommandTokenMixin):
+class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0Mixin, CommandDiscoveryMixin, CommandSpecificationMixin, CommandLayer1TerritoryMixin, CommandTokenMixin):
     """Execute typed authoritative mutations through one transaction and audit boundary."""
 
     def __init__(self, services: Any):
@@ -138,6 +168,27 @@ class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0
             AddHumanDiscoveryLens: self._add_human_lens,
             ExcludeDiscoveryLens: self._exclude_discovery_lens,
             BuildLayer1DiscoveryContextProjection: self._build_discovery_projection,
+            StartLayer1TerritoryExpansion: self._start_layer1_territory_expansion,
+            RunLayer1LensAttempt: self._run_layer1_lens_attempt,
+            RetryLayer1LensWithTemperature: self._run_layer1_lens_attempt,
+            RetryLayer1LensWithStrongerExclusions: self._run_layer1_lens_attempt,
+            MarkLayer1LensComplete: self._mark_layer1_lens_complete,
+            ReopenLayer1Lens: self._reopen_layer1_lens,
+            AddClosedTerritory: self._add_closed_territory,
+            RemoveClosedTerritory: self._remove_closed_territory,
+            AddAntiGenericPattern: self._add_anti_generic_pattern,
+            DisableAntiGenericPattern: self._disable_anti_generic_pattern,
+            ClassifyTerritoryCandidate: self._classify_territory_candidate,
+            ReclassifyTerritoryCandidate: self._classify_territory_candidate,
+            PromoteTerritoryToPillarCandidate: self._promote_territory_candidate,
+            RouteTerritoryToLayer2: self._route_territory_to_layer2,
+            RunLayer1AdversarialPass: self._run_layer1_adversarial,
+            BuildLayer1SynthesisContext: self._build_layer1_synthesis_context,
+            GenerateLayer1ArchitectureCandidates: self._generate_layer1_architectures,
+            SelectLayer1ArchitectureCandidate: self._select_layer1_architecture,
+            ApplyLayer1ArchitectureCandidate: self._apply_layer1_architecture,
+            CreateHybridLayer1Architecture: self._create_hybrid_layer1_architecture,
+            CancelLayer1ExpansionRun: self._cancel_layer1_expansion,
             StartCompetitorResearch: self._start_competitor_research,
             CancelCompetitorResearch: self._cancel_competitor_research,
             ApproveCompetitorResearchRevision: lambda item: self._transition_competitor_research(item, "approved"),
@@ -985,6 +1036,7 @@ class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0
         return {"job": job.model_dump(mode="json"), "job_ids": [job.id]}, job.id, StaleEffect()
 
     def _request_layer1_generation(self, command: RequestLayer1Generation) -> CommandResult:
+        """Start canonical divergent exploration from the published Discovery revision."""
         def operation():
             brief = self.services.brief_service.ensure_brief(command.project_id)
             if brief.status != "published":
@@ -994,8 +1046,46 @@ class CommandService(CommandLifecycleMixin, CommandFreshnessMixin, CommandLayer0
                 self.services.job_service._resolve_layer1_profiles(aliases)
             except ValueError as exc:
                 raise CommandValidationError(str(exc)) from exc
-            return self._request_job(command, kind="generation", workflow="layer1_generation", scope="layer1", scope_id=None, payload=command.payload, dedupe_key=f"generation:layer1:{command.project_id}:{state_token(command.payload)}")
-        return self._execute(command, target_type="workflow_request", target_id="layer1_generation", operation=operation)
+            config = {
+                "target_raw_candidates": max(
+                    12, min(30, int(command.payload.get("target_per_round") or 18))
+                ),
+                "max_attempts_per_lens": max(
+                    1, min(4, int(command.payload.get("max_rounds") or 4))
+                ),
+                "enable_adversarial_pass": bool(
+                    command.payload.get("enable_adversarial_pass", True)
+                ),
+            }
+            budget: dict[str, Any] = {}
+            if command.payload.get("total_cap") is not None:
+                budget["max_total_candidates"] = int(command.payload["total_cap"])
+            run = self.services.generation_service.start_layer1_territory_expansion(
+                command.project_id,
+                policy=DivergencePolicy(**config),
+                budget=ExplorationBudget(**budget),
+            )
+            job = self.services.job_service.enqueue(
+                project_id=command.project_id,
+                kind="generation",
+                workflow="layer1_territory_expansion",
+                scope="layer1_territory",
+                scope_id=run.id,
+                request_payload={"run_id": run.id, "model_aliases": aliases},
+                dedupe_key=f"layer1-territory:{run.id}",
+            )
+            data = {
+                "run": run.model_dump(mode="json"),
+                "job": job.model_dump(mode="json"),
+                "job_ids": [job.id],
+            }
+            return data, state_token(data["run"]), StaleEffect()
+        return self._execute(
+            command,
+            target_type="layer1_territory_run",
+            target_id="new",
+            operation=operation,
+        )
 
     def _request_layer2_generation(self, command: RequestLayer2Generation) -> CommandResult:
         def operation():

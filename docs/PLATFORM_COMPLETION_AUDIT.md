@@ -56,8 +56,3 @@ service:
 
 These remain tracked in `docs/TODO_LOG.md` as post-release hardening rather
 than platform completion blockers.
-Impeccable is installed in this project under .github/, but its required setup check stopped because PRODUCT.md does not exist yet.
-To finish the bootstrap, I need 3 quick answers so I can write the project context file correctly:
-Is this primarily a product surface, or do you want Impeccable to treat it as a brand surface?
-Who is the main user of the UX we’re polishing here?
-What 3 words should define the design voice, and is there anything it should explicitly avoid?

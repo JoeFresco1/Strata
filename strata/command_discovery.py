@@ -84,6 +84,7 @@ class CommandDiscoveryMixin:
     def _transition_discovery(self, command: Any, target_state: str) -> CommandResult:
         """Apply one human-controlled discovery revision transition."""
         def operation() -> tuple[dict[str, Any], str, StaleEffect]:
+            previous_published = self.db.discovery_snapshot(command.project_id).get("published")
             revision = self.db.get_discovery_revision(command.revision_id)
             self._assert_expected(command, self.discovery_state_token(revision), revision.id)
             updated = self.db.transition_discovery_revision(
@@ -109,7 +110,18 @@ class CommandDiscoveryMixin:
                 "revision": updated.model_dump(mode="json"),
                 "projections": projections,
             }
-            return data, self.discovery_state_token(updated), StaleEffect()
+            stale = StaleEffect()
+            previous_id = str((previous_published or {}).get("id") or "")
+            if target_state == "published" and previous_id and previous_id != updated.id:
+                stale = self._propagate_content_change(
+                    command,
+                    artifact_type="product_discovery_revision",
+                    artifact_id=updated.head_id,
+                    previous_revision_id=previous_id,
+                    replacement_revision_id=updated.id,
+                    reason_code="product_discovery_republished",
+                )
+            return data, self.discovery_state_token(updated), stale
         return self._execute(
             command,
             target_type="product_discovery_revision",

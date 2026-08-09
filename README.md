@@ -85,8 +85,8 @@ The result is not another brainstorm or a mandate to build more. It is a product
 ```mermaid
 flowchart LR
     I["Idea"] --> B["Layer 0<br/>Canonical brief"]
-    B -->|"Publish"| P["Layer 1<br/>Product pillars"]
-    P -->|"Approve"| F["Layer 2<br/>Feature graph"]
+    B -->|"Publish + discover"| P["Layer 1<br/>Territory + architectures"]
+    P -->|"Select + apply"| F["Layer 2<br/>Feature graph"]
     F -->|"Approve"| C["Layer 3<br/>Capability design"]
     C -->|"Review"| E["Delivery<br/>Markdown · JSON · Spec Kit"]
 
@@ -97,7 +97,7 @@ flowchart LR
 ```
 
 1. **Frame the idea.** Define the problem, audience, goals, constraints, and known boundaries without pretending the solution is already complete.
-2. **Expand the landscape.** Explore product pillars across the design space before descending into the first obvious feature.
+2. **Expand the landscape.** Use every required Product Discovery lens to explore attributable product territory before synthesizing multiple pillar architectures.
 3. **Expose structure.** Develop pillars into capabilities; surface dependencies, shared foundations, overlap, synergies, and competitive context.
 4. **Select intentionally.** Keep, reject, combine, edit, or defer what Strata finds. Nothing advances simply because a model proposed it.
 5. **Develop what remains.** Pressure-test selected features and decide behaviors, options, rules, limits, and open questions.
@@ -203,7 +203,7 @@ For database upgrades, backup and restore, network safety, and model configurati
 2. Create a project with a name and a two- or three-sentence idea.
 3. In **Layer 0**, use Plan mode to challenge the idea or Form mode to enter known details directly.
 4. Review the canonical brief and publish it.
-5. In **Layer 1**, add pillars manually or generate a first pass, then keep only the responsibilities the product should truly own.
+5. In **Layer 1**, publish Product Discovery, run territory exploration, review at least two synthesized architectures, then separately select and explicitly apply the one the product should use. Manual pillars remain available as a first-class path.
 
 From there, Layer 2 turns approved pillars into a feature graph, and Layer 3 turns approved features into explicit capability decisions.
 
@@ -242,7 +242,10 @@ flowchart TB
 
 The React application and API are served together on port `8000` in production. PostgreSQL is the source of truth. Long-running generation, research, diagnostics, and assistant work use durable jobs with recovery and inspection surfaces.
 
-Read the [production architecture](docs/PRODUCTION_ARCHITECTURE.md) or the [layer architecture](docs/layer%20architecture.md) for the deeper model.
+Read the [production architecture](docs/PRODUCTION_ARCHITECTURE.md), the
+[layer architecture](docs/layer%20architecture.md), or the experimental
+[Layer 1 territory exploration workflow](docs/LAYER1_TERRITORY_EXPLORATION.md)
+for the deeper model and evaluation commands.
 
 For a newcomer-friendly map of the code, runtime entry points, tests, scripts, and documentation, see the [repository guide](docs/REPOSITORY_GUIDE.md).
 

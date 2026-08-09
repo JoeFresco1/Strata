@@ -93,6 +93,55 @@ class PlatformJobDatabaseMixin:
         rows = self._fetchall("SELECT * FROM platform_jobs WHERE status = 'queued' ORDER BY created_at ASC")
         return [self._row_to_platform_job(row) for row in rows]
 
+    def claim_platform_job(self, job_id: str) -> PlatformJob | None:
+        """Atomically transition one queued job to running for exactly one worker."""
+        now = utc_now()
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    f"""
+                    UPDATE platform_jobs
+                    SET status = {self.param},
+                        progress = CASE WHEN progress < 1 THEN 1 ELSE progress END,
+                        current_step = {self.param},
+                        started_at = {self.param},
+                        completed_at = NULL,
+                        error_type = NULL,
+                        error_message = NULL,
+                        updated_at = {self.param}
+                    WHERE id = {self.param} AND status = {self.param}
+                    RETURNING *
+                    """,
+                    ("running", "Starting", now, now, job_id, "queued"),
+                )
+                row = cursor.fetchone()
+            finally:
+                cursor.close()
+        return self._row_to_platform_job(row) if row is not None else None
+
+    def cancel_queued_platform_job(self, job_id: str) -> PlatformJob | None:
+        """Atomically cancel a queued job without overwriting a concurrent claim."""
+        now = utc_now()
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    f"""
+                    UPDATE platform_jobs
+                    SET status = {self.param}, progress = 100,
+                        current_step = {self.param}, cancel_requested = {self.param},
+                        completed_at = {self.param}, updated_at = {self.param}
+                    WHERE id = {self.param} AND status = {self.param}
+                    RETURNING *
+                    """,
+                    ("cancelled", "Cancelled before start", True, now, now, job_id, "queued"),
+                )
+                row = cursor.fetchone()
+            finally:
+                cursor.close()
+        return self._row_to_platform_job(row) if row is not None else None
+
     def update_platform_job(
         self,
         job_id: str,
@@ -145,15 +194,10 @@ class PlatformJobDatabaseMixin:
         """Request cancellation; queued jobs can be cancelled immediately."""
         job = self.get_platform_job(job_id)
         if job.status == "queued":
-            now = utc_now()
-            return self.update_platform_job(
-                job_id,
-                status="cancelled",
-                progress=100,
-                current_step="Cancelled before start",
-                cancel_requested=True,
-                completed_at=now,
-            )
+            cancelled = self.cancel_queued_platform_job(job_id)
+            if cancelled is not None:
+                return cancelled
+            job = self.get_platform_job(job_id)
         if job.status == "running":
             return self.update_platform_job(job_id, cancel_requested=True, current_step="Cancellation requested")
         return job
