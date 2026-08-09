@@ -52,6 +52,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("Workspace");
   const [workspaceState, setWorkspaceState] = useState(null);
   const [statusMessage, setStatusMessage] = useState("Loading Strata...");
+  const [modelAvailable, setModelAvailable] = useState(null);
   const [error, setError] = useState("");
   const [lastSummary, setLastSummary] = useState(null);
   const [newProjectName, setNewProjectName] = useState("");
@@ -132,6 +133,7 @@ export default function App() {
         setAppSettings(configPayload);
         setProjects(projectsPayload);
         setSetupState(setupPayload);
+        setModelAvailable(Boolean(healthPayload.ok));
         setStatusMessage(
           healthPayload.ok
             ? "Local model ready."
@@ -1095,6 +1097,7 @@ export default function App() {
   if (setupState && !setupState.completed) {
     return <SetupWizard defaults={setupState.defaults} apiFetch={apiFetch} onComplete={(result) => {
       setSetupState({ ...setupState, completed: true });
+      setModelAvailable(Boolean(result.model_ok));
       setStatusMessage(result.model_ok ? "Model connected." : result.model_message);
     }} />;
   }
@@ -1159,6 +1162,15 @@ export default function App() {
               <span />
             </span>
           </button>
+          {!navOpen && modelAvailable === false ? (
+            <span
+              className="rail-collapsed-health offline"
+              role="status"
+              title="Local model offline. Generation and research are unavailable."
+            >
+              Offline
+            </span>
+          ) : null}
           {navOpen ? (
             <div className="brand-lockup">
               <strong>Strata</strong>

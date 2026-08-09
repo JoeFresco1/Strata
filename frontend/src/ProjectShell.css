@@ -380,6 +380,10 @@
     width: 100%;
   }
 
+  .project-search-wrap {
+    flex: 0 0 auto;
+  }
+
   .project-search-clear {
     width: 2.75rem;
     height: 2.75rem;
